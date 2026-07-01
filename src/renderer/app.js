@@ -164,7 +164,7 @@ function renderPersonJoinDialog() {
     <div class="m-head"><h3>Join ${esc(join.name || 'player')}</h3><p>Pick one or more accounts — Fleet joins each into their exact server.</p></div>
     <div class="m-body">
       <div class="join-account-list">${choices}</div>
-      <p class="hint" style="margin:13px 0 0">Select several to bring a whole squad into the same server at once.</p>
+      <p class="hint" style="margin:13px 0 0">Fleet checks the live server with your selected account when you click Join. Private or privacy-restricted servers can still block the join.</p>
     </div>
     <div class="m-foot">
       <button class="btn" data-action="modal-cancel" ${join.joining ? 'disabled' : ''}>Cancel</button>
@@ -175,13 +175,13 @@ function renderPersonJoinDialog() {
 }
 
 function openPersonJoinDialog(userId, placeId, gameId, name) {
-  if (!userId || !placeId) { toast('That person is not in a joinable game', 'bad'); return; }
+  if (!userId) { toast('That person is not in a joinable game', 'bad'); return; }
   if (!state.accounts.length) { toast('Add an account to join', 'bad'); setView('accounts'); return; }
   const preselect = Array.from(state.selected).filter(id => state.accounts.some(a => a.id === id));
   const initial = preselect.length ? preselect : (state.accounts.length === 1 ? [state.accounts[0].id] : []);
   state.personJoin = {
     userId: String(userId),
-    placeId: String(placeId),
+    placeId: placeId ? String(placeId) : null,
     gameId: gameId || null,
     name: name || 'player',
     selectedIds: new Set(initial),
@@ -872,7 +872,7 @@ function renderPeopleProfile() {
       <div class="profile-main">
         <section class="profile-section"><h2>About</h2><p class="profile-bio">${esc(u.bio || 'No description provided.')}</p>
           <div class="profile-facts"><span><strong>Joined</strong>${esc(created)}${accountAge(u.created) ? ` · ${esc(accountAge(u.created))} old` : ''}</span><span><strong>User ID</strong>${esc(u.userId)}</span><span><strong>Connection</strong>${esc(source)}</span><span><strong>Account</strong>${u.isBanned ? 'Banned' : 'Active'}</span></div>
-          ${u.game ? `<div class="now-playing${u.canJoin ? ' joinable' : ''}">${icon('compass')} <span><strong>${esc(u.game.name)}</strong><small>${u.canJoin ? 'Playing now — join their server' : 'Currently playing'}</small></span>${u.canJoin ? `<button class="btn primary sm" data-action="join-person" data-user="${esc(u.userId)}" data-place="${esc(u.game.placeId)}" data-game="${esc(u.game.gameId || '')}" data-name="${esc(u.displayName)}">${icon('play')} Join</button>` : ''}</div>` : ''}
+          ${u.game ? `<div class="now-playing${u.canJoin ? ' joinable' : ''}">${icon('compass')} <span><strong>${esc(u.game.name)}</strong><small>${u.canJoin ? 'Playing now — Fleet checks access when you join' : 'Currently playing'}</small></span>${u.canJoin ? `<button class="btn primary sm" data-action="join-person" data-user="${esc(u.userId)}" data-place="${esc(u.game.placeId)}" data-game="${esc(u.game.gameId || '')}" data-name="${esc(u.displayName)}">${icon('play')} Join</button>` : ''}</div>` : ''}
         </section>
         ${profileGameSection('Created experiences', u.createdGames || [])}
         ${profileGameSection('Favorite experiences', u.favoriteGames || [])}

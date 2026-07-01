@@ -175,6 +175,11 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   check('online but non-playing users are not joinable', onlinePresence.presence === 'Online' && onlinePresence.canJoin === false);
   const hiddenServerPresence = people.presenceFromRecord({ userPresenceType: 2, placeId: 99 });
   check('in-game public presence still offers account-scoped Join', hiddenServerPresence.presence === 'In game' && hiddenServerPresence.canJoin === true);
+  const hiddenPlacePresence = people.presenceFromRecord({ userPresenceType: 2, lastLocation: 'In an experience' });
+  check('in-game privacy-hidden presence still offers a Join attempt',
+    hiddenPlacePresence.presence === 'In game'
+    && hiddenPlacePresence.canJoin === true
+    && hiddenPlacePresence.game.placeId === null);
   const normalizedGroups = people.normalizeGroups({ data: [{ group: { id: 7, name: 'Fleet', memberCount: 10 }, role: { name: 'Member', rank: 1 } }] });
   check('group roles are normalized', normalizedGroups.length === 1 && normalizedGroups[0].name === 'Fleet' && normalizedGroups[0].role === 'Member');
 
@@ -183,6 +188,9 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   check('People Join resolves the selected accounts together', rendererSource.includes('api.launch.joinPersonMulti(ids, join.userId)'));
   check('Join buttons carry the target user id', (rendererSource.match(/data-user="\$\{esc\(u\.userId\)\}"/g) || []).length >= 2);
   check('friend/search cards and profile view expose join actions', (rendererSource.match(/data-action="join-person"/g) || []).length >= 2);
+  check('People Join dialog can open before a place id is visible',
+    rendererSource.includes('if (!userId)')
+    && !rendererSource.includes('if (!userId || !placeId)'));
 
   await section('Resilient people search');
   const response = (status, data, headers) => ({
@@ -211,7 +219,9 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
         });
       }
       if (href.includes('/avatar-headshot')) return response(200, { data: [] });
-      if (href.includes('/presence/users')) return response(200, { userPresences: [] });
+      if (href.includes('/presence/users')) {
+        return response(200, { userPresences: [{ userId: 24680, userPresenceType: 2, lastLocation: 'In an experience' }] });
+      }
       throw new Error('Unexpected search URL: ' + href + ' ' + ((opts && opts.method) || 'GET'));
     };
     const fullUsernameResult = await people.search('Exact_User');
@@ -220,6 +230,8 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
       fullUsernameResult.ok
       && fullUsernameResult.source === 'keyword'
       && fullUsernameResult.people.length === 2
+      && fullUsernameResult.people[0].canJoin === true
+      && fullUsernameResult.people[0].placeId === null
       && fullUsernameResult.nextPageCursor === 'more-exact-users'
       && keywordCallsForFullUsername === 1
       && exactEndpointTouched === false);

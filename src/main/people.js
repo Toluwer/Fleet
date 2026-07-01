@@ -132,9 +132,10 @@ function presenceFromRecord(p) {
       universeId: p.universeId || null,
       gameId: p.gameId || null,
     } : null,
-    // Exact server visibility depends on the account used to join. Advertise
-    // Join for an in-game player, then resolve the server after account choice.
-    canJoin: status === 'In game' && !!(p && p.placeId),
+    // Exact server visibility depends on the account used to join. Roblox can
+    // say a non-friend is in-game while hiding placeId/gameId until Fleet checks
+    // with the account selected for joining, so allow an account-scoped attempt.
+    canJoin: status === 'In game',
   };
 }
 
@@ -151,7 +152,7 @@ function adaptPresence(rec) {
       universeId: (rec && rec.universeId) || null,
       gameId: (rec && rec.gameId) || null,
     } : null,
-    canJoin: status === 'In game' && !!(rec && rec.placeId),
+    canJoin: status === 'In game',
   };
 }
 
