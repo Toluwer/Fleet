@@ -265,6 +265,15 @@ svg.ico, svg.b-ico, svg.t-ico {
 .games-tools, .people-tools { display: flex; align-items: center; justify-content: space-between; gap: 10px;
   flex-wrap: wrap; margin: -6px 0 16px; }
 .btn.active-filter { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.games-cats { display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 14px; }
+.games-cats[hidden] { display: none; }
+.cat-chip { display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border: 1px solid var(--hair-2);
+  border-radius: 999px; background: var(--surface); color: var(--ink-2); font: inherit; font-size: 12.5px; font-weight: 500;
+  cursor: pointer; white-space: nowrap; transition: border-color .14s var(--ease), color .14s var(--ease), background .14s var(--ease); }
+.cat-chip:hover { border-color: var(--ink-3); color: var(--ink); }
+.cat-chip.on { border-color: var(--ink); background: var(--ink); color: #fff; }
+.cat-chip .cat-n { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: var(--surface-2); color: var(--ink-3); }
+.cat-chip.on .cat-n { background: rgba(255,255,255,.18); color: #fff; }
 .games-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(234px, 1fr)); gap: 16px; }
 .game { border: 1px solid var(--hair); border-radius: var(--r-lg); overflow: hidden; background: var(--surface);
   box-shadow: var(--sh-sm); display: flex; flex-direction: column; animation: rowIn .3s var(--ease);
@@ -291,6 +300,13 @@ svg.ico, svg.b-ico, svg.t-ico {
 /* Server browser */
 .server-list { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow: auto; }
 .server-tools { margin: 0 0 12px; }
+.seg-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg-chip { padding: 6px 12px; border: 1px solid var(--hair-2); border-radius: 999px; background: var(--surface);
+  color: var(--ink-2); font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer; white-space: nowrap;
+  transition: border-color .14s var(--ease), color .14s var(--ease), background .14s var(--ease); }
+.seg-chip:hover { border-color: var(--ink-3); color: var(--ink); }
+.seg-chip.on { border-color: var(--ink); background: var(--ink); color: #fff; }
+.server-summary { margin-top: 9px; font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .server-row { display: grid; grid-template-columns: 70px 1fr auto auto; align-items: center; gap: 14px;
   padding: 10px 12px; border: 1px solid var(--hair); border-radius: var(--r-sm); background: var(--surface); }
 .server-fill { display: flex; flex-direction: column; line-height: 1.15; }
@@ -405,13 +421,16 @@ textarea { resize: vertical; min-height: 70px; }
 .kv .v { color: var(--ink); font-family: var(--mono); font-size: 12px; word-break: break-all; }
 
 /* ----------------------------- Tooltip ----------------------------- */
-[data-tip] { position: relative; }
-[data-tip]:hover::after { content: attr(data-tip); position: absolute; bottom: calc(100% + 8px); left: 50%;
-  transform: translateX(-50%); background: var(--ink); color: #fff; font-size: 11.5px; font-weight: 400; line-height: 1.4;
-  padding: 6px 10px; border-radius: 7px; white-space: nowrap; z-index: 60; pointer-events: none; box-shadow: var(--sh-lg);
-  animation: tipIn .14s var(--ease); }
-@keyframes tipIn { from { opacity: 0; transform: translateX(-50%) translateY(3px); } to { opacity: 1; } }
-[data-tip-wide]:hover::after { white-space: normal; width: 230px; text-align: center; }
+/* JS-positioned tooltip (see positionTip in app.js) — fixed-position so it
+   clamps to the viewport instead of clipping like the old CSS ::after. */
+.tip { position: fixed; left: 0; top: 0; z-index: 200; pointer-events: none; background: var(--ink); color: #fff;
+  font-size: 11.5px; font-weight: 400; line-height: 1.4; padding: 6px 10px; border-radius: 7px; white-space: nowrap;
+  box-shadow: var(--sh-lg); opacity: 0; visibility: hidden; transform: translateY(3px);
+  transition: opacity .13s var(--ease), transform .13s var(--ease); max-width: min(280px, calc(100vw - 16px)); }
+.tip.show { opacity: 1; visibility: visible; transform: none; }
+.tip.below { transform: translateY(-3px); }
+.tip.below.show { transform: none; }
+.tip.wide { white-space: normal; width: 230px; text-align: center; }
 
 /* ----------------------------- Context menu ----------------------------- */
 .ctxmenu { position: fixed; z-index: 100; min-width: 192px; background: #fff; border: 1px solid var(--hair-2);

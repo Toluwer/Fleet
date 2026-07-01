@@ -26,7 +26,7 @@ const state = {
   personJoin: null,
   games: {
     list: [], query: '', nextPageToken: null, loading: false, error: null, loaded: false,
-    sort: 'players', hideEmpty: false,
+    sort: 'players', hideEmpty: false, categories: [], category: 'All',
   },
   people: {
     route: 'home', returnRoute: 'home',
@@ -216,6 +216,51 @@ ctxmenu.addEventListener('click', (e) => {
   hideContextMenu();
   if (item && item.onClick) item.onClick();
 });
+
+/* ----------------------------- Tooltips ----------------------------- */
+/* JS-driven so tips never clip at the viewport edge (the old pure-CSS
+   translateX(-50%) ::after overflowed near the right/top of the window). */
+const tipEl = document.createElement('div');
+tipEl.className = 'tip';
+tipEl.setAttribute('role', 'tooltip');
+document.body.appendChild(tipEl);
+let tipTarget = null;
+
+function positionTip(target) {
+  const text = target.getAttribute('data-tip');
+  if (!text) return;
+  tipEl.textContent = text;
+  tipEl.classList.toggle('wide', target.hasAttribute('data-tip-wide'));
+  tipEl.classList.add('show');
+  const M = 8; // viewport margin
+  const r = target.getBoundingClientRect();
+  const tw = tipEl.offsetWidth, th = tipEl.offsetHeight;
+  let top = r.top - th - M;
+  const below = top < M;
+  if (below) top = r.bottom + M;
+  let left = r.left + r.width / 2 - tw / 2;
+  left = Math.max(M, Math.min(left, window.innerWidth - tw - M));
+  top = Math.max(M, Math.min(top, window.innerHeight - th - M));
+  tipEl.style.left = left + 'px';
+  tipEl.style.top = top + 'px';
+  tipEl.classList.toggle('below', below);
+}
+function hideTip() { tipTarget = null; tipEl.classList.remove('show'); }
+document.addEventListener('mouseover', (e) => {
+  const t = e.target.closest('[data-tip]');
+  if (t === tipTarget) return;
+  if (!t) { hideTip(); return; }
+  tipTarget = t;
+  positionTip(t);
+});
+document.addEventListener('mouseout', (e) => {
+  if (!tipTarget) return;
+  const to = e.relatedTarget;
+  if (!to || !tipTarget.contains(to)) hideTip();
+});
+document.addEventListener('mousedown', hideTip);
+window.addEventListener('scroll', hideTip, true);
+window.addEventListener('blur', hideTip);
 
 /* ----------------------------- Safe API ----------------------------- */
 async function call(fn, fallback, timeoutMs) {
@@ -497,21 +542,33 @@ views.games = function () {
       <button class="btn" data-action="refresh-games" data-tip="Reload popular experiences">${icon('refresh')} Refresh</button>
       <button class="btn primary" data-action="random-game" data-tip="Join a random game from the list">${icon('dice')} Random Game</button>
     </div>
+    <div class="games-cats" id="games-cats"></div>
     <div class="games-tools">
-      <div class="segmented compact" aria-label="Sort games">
-        <button data-action="games-sort" data-sort="players" class="${g.sort === 'players' ? 'on' : ''}">Most players</button>
-        <button data-action="games-sort" data-sort="rating" class="${g.sort === 'rating' ? 'on' : ''}">Best rated</button>
-        <button data-action="games-sort" data-sort="name" class="${g.sort === 'name' ? 'on' : ''}">Name</button>
-      </div>
       <button class="btn sm ${g.hideEmpty ? 'active-filter' : ''}" data-action="games-hide-empty">${icon('users-group')} ${g.hideEmpty ? 'Showing active only' : 'Hide empty'}</button>
     </div>
     <div class="games-grid" id="games-grid"></div>
   `);
   const inp = $('#games-search');
   if (inp) inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') doGamesSearch(inp.value); });
+  renderGamesCategories();
   if (!g.loaded && !g.loading) gamesBrowse();
   else renderGamesGrid();
 };
+
+// Category filter chips (browse mode only — Roblox explore sorts). "All" is default.
+function renderGamesCategories() {
+  const box = $('#games-cats');
+  if (!box) return;
+  const g = state.games;
+  const cats = g.categories || [];
+  if (!cats.length) { box.innerHTML = ''; box.hidden = true; return; }
+  box.hidden = false;
+  const chip = (label, value) => {
+    const n = value === 'All' ? g.list.length : g.list.filter(x => (x.categories || []).includes(value)).length;
+    return `<button class="cat-chip ${g.category === value ? 'on' : ''}" data-action="games-category" data-cat="${esc(value)}">${esc(label)}<span class="cat-n">${n}</span></button>`;
+  };
+  box.innerHTML = chip('All', 'All') + cats.map(c => chip(c, c)).join('');
+}
 
 function gameRating(gm) {
   const up = Number(gm.upVotes);
@@ -522,7 +579,10 @@ function gameRating(gm) {
 
 function visibleGames() {
   const g = state.games;
-  const list = g.list.filter(game => !g.hideEmpty || Number(game.playerCount) > 0).slice();
+  const list = g.list.filter(game =>
+    (!g.hideEmpty || Number(game.playerCount) > 0)
+    && (!g.category || g.category === 'All' || (game.categories || []).includes(g.category))
+  ).slice();
   if (g.sort === 'rating') {
     list.sort((a, b) => (gameRating(b) == null ? -1 : gameRating(b)) - (gameRating(a) == null ? -1 : gameRating(a))
       || Number(b.playerCount || 0) - Number(a.playerCount || 0));
@@ -556,33 +616,53 @@ function gameCard(gm) {
 }
 
 /* ----------------------------- Server browser ----------------------------- */
+const SERVER_SORTS = [
+  ['best', 'Best match'],
+  ['ping', 'Lowest ping'],
+  ['space', 'Most space'],
+  ['players', 'Most players'],
+  ['fps', 'Highest FPS'],
+];
+
 function sortedServers(list, mode) {
   const out = (list || []).slice();
-  const slots = server => Math.max(0, Number(server.maxPlayers || 0) - Number(server.playing || 0));
+  const slots = s => Math.max(0, Number(s.maxPlayers || 0) - Number(s.playing || 0));
+  const ping = s => Number(s.ping == null ? 999999 : s.ping);
+  const fps = s => Number(s.fps == null ? -1 : s.fps);
+  const fill = s => (Number(s.maxPlayers) > 0 ? Number(s.playing || 0) / Number(s.maxPlayers) : 1);
+  const full = s => (slots(s) > 0 ? 0 : 1); // non-full (0) sorts before full (1)
   if (mode === 'ping') {
-    out.sort((a, b) => Number(a.ping == null ? 999999 : a.ping) - Number(b.ping == null ? 999999 : b.ping)
-      || slots(b) - slots(a));
+    out.sort((a, b) => ping(a) - ping(b) || slots(b) - slots(a));
   } else if (mode === 'space') {
-    out.sort((a, b) => slots(b) - slots(a)
-      || Number(a.ping == null ? 999999 : a.ping) - Number(b.ping == null ? 999999 : b.ping));
-  } else {
-    out.sort((a, b) => {
-      const aFull = slots(a) <= 0 ? 1 : 0;
-      const bFull = slots(b) <= 0 ? 1 : 0;
-      return aFull - bFull
-        || Number(a.ping == null ? 999999 : a.ping) - Number(b.ping == null ? 999999 : b.ping)
-        || slots(b) - slots(a);
-    });
+    out.sort((a, b) => slots(b) - slots(a) || ping(a) - ping(b));
+  } else if (mode === 'players') {
+    out.sort((a, b) => full(a) - full(b) || Number(b.playing || 0) - Number(a.playing || 0) || ping(a) - ping(b));
+  } else if (mode === 'fps') {
+    out.sort((a, b) => full(a) - full(b) || fps(b) - fps(a) || ping(a) - ping(b));
+  } else { // 'best' — has room, low ping, and not packed (a blended score, distinct from pure ping)
+    const score = s => ping(s) + fill(s) * 60;
+    out.sort((a, b) => full(a) - full(b) || score(a) - score(b));
   }
   return out;
 }
 
+function serverStats(list) {
+  const l = list || [];
+  const withPing = l.filter(s => s.ping != null);
+  const avgPing = withPing.length ? Math.round(withPing.reduce((n, s) => n + Number(s.ping), 0) / withPing.length) : null;
+  const bestPing = withPing.length ? Math.min(...withPing.map(s => Number(s.ping))) : null;
+  return { count: l.length, avgPing, bestPing };
+}
+
 function serverSortControls(sv) {
   const sort = sv.sort || 'best';
-  return `<div class="server-tools segmented compact">
-    <button data-action="server-sort" data-sort="best" class="${sort === 'best' ? 'on' : ''}">Best match</button>
-    <button data-action="server-sort" data-sort="ping" class="${sort === 'ping' ? 'on' : ''}">Lowest ping</button>
-    <button data-action="server-sort" data-sort="space" class="${sort === 'space' ? 'on' : ''}">Most space</button>
+  const st = serverStats(sv.list);
+  const summary = `${st.count} joinable server${st.count === 1 ? '' : 's'}${st.bestPing != null ? ` · best ${st.bestPing} ms` : ''}${st.avgPing != null ? ` · avg ${st.avgPing} ms` : ''}`;
+  return `<div class="server-tools">
+    <div class="seg-wrap" role="tablist" aria-label="Sort servers">
+      ${SERVER_SORTS.map(([v, label]) => `<button class="seg-chip ${sort === v ? 'on' : ''}" data-action="server-sort" data-sort="${v}">${label}</button>`).join('')}
+    </div>
+    <div class="server-summary">${summary}</div>
   </div>`;
 }
 
@@ -592,7 +672,7 @@ function renderServersModal() {
   let body;
   if (sv.loading && !sv.list.length) body = `<div class="games-end"><span class="spinner dark"></span> Loading servers…</div>`;
   else if (sv.error && !sv.list.length) body = `<div class="games-end">${esc(sv.error)}</div>`;
-  else if (!sv.list.length) body = `<div class="games-end">No public servers found.</div>`;
+  else if (!sv.list.length) body = `<div class="games-end">No joinable servers found — every server is full right now.</div>`;
   else body = `${serverSortControls(sv)}<div class="server-list">${sortedServers(sv.list, sv.sort).map((s, i) => `
       <div class="server-row">
         <div class="server-fill"><strong>${s.playing}/${s.maxPlayers}</strong><span>players</span></div>
@@ -601,10 +681,15 @@ function renderServersModal() {
         <button class="btn primary sm" data-action="join-server" data-place="${esc(sv.placeId)}" data-server="${esc(s.id)}" data-name="${esc(sv.name)}" data-tip="Server #${i + 1}">${icon('play')} Join</button>
       </div>`).join('')}
       ${sv.nextPageCursor ? `<button class="btn sm servers-more" data-action="servers-more">Load more servers</button>` : ''}</div>`;
+  const hasList = !!sv.list.length;
   openModal(`
     <div class="m-head"><h3>Servers — ${esc(sv.name)}</h3><p>Join a specific public server${state.accounts.length ? ' with your selected account' : ''}.</p></div>
     <div class="m-body">${body}</div>
-    <div class="m-foot"><button class="btn" data-action="modal-cancel">Close</button></div>`);
+    <div class="m-foot">
+      ${hasList ? `<button class="btn" data-action="servers-refresh" style="margin-right:auto" data-tip="Reload the server list">${icon('refresh')} Refresh</button>` : ''}
+      <button class="btn" data-action="modal-cancel">Close</button>
+      ${hasList ? `<button class="btn primary" data-action="join-best" data-tip="Join the top server for this filter">${icon('play')} Join best</button>` : ''}
+    </div>`);
 }
 
 async function openServersModal(placeId, name) {
@@ -621,8 +706,15 @@ async function loadServers(append) {
   const r = await call(() => api.games.servers(sv.placeId, append ? sv.nextPageCursor : null));
   if (!state.servers) return;
   sv.loading = false;
-  if (r && r.ok) { sv.list = append ? sv.list.concat(r.servers) : r.servers; sv.nextPageCursor = r.nextPageCursor; }
-  else sv.error = (r && r.error) || 'Could not load servers.';
+  if (r && r.ok) {
+    if (append) {
+      const seen = new Set(sv.list.map(s => s.id));
+      sv.list = sv.list.concat((r.servers || []).filter(s => !seen.has(s.id)));
+    } else {
+      sv.list = r.servers || [];
+    }
+    sv.nextPageCursor = r.nextPageCursor;
+  } else sv.error = (r && r.error) || 'Could not load servers.';
   renderServersModal();
 }
 
@@ -652,23 +744,25 @@ function renderGamesGrid() {
 async function gamesBrowse() {
   const g = state.games;
   g.loading = true; g.error = null; g.query = ''; g.list = []; g.nextPageToken = null;
-  if (state.view === 'games') renderGamesGrid();
+  g.categories = []; g.category = 'All';
+  if (state.view === 'games') { renderGamesCategories(); renderGamesGrid(); }
   const r = await call(() => api.games.browse());
   g.loading = false; g.loaded = true;
-  if (r && r.ok) { g.list = r.games; g.nextPageToken = r.nextPageToken; }
+  if (r && r.ok) { g.list = r.games; g.nextPageToken = r.nextPageToken; g.categories = r.categories || []; }
   else g.error = (r && r.error) || 'Could not load games.';
-  if (state.view === 'games') renderGamesGrid();
+  if (state.view === 'games') { renderGamesCategories(); renderGamesGrid(); }
 }
 
 async function doGamesSearch(query) {
   const g = state.games;
   g.query = (query || '').trim(); g.loading = true; g.error = null; g.list = []; g.nextPageToken = null;
-  if (state.view === 'games') renderGamesGrid();
+  g.categories = []; g.category = 'All';
+  if (state.view === 'games') { renderGamesCategories(); renderGamesGrid(); }
   const r = await call(() => (g.query ? api.games.search(g.query) : api.games.browse()));
   g.loading = false; g.loaded = true;
-  if (r && r.ok) { g.list = r.games; g.nextPageToken = r.nextPageToken; }
+  if (r && r.ok) { g.list = r.games; g.nextPageToken = r.nextPageToken; g.categories = r.categories || []; }
   else g.error = (r && r.error) || 'Search failed.';
-  if (state.view === 'games') renderGamesGrid();
+  if (state.view === 'games') { renderGamesCategories(); renderGamesGrid(); }
 }
 
 async function gamesLoadMore() {
@@ -1519,6 +1613,11 @@ document.addEventListener('click', async (e) => {
       state.games.sort = elAction.dataset.sort || 'players';
       views.games();
       break;
+    case 'games-category':
+      state.games.category = elAction.dataset.cat || 'All';
+      renderGamesCategories();
+      renderGamesGrid();
+      break;
     case 'games-hide-empty':
       state.games.hideEmpty = !state.games.hideEmpty;
       views.games();
@@ -1542,6 +1641,12 @@ document.addEventListener('click', async (e) => {
       }
       break;
     case 'servers-more': loadServers(true); break;
+    case 'servers-refresh': loadServers(false); break;
+    case 'join-best': {
+      const sv = state.servers;
+      if (sv && sv.list.length) { const top = sortedServers(sv.list, sv.sort)[0]; if (top) joinServer(sv.placeId, top.id, sv.name); }
+      break;
+    }
 
     case 'open-friends': state.people.route = 'friends'; views.people(); break;
     case 'people-home': state.people.route = 'home'; views.people(); break;

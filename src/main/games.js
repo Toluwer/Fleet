@@ -30,6 +30,7 @@ function normalize(c) {
     downVotes: c.totalDownVotes != null ? c.totalDownVotes : null,
     creator: c.creatorName || (c.creator && c.creator.name) || '',
     thumbnail: null,
+    categories: [],
   };
 }
 
@@ -75,16 +76,28 @@ async function browse() {
     if (r.status === 429) return { ok: false, error: 'Roblox is rate-limiting — try again shortly.' };
     if (!r.ok) return { ok: false, error: 'Discovery unavailable (HTTP ' + r.status + ').' };
     const j = await r.json();
-    let games = [];
+    // Keep each game's originating sort(s) so the UI can offer a category filter.
+    const byId = new Map();  // universeId -> normalized game (with categories[])
+    const categories = [];   // ordered category display names that carried games
     for (const sort of (j.sorts || [])) {
+      if (sort.contentType && sort.contentType !== 'Games') continue;
+      const label = (sort.sortDisplayName || '').trim();
       // The game list lives under a per-sort key; find the array of game objects.
       const arr = Object.keys(sort).map(k => sort[k]).find(v => Array.isArray(v) && v[0] && (v[0].universeId || v[0].rootPlaceId));
-      if (arr) for (const g of arr) games.push(normalize(g));
+      if (!arr || !arr.length) continue;
+      if (label && !categories.includes(label)) categories.push(label);
+      for (const raw of arr) {
+        const g = normalize(raw);
+        if (!g.universeId || !g.placeId) continue;
+        const existing = byId.get(g.universeId);
+        if (existing) { if (label && !existing.categories.includes(label)) existing.categories.push(label); }
+        else { g.categories = label ? [label] : []; byId.set(g.universeId, g); }
+      }
     }
-    games = dedupe(games).sort((a, b) => (b.playerCount || 0) - (a.playerCount || 0)).slice(0, 60);
+    const games = Array.from(byId.values()).sort((a, b) => (b.playerCount || 0) - (a.playerCount || 0)).slice(0, 120);
     await withThumbnails(games);
-    logger.info('Games browse: ' + games.length + ' experiences');
-    return { ok: true, games, nextPageToken: null };
+    logger.info('Games browse: ' + games.length + ' experiences, ' + categories.length + ' categories');
+    return { ok: true, games, categories, nextPageToken: null };
   } catch (err) {
     logger.warn('Games browse failed', err && err.message);
     return { ok: false, error: (err && err.message) || 'Network error.' };
@@ -118,28 +131,61 @@ async function search(query, pageToken) {
   }
 }
 
-/** Public server list for a place (join a specific server). */
+async function serversPage(pid, sortOrder, cursor) {
+  const u = new URL(`https://games.roblox.com/v1/games/${pid}/servers/Public`);
+  u.searchParams.set('sortOrder', sortOrder);
+  u.searchParams.set('excludeFullGames', 'false'); // excludeFullGames=true is unreliable (often returns 0)
+  u.searchParams.set('limit', '100');
+  if (cursor) u.searchParams.set('cursor', cursor);
+  const r = await fetch(u.toString(), { headers: { Accept: 'application/json' } });
+  return { status: r.status, data: r.ok ? ((await r.json()).data || []) : [], nextPageCursor: null, json: r.ok };
+}
+
+/**
+ * Public server list for a place, filtered to **joinable** servers (has a free
+ * slot). We merge one Ascending page (emptiest-first — guarantees open servers
+ * and carries ping; also returns data for games where Descending returns none)
+ * with one Descending page (fullest-first — surfaces busy-but-open servers), so
+ * the pool spans wide-open to nearly-full. On "load more" we page only through
+ * the Ascending order (progressively fuller servers).
+ */
 async function servers(placeId, cursor) {
   const pid = String(placeId == null ? '' : placeId).trim();
   if (!/^\d+$/.test(pid)) return { ok: false, error: 'Invalid place id.' };
   try {
-    const u = new URL(`https://games.roblox.com/v1/games/${pid}/servers/Public`);
-    u.searchParams.set('sortOrder', 'Desc');
-    u.searchParams.set('excludeFullGames', 'false');
-    u.searchParams.set('limit', '100');
-    if (cursor) u.searchParams.set('cursor', cursor);
-    const r = await fetch(u.toString());
-    if (r.status === 429) return { ok: false, error: 'Roblox is rate-limiting — try again shortly.' };
-    if (!r.ok) return { ok: false, error: 'Servers unavailable (HTTP ' + r.status + ').' };
-    const j = await r.json();
-    const list = (j.data || []).map(s => ({
-      id: s.id,
-      playing: s.playing || 0,
-      maxPlayers: s.maxPlayers || 0,
-      fps: s.fps != null ? Math.round(s.fps) : null,
-      ping: s.ping != null ? s.ping : null,
-    }));
-    return { ok: true, servers: list, nextPageCursor: j.nextPageCursor || null };
+    const asc = await (async () => {
+      const u = new URL(`https://games.roblox.com/v1/games/${pid}/servers/Public`);
+      u.searchParams.set('sortOrder', 'Asc');
+      u.searchParams.set('excludeFullGames', 'false');
+      u.searchParams.set('limit', '100');
+      if (cursor) u.searchParams.set('cursor', cursor);
+      const r = await fetch(u.toString(), { headers: { Accept: 'application/json' } });
+      if (r.status === 429) return { rate: true };
+      const j = r.ok ? await r.json() : null;
+      return { status: r.status, data: (j && j.data) || [], nextPageCursor: (j && j.nextPageCursor) || null };
+    })();
+    if (asc.rate) return { ok: false, error: 'Roblox is rate-limiting — try again shortly.' };
+    // Only merge in the fullest-first page on the initial load (keeps "load more" duplicate-free).
+    let descData = [];
+    if (!cursor) {
+      try { descData = (await serversPage(pid, 'Desc', null)).data; } catch (_) { /* best effort */ }
+    }
+    const byId = new Map();
+    for (const s of [...asc.data, ...descData]) {
+      if (!s || !s.id || byId.has(s.id)) continue;
+      const slots = Number(s.maxPlayers || 0) - Number(s.playing || 0);
+      if (slots <= 0) continue; // joinable servers only
+      byId.set(s.id, {
+        id: s.id,
+        playing: s.playing || 0,
+        maxPlayers: s.maxPlayers || 0,
+        fps: s.fps != null ? Math.round(s.fps) : null,
+        ping: s.ping != null ? s.ping : null,
+      });
+    }
+    const list = Array.from(byId.values());
+    if (!list.length && asc.status && asc.status >= 400) return { ok: false, error: 'Servers unavailable (HTTP ' + asc.status + ').' };
+    return { ok: true, servers: list, nextPageCursor: asc.nextPageCursor };
   } catch (err) {
     logger.warn('Server list failed', err && err.message);
     return { ok: false, error: (err && err.message) || 'Network error.' };

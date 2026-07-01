@@ -189,6 +189,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   check('group roles are normalized', normalizedGroups.length === 1 && normalizedGroups[0].name === 'Fleet' && normalizedGroups[0].role === 'Member');
 
   const rendererSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8');
+  const gamesSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'games.js'), 'utf8');
   check('People Join opens an account picker', rendererSource.includes("case 'join-person': openPersonJoinDialog") && rendererSource.includes('data-action="select-join-account"'));
   check('People Join resolves the selected accounts together', rendererSource.includes('api.launch.joinPersonMulti(ids, join.userId)'));
   check('Join buttons carry the target user id', (rendererSource.match(/data-user="\$\{esc\(u\.userId\)\}"/g) || []).length >= 2);
@@ -219,8 +220,17 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   check('Games has advanced sorting, filtering and server ranking',
     rendererSource.includes("case 'games-sort':")
     && rendererSource.includes("case 'games-hide-empty':")
+    && rendererSource.includes("case 'games-category':")
     && rendererSource.includes("case 'server-sort':")
     && rendererSource.includes('function sortedServers(list, mode)'));
+  check('Games category filter defaults to All and is data-driven',
+    rendererSource.includes('function renderGamesCategories()')
+    && rendererSource.includes("category: 'All'")
+    && gamesSource.includes('categories') && gamesSource.includes('sortDisplayName'));
+  check('Server browser offers distinct advanced sort modes',
+    ["'best'", "'ping'", "'space'", "'players'", "'fps'"].every(m => rendererSource.includes(m))
+    && rendererSource.includes('function serverStats(')
+    && rendererSource.includes('SERVER_SORTS'));
   const ipcSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc.js'), 'utf8');
   check('player join no longer requires presence-visible server ids',
     ipcSource.includes('getPersonJoinLaunchInfo(accountIds[i], targetUserId)')
