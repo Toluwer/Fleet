@@ -191,22 +191,39 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     headers: { get: name => (headers && headers[String(name).toLowerCase()]) || null },
     json: async () => data,
   });
-  let exactCalls = 0;
+  let keywordCallsForFullUsername = 0;
+  let exactEndpointTouched = false;
   try {
     global.fetch = async (url, opts) => {
       const href = String(url);
       if (href.includes('/v1/usernames/users')) {
-        exactCalls++;
+        exactEndpointTouched = true;
         return response(200, { data: [{ id: 24680, name: 'Exact_User', displayName: 'Exact User' }] });
+      }
+      if (href.includes('/v1/users/search')) {
+        keywordCallsForFullUsername++;
+        return response(200, {
+          data: [
+            { id: 24680, name: 'Exact_User', displayName: 'Exact User' },
+            { id: 24681, name: 'Exact_UserFan', displayName: 'Exact User Fan' },
+          ],
+          nextPageCursor: 'more-exact-users',
+        });
       }
       if (href.includes('/avatar-headshot')) return response(200, { data: [] });
       if (href.includes('/presence/users')) return response(200, { userPresences: [] });
       throw new Error('Unexpected search URL: ' + href + ' ' + ((opts && opts.method) || 'GET'));
     };
-    const exactResult = await people.search('Exact_User');
-    const cachedExact = await people.search('Exact_User');
-    check('exact username search bypasses keyword rate limits', exactResult.ok && exactResult.source === 'exact' && exactResult.people[0].userId === 24680);
-    check('identical searches reuse cached results', cachedExact.ok && cachedExact.cached === true && exactCalls === 1);
+    const fullUsernameResult = await people.search('Exact_User');
+    const cachedFullUsername = await people.search('Exact_User');
+    check('full username searches use keyword results instead of exact-only matches',
+      fullUsernameResult.ok
+      && fullUsernameResult.source === 'keyword'
+      && fullUsernameResult.people.length === 2
+      && fullUsernameResult.nextPageCursor === 'more-exact-users'
+      && keywordCallsForFullUsername === 1
+      && exactEndpointTouched === false);
+    check('identical searches reuse cached results', cachedFullUsername.ok && cachedFullUsername.cached === true && keywordCallsForFullUsername === 1);
 
     let keywordCalls = 0;
     global.fetch = async (url) => {

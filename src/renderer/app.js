@@ -738,7 +738,7 @@ function renderPeopleSearchResults() {
   if (!root) return;
   const search = state.people.search;
   if (search.loading) {
-    root.innerHTML = `<div class="people-search-state"><span class="spinner dark"></span><div><strong>Searching Roblox</strong><small>Checking exact matches and public profiles...</small></div></div>`;
+    root.innerHTML = `<div class="people-search-state"><span class="spinner dark"></span><div><strong>Searching Roblox</strong><small>Checking matching public profiles...</small></div></div>`;
     return;
   }
   if (search.error) {

@@ -110,19 +110,6 @@ async function keywordSearch(query, cursor) {
   });
 }
 
-async function exactUsernameLookup(query) {
-  if (!/^[A-Za-z0-9_]{3,20}$/.test(query)) return null;
-  const result = await getJsonResult('https://users.roblox.com/v1/usernames/users', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ usernames: [query], excludeBannedUsers: false }),
-  });
-  if (!result.ok) return null;
-  const match = (result.data && result.data.data || []).find(user =>
-    String(user.name || '').toLowerCase() === query.toLowerCase());
-  return match || null;
-}
-
 async function numericUserLookup(query) {
   if (!/^\d{1,16}$/.test(query)) return null;
   const id = numericId(query);
@@ -324,22 +311,9 @@ async function performSearch(query, cursor) {
     return { ok: true, people: await enrichUsers([user]), nextPageCursor: null, query, source: 'id', notice: 'Matched by Roblox user ID.' };
   }
 
-  // Most searches are full usernames. Resolve these through Roblox's dedicated
-  // batch username endpoint so they remain reliable even when keyword search is throttled.
-  if (!cursor) {
-    const exact = await exactUsernameLookup(query);
-    if (exact) {
-      return {
-        ok: true,
-        people: await enrichUsers([exact]),
-        nextPageCursor: null,
-        query,
-        source: 'exact',
-        notice: 'Exact username match.',
-      };
-    }
-  }
-
+  // Text searches should stay broad: a full username can still have many
+  // nearby players, so use Roblox keyword search instead of collapsing to one
+  // exact username result.
   const result = await keywordSearch(query, cursor);
   if (result.ok) {
     const raw = rankSearchUsers((result.data && result.data.data) || [], query);
