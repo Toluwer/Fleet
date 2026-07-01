@@ -44,10 +44,14 @@ Write-Host 'Building branded NSIS installer and update metadata...'
 & $builder --prepackaged $unpacked --win nsis --x64 '-c.win.signAndEditExecutable=false'
 if ($LASTEXITCODE -ne 0) { throw "NSIS installer build failed ($LASTEXITCODE)." }
 
-$installer = Get-ChildItem $dist -Filter 'Fleet-Setup-*.exe' | Select-Object -First 1
+$installer = Join-Path $dist 'FleetInstaller.exe'
 $metadata = Join-Path $dist 'latest.yml'
-if (-not $installer) { throw 'Installer was not created.' }
+if (-not (Test-Path $installer)) { throw 'FleetInstaller.exe was not created.' }
 if (-not (Test-Path $metadata)) { throw 'latest.yml was not created; automatic updates would not work.' }
+if (-not ((Get-Content $metadata -Raw) -match 'url:\s+FleetInstaller\.exe')) {
+  throw 'latest.yml does not point to the permanent FleetInstaller.exe asset.'
+}
 
-Write-Host "Built installer: $($installer.FullName)"
+Write-Host "Built installer: $installer"
 Write-Host "Update metadata: $metadata"
+Write-Host 'Permanent download URL: https://github.com/Toluwer/Fleet/releases/latest/download/FleetInstaller.exe'

@@ -24,9 +24,13 @@ const state = {
   followSelected: new Set(),
   following: false,
   personJoin: null,
-  games: { list: [], query: '', nextPageToken: null, loading: false, error: null, loaded: false },
+  games: {
+    list: [], query: '', nextPageToken: null, loading: false, error: null, loaded: false,
+    sort: 'players', hideEmpty: false,
+  },
   people: {
     route: 'home', returnRoute: 'home',
+    filter: 'all', sort: 'status',
     list: [], page: 0, pageSize: 9, total: 0, hasNext: false, hasPrev: false, loading: false, error: null, loaded: false,
     search: {
       query: '', list: [], nextPageCursor: null, loading: false, error: null,
@@ -397,7 +401,8 @@ views.accounts = function () {
       : (pl.includes('game') || pl.includes('studio')) ? 'ingame'
       : (pl === 'unknown' ? 'unknown' : '');
     const presTip = a.presenceError ? ` data-tip="${esc(a.presenceError)}"` : '';
-    const canFollow = pl === 'in game' && list.length > 1;
+    const expired = !!a.sessionExpired || a.presenceError === 'Session expired';
+    const canFollow = !expired && pl === 'in game' && list.length > 1;
     const followTip = list.length < 2 ? 'Add another account to use Follow'
       : (canFollow ? 'Choose other accounts to join this exact server' : 'This account must be in a game');
     return `
@@ -416,7 +421,9 @@ views.accounts = function () {
       </div>
       <div class="acct-game" data-acct-game="${a.id}"${a.game ? '' : ' hidden'}>${a.game ? icon('compass') + ' ' + esc(a.game.name) : ''}</div>
       <div class="acct-actions">
-        <button class="btn primary sm" data-action="launch-account" data-id="${a.id}">${icon('play')} Launch</button>
+        ${expired
+          ? `<button class="btn primary sm" data-action="reauth-account" data-id="${a.id}">${icon('user-plus')} Sign in again</button>`
+          : `<button class="btn primary sm" data-action="launch-account" data-id="${a.id}">${icon('play')} Launch</button>`}
         <button class="btn sm" data-action="follow-account" data-id="${a.id}" data-tip="${esc(followTip)}" ${canFollow ? '' : 'disabled'}>${icon('users-group')} Follow</button>
         <button class="btn sm icon" data-action="refresh-account" data-id="${a.id}" data-tip="Refresh status">${icon('refresh')}</button>
         <button class="btn sm icon danger" data-action="remove-account" data-id="${a.id}" data-tip="Remove account">${icon('trash')}</button>
@@ -490,6 +497,14 @@ views.games = function () {
       <button class="btn" data-action="refresh-games" data-tip="Reload popular experiences">${icon('refresh')} Refresh</button>
       <button class="btn primary" data-action="random-game" data-tip="Join a random game from the list">${icon('dice')} Random Game</button>
     </div>
+    <div class="games-tools">
+      <div class="segmented compact" aria-label="Sort games">
+        <button data-action="games-sort" data-sort="players" class="${g.sort === 'players' ? 'on' : ''}">Most players</button>
+        <button data-action="games-sort" data-sort="rating" class="${g.sort === 'rating' ? 'on' : ''}">Best rated</button>
+        <button data-action="games-sort" data-sort="name" class="${g.sort === 'name' ? 'on' : ''}">Name</button>
+      </div>
+      <button class="btn sm ${g.hideEmpty ? 'active-filter' : ''}" data-action="games-hide-empty">${icon('users-group')} ${g.hideEmpty ? 'Showing active only' : 'Hide empty'}</button>
+    </div>
     <div class="games-grid" id="games-grid"></div>
   `);
   const inp = $('#games-search');
@@ -498,11 +513,33 @@ views.games = function () {
   else renderGamesGrid();
 };
 
+function gameRating(gm) {
+  const up = Number(gm.upVotes);
+  const down = Number(gm.downVotes);
+  const total = up + down;
+  return total > 0 ? Math.round(up / total * 100) : null;
+}
+
+function visibleGames() {
+  const g = state.games;
+  const list = g.list.filter(game => !g.hideEmpty || Number(game.playerCount) > 0).slice();
+  if (g.sort === 'rating') {
+    list.sort((a, b) => (gameRating(b) == null ? -1 : gameRating(b)) - (gameRating(a) == null ? -1 : gameRating(a))
+      || Number(b.playerCount || 0) - Number(a.playerCount || 0));
+  } else if (g.sort === 'name') {
+    list.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  } else {
+    list.sort((a, b) => Number(b.playerCount || 0) - Number(a.playerCount || 0));
+  }
+  return list;
+}
+
 function gameCard(gm) {
   const thumb = gm.thumbnail
     ? `<img loading="lazy" src="${esc(gm.thumbnail)}" alt="">`
     : `<div class="ph">${icon('compass')}</div>`;
-  const likes = gm.upVotes != null ? `<span class="likes">${icon('thumb')} ${fmtNum(gm.upVotes)}</span>` : '';
+  const rating = gameRating(gm);
+  const likes = rating != null ? `<span class="likes">${icon('thumb')} ${rating}%</span>` : '';
   return `<div class="game">
     <div class="game-thumb">${thumb}<span class="game-players">${icon('users-group')} ${fmtNum(gm.playerCount)}</span></div>
     <div class="game-body">
@@ -511,12 +548,44 @@ function gameCard(gm) {
       <div class="game-actions">
         <button class="btn primary sm" data-action="join-game" data-place="${esc(gm.placeId)}" data-name="${esc(gm.name)}">${icon('play')} Join</button>
         <button class="btn sm" data-action="open-servers" data-place="${esc(gm.placeId)}" data-name="${esc(gm.name)}" data-tip="Browse & join a specific server">${icon('server')}</button>
+        <button class="btn sm icon" data-action="open-game-web" data-place="${esc(gm.placeId)}" data-tip="Open on Roblox">${icon('box')}</button>
+        <button class="btn sm icon" data-action="copy-place-id" data-place="${esc(gm.placeId)}" data-tip="Copy place ID">${icon('copy')}</button>
       </div>
     </div>
   </div>`;
 }
 
 /* ----------------------------- Server browser ----------------------------- */
+function sortedServers(list, mode) {
+  const out = (list || []).slice();
+  const slots = server => Math.max(0, Number(server.maxPlayers || 0) - Number(server.playing || 0));
+  if (mode === 'ping') {
+    out.sort((a, b) => Number(a.ping == null ? 999999 : a.ping) - Number(b.ping == null ? 999999 : b.ping)
+      || slots(b) - slots(a));
+  } else if (mode === 'space') {
+    out.sort((a, b) => slots(b) - slots(a)
+      || Number(a.ping == null ? 999999 : a.ping) - Number(b.ping == null ? 999999 : b.ping));
+  } else {
+    out.sort((a, b) => {
+      const aFull = slots(a) <= 0 ? 1 : 0;
+      const bFull = slots(b) <= 0 ? 1 : 0;
+      return aFull - bFull
+        || Number(a.ping == null ? 999999 : a.ping) - Number(b.ping == null ? 999999 : b.ping)
+        || slots(b) - slots(a);
+    });
+  }
+  return out;
+}
+
+function serverSortControls(sv) {
+  const sort = sv.sort || 'best';
+  return `<div class="server-tools segmented compact">
+    <button data-action="server-sort" data-sort="best" class="${sort === 'best' ? 'on' : ''}">Best match</button>
+    <button data-action="server-sort" data-sort="ping" class="${sort === 'ping' ? 'on' : ''}">Lowest ping</button>
+    <button data-action="server-sort" data-sort="space" class="${sort === 'space' ? 'on' : ''}">Most space</button>
+  </div>`;
+}
+
 function renderServersModal() {
   const sv = state.servers;
   if (!sv) return;
@@ -524,7 +593,7 @@ function renderServersModal() {
   if (sv.loading && !sv.list.length) body = `<div class="games-end"><span class="spinner dark"></span> Loading servers…</div>`;
   else if (sv.error && !sv.list.length) body = `<div class="games-end">${esc(sv.error)}</div>`;
   else if (!sv.list.length) body = `<div class="games-end">No public servers found.</div>`;
-  else body = `<div class="server-list">${sv.list.map((s, i) => `
+  else body = `${serverSortControls(sv)}<div class="server-list">${sortedServers(sv.list, sv.sort).map((s, i) => `
       <div class="server-row">
         <div class="server-fill"><strong>${s.playing}/${s.maxPlayers}</strong><span>players</span></div>
         <div class="server-bar"><span style="width:${s.maxPlayers ? Math.min(100, Math.round(s.playing / s.maxPlayers * 100)) : 0}%"></span></div>
@@ -539,7 +608,7 @@ function renderServersModal() {
 }
 
 async function openServersModal(placeId, name) {
-  state.servers = { placeId: String(placeId), name: name || 'game', list: [], cursor: null, nextPageCursor: null, loading: true, error: null };
+  state.servers = { placeId: String(placeId), name: name || 'game', list: [], cursor: null, nextPageCursor: null, loading: true, error: null, sort: 'best' };
   renderServersModal();
   await loadServers(false);
 }
@@ -572,10 +641,12 @@ function renderGamesGrid() {
   if (g.loading && !g.list.length) { grid.innerHTML = `<div class="games-end"><span class="spinner dark"></span> Loading experiences…</div>`; return; }
   if (g.error && !g.list.length) { grid.innerHTML = `<div class="games-end">${esc(g.error)}</div>`; return; }
   if (!g.list.length) { grid.innerHTML = `<div class="games-end">No experiences found.</div>`; return; }
+  const list = visibleGames();
+  if (!list.length) { grid.innerHTML = `<div class="games-end">No active experiences match this filter.</div>`; return; }
   let tail = '';
   if (g.nextPageToken && g.query) tail = `<div class="games-end"><span class="spinner dark"></span> Scroll for more…</div>`;
   else if (g.query) tail = `<div class="games-end">End of results</div>`;
-  grid.innerHTML = g.list.map(gameCard).join('') + tail;
+  grid.innerHTML = list.map(gameCard).join('') + tail;
 }
 
 async function gamesBrowse() {
@@ -655,16 +726,70 @@ function renderPeopleHome() {
   renderPeopleSearchResults();
 }
 
+function personMatchesFilter(u) {
+  const filter = state.people.filter || 'all';
+  const status = String(u && u.presence || 'Offline').toLowerCase();
+  if (filter === 'ingame') return status.includes('game');
+  if (filter === 'online') return status === 'online' || status.includes('studio');
+  if (filter === 'offline') return status === 'offline';
+  return true;
+}
+
+function personPresenceRank(u) {
+  const status = String(u && u.presence || 'Offline').toLowerCase();
+  if (status.includes('game')) return 0;
+  if (status === 'online' || status.includes('studio')) return 1;
+  if (status === 'unknown') return 3;
+  return 2;
+}
+
+function visiblePeople(list) {
+  const out = (list || []).filter(personMatchesFilter).slice();
+  if (state.people.sort === 'name') {
+    out.sort((a, b) => String(a.displayName || a.username).localeCompare(String(b.displayName || b.username)));
+  } else if (state.people.sort === 'status') {
+    out.sort((a, b) => personPresenceRank(a) - personPresenceRank(b)
+      || String(a.displayName || a.username).localeCompare(String(b.displayName || b.username)));
+  }
+  return out;
+}
+
+function peopleTools() {
+  const filter = state.people.filter || 'all';
+  const sort = state.people.sort || 'status';
+  return `<div class="people-tools">
+    <div class="segmented compact" aria-label="Filter people">
+      <button data-action="people-filter" data-filter="all" class="${filter === 'all' ? 'on' : ''}">All</button>
+      <button data-action="people-filter" data-filter="ingame" class="${filter === 'ingame' ? 'on' : ''}">In game</button>
+      <button data-action="people-filter" data-filter="online" class="${filter === 'online' ? 'on' : ''}">Online</button>
+      <button data-action="people-filter" data-filter="offline" class="${filter === 'offline' ? 'on' : ''}">Offline</button>
+    </div>
+    <div class="segmented compact" aria-label="Sort people">
+      <button data-action="people-sort" data-sort="status" class="${sort === 'status' ? 'on' : ''}">Live first</button>
+      <button data-action="people-sort" data-sort="name" class="${sort === 'name' ? 'on' : ''}">Name</button>
+    </div>
+  </div>`;
+}
+
+function personJoinButton(u, className) {
+  if (!u || !u.canJoin) return '';
+  const game = u.game || {};
+  return `<button class="${className || 'btn primary sm'}" data-action="join-person" data-user="${esc(u.userId)}" data-place="${esc(game.placeId || u.placeId || '')}" data-game="${esc(game.gameId || u.gameId || '')}" data-name="${esc(u.displayName)}">${icon('play')} Join</button>`;
+}
+
+function personCardActions(u) {
+  return `${personJoinButton(u)}
+    <button class="btn sm icon" data-action="copy-user-id" data-user="${esc(u.userId)}" data-tip="Copy user ID">${icon('copy')}</button>
+    <button class="btn sm" data-action="open-person" data-user="${esc(u.userId)}">View</button>`;
+}
+
 function personCard(u) {
   const presClass = presenceClass(u.presence);
   const avatar = u.avatar ? `<img class="avatar" loading="lazy" src="${esc(u.avatar)}" alt="">` : `<div class="avatar"></div>`;
-  const gameLine = u.game && u.game.name ? `<div class="acct-game">${icon('compass')} ${esc(u.game.name)}</div>` : '';
-  const join = u.canJoin
-    ? `<button class="btn primary sm" data-action="join-person" data-user="${esc(u.userId)}" data-place="${esc(u.placeId)}" data-game="${esc(u.gameId || '')}" data-name="${esc(u.displayName)}">${icon('play')} Join</button>`
-    : '';
+  const gameLine = `<div class="acct-game" data-person-game="${esc(u.userId)}"${u.game && u.game.name ? '' : ' hidden'}>${u.game && u.game.name ? icon('compass') + ' ' + esc(u.game.name) : ''}</div>`;
   const sources = u.connectedAccounts && u.connectedAccounts.length
     ? `<div class="friend-source">Friend of ${esc(u.connectedAccounts.map(a => a.displayName).join(', '))}</div>` : '';
-  return `<div class="person">
+  return `<div class="person" data-person-card="${esc(u.userId)}">
     <div class="top">
       ${avatar}
       <div class="who">
@@ -675,8 +800,8 @@ function personCard(u) {
     ${u.bio ? `<div class="person-bio">${esc(u.bio)}</div>` : ''}
     ${sources}
     <div class="row-split" style="margin-top:auto">
-      <span class="presence ${presClass}"><span class="pd"></span>${esc(u.presence)}</span>
-      <span class="inline">${join}<button class="btn sm" data-action="open-person" data-user="${esc(u.userId)}">View</button></span>
+      <span class="presence ${presClass}" data-person-presence="${esc(u.userId)}"><span class="pd"></span>${esc(u.presence)}</span>
+      <span class="inline" data-person-actions="${esc(u.userId)}">${personCardActions(u)}</span>
     </div>
     ${gameLine}
   </div>`;
@@ -700,6 +825,7 @@ function renderFriendsPage() {
         <button class="btn sm" data-action="people-refresh" data-tip="Reload">${icon('refresh')}</button>
       </div>
     </div>
+    ${peopleTools()}
     <div class="people-grid" id="people-grid"></div>
   `);
   if (!pp.loaded && !pp.loading) loadPeople(0);
@@ -713,7 +839,10 @@ function renderPeopleGrid() {
   if (pp.loading) { grid.innerHTML = `<div class="games-end"><span class="spinner dark"></span> Loading people…</div>`; return; }
   if (pp.error) { grid.innerHTML = `<div class="games-end">${esc(pp.error)}</div>`; return; }
   if (!pp.list.length) { grid.innerHTML = `<div class="card"><div class="empty"><div class="e-ico">${icon('users-group')}</div><h3>No people to show</h3><p>Add an account with friends to populate this list.</p></div></div>`; return; }
-  grid.innerHTML = pp.list.map(personCard).join('');
+  const list = visiblePeople(pp.list);
+  grid.innerHTML = list.length
+    ? list.map(personCard).join('')
+    : `<div class="games-end">No people match this filter.</div>`;
 }
 
 async function loadPeople(page) {
@@ -770,7 +899,8 @@ function renderPeopleSearchResults() {
   root.innerHTML = `
     ${notice}
     <div class="people-result-head"><div class="section-title">Results for “${esc(search.query)}”</div><span>${search.list.length} shown</span></div>
-    <div class="people-grid">${search.list.length ? search.list.map(personCard).join('') : '<div class="games-end">No people found.</div>'}</div>
+    ${search.list.length ? peopleTools() : ''}
+    <div class="people-grid">${visiblePeople(search.list).length ? visiblePeople(search.list).map(personCard).join('') : `<div class="games-end">${search.list.length ? 'No people match this filter.' : 'No people found.'}</div>`}</div>
     ${search.nextPageCursor ? `<button class="btn people-more" data-action="people-search-more">Show more</button>` : ''}`;
 }
 
@@ -825,7 +955,57 @@ function mergePresence(user, fresh) {
   });
 }
 
-/** Refresh only the visible cards/profile instead of repeating user search. */
+function presenceChanged(before, after) {
+  const a = before && before.game || {};
+  const b = after && after.game || {};
+  return String(before && before.presence || '') !== String(after && after.presence || '')
+    || !!(before && before.canJoin) !== !!(after && after.canJoin)
+    || String(a.name || '') !== String(b.name || '')
+    || String(a.placeId || '') !== String(b.placeId || '')
+    || String(a.gameId || '') !== String(b.gameId || '');
+}
+
+function profileHeroActions(u) {
+  return `${personJoinButton(u, 'btn primary')}
+    <button class="btn" data-action="ext-link" data-url="${esc(u.profileUrl || `https://www.roblox.com/users/${u.userId}/profile`)}">Open on Roblox</button>`;
+}
+
+function profileLivePanel(u) {
+  if (!u || !u.game) return '';
+  return `<div class="now-playing${u.canJoin ? ' joinable' : ''}">${icon('compass')}
+    <span><strong>${esc(u.game.name)}</strong><small>${u.canJoin ? 'Playing now — Fleet checks access when you join' : 'Currently playing'}</small></span>
+    ${personJoinButton(u)}</div>`;
+}
+
+function patchPersonPresence(user) {
+  if (!user || !user.userId) return;
+  const id = String(user.userId);
+  document.querySelectorAll(`[data-person-presence="${id}"]`).forEach(el => {
+    el.className = 'presence ' + presenceClass(user.presence);
+    el.innerHTML = `<span class="pd"></span>${esc(user.presence || 'Offline')}`;
+  });
+  document.querySelectorAll(`[data-person-game="${id}"]`).forEach(el => {
+    if (user.game && user.game.name) {
+      el.hidden = false;
+      el.innerHTML = icon('compass') + ' ' + esc(user.game.name);
+    } else {
+      el.hidden = true;
+      el.innerHTML = '';
+    }
+  });
+  document.querySelectorAll(`[data-person-actions="${id}"]`).forEach(el => {
+    el.innerHTML = personCardActions(user);
+  });
+  document.querySelectorAll(`[data-person-card="${id}"]`).forEach(el => {
+    el.hidden = !personMatchesFilter(user);
+  });
+  const profileActions = document.querySelector(`[data-profile-actions="${id}"]`);
+  if (profileActions) profileActions.innerHTML = profileHeroActions(user);
+  const live = document.querySelector(`[data-profile-live="${id}"]`);
+  if (live) live.innerHTML = profileLivePanel(user);
+}
+
+/** Poll visible users, then patch only cards whose live state actually changed. */
 async function refreshVisiblePeoplePresence() {
   if (!api || peoplePresenceBusy || state.view !== 'people') return;
   const pp = state.people;
@@ -841,14 +1021,22 @@ async function refreshVisiblePeoplePresence() {
   if (!r || !r.ok || !Array.isArray(r.people)) return;
   const byId = new Map(r.people.map(item => [Number(item.userId), item]));
   if (pp.route === 'home') {
-    pp.search.list = pp.search.list.map(user => mergePresence(user, byId.get(Number(user.userId))));
-    renderPeopleSearchResults();
+    pp.search.list = pp.search.list.map(user => {
+      const next = mergePresence(user, byId.get(Number(user.userId)));
+      if (presenceChanged(user, next)) patchPersonPresence(next);
+      return next;
+    });
   } else if (pp.route === 'friends') {
-    pp.list = pp.list.map(user => mergePresence(user, byId.get(Number(user.userId))));
-    renderPeopleGrid();
+    pp.list = pp.list.map(user => {
+      const next = mergePresence(user, byId.get(Number(user.userId)));
+      if (presenceChanged(user, next)) patchPersonPresence(next);
+      return next;
+    });
   } else if (pp.route === 'profile' && pp.detail.profile) {
-    pp.detail.profile = mergePresence(pp.detail.profile, byId.get(Number(pp.detail.profile.userId)));
-    renderPeopleProfile();
+    const previous = pp.detail.profile;
+    const next = mergePresence(previous, byId.get(Number(previous.userId)));
+    pp.detail.profile = next;
+    if (presenceChanged(previous, next)) patchPersonPresence(next);
   }
 }
 
@@ -899,7 +1087,6 @@ function renderPeopleProfile() {
   const presClass = presenceClass(u.presence);
   const created = u.created ? new Date(u.created).toLocaleDateString([], { year: 'numeric', month: 'long', day: 'numeric' }) : 'Unknown';
   const source = u.connectedAccounts && u.connectedAccounts.length ? `Friend of ${u.connectedAccounts.map(a => a.displayName).join(', ')}` : 'Public Roblox profile';
-  const join = u.canJoin && u.game ? `<button class="btn primary" data-action="join-person" data-user="${esc(u.userId)}" data-place="${esc(u.game.placeId)}" data-game="${esc(u.game.gameId || '')}" data-name="${esc(u.displayName)}">${icon('play')} Join game</button>` : '';
   const groups = u.groups || [], badges = u.robloxBadges || [], assets = u.avatarDetails && u.avatarDetails.assets || [];
   const collectibles = u.inventory && u.inventory.collectibles || [];
   mount(`
@@ -908,16 +1095,16 @@ function renderPeopleProfile() {
       <div class="profile-identity">
         ${u.avatar ? `<img src="${esc(u.avatar)}" alt="">` : `<span class="profile-avatar-ph">${icon('users-group')}</span>`}
         <div><h1>${esc(u.displayName)} ${u.hasVerifiedBadge ? `<span class="verified">${icon('check-circle')}</span>` : ''}</h1><p>@${esc(u.username)}</p>
-          <span class="presence ${presClass}"><span class="pd"></span>${esc(u.presence)}</span></div>
+          <span class="presence ${presClass}" data-person-presence="${esc(u.userId)}"><span class="pd"></span>${esc(u.presence)}</span></div>
       </div>
-      <div class="inline">${join}<button class="btn" data-action="ext-link" data-url="${esc(u.profileUrl)}">Open on Roblox</button></div>
+      <div class="inline" data-profile-actions="${esc(u.userId)}">${profileHeroActions(u)}</div>
     </div>
     <div class="profile-stats">${peopleStat('Friends', counts.friends)}${peopleStat('Followers', counts.followers)}${peopleStat('Following', counts.following)}</div>
     <div class="profile-layout">
       <div class="profile-main">
         <section class="profile-section"><h2>About</h2><p class="profile-bio">${esc(u.bio || 'No description provided.')}</p>
           <div class="profile-facts"><span><strong>Joined</strong>${esc(created)}${accountAge(u.created) ? ` · ${esc(accountAge(u.created))} old` : ''}</span><span><strong>User ID</strong>${esc(u.userId)}</span><span><strong>Connection</strong>${esc(source)}</span><span><strong>Account</strong>${u.isBanned ? 'Banned' : 'Active'}</span></div>
-          ${u.game ? `<div class="now-playing${u.canJoin ? ' joinable' : ''}">${icon('compass')} <span><strong>${esc(u.game.name)}</strong><small>${u.canJoin ? 'Playing now — Fleet checks access when you join' : 'Currently playing'}</small></span>${u.canJoin ? `<button class="btn primary sm" data-action="join-person" data-user="${esc(u.userId)}" data-place="${esc(u.game.placeId)}" data-game="${esc(u.game.gameId || '')}" data-name="${esc(u.displayName)}">${icon('play')} Join</button>` : ''}</div>` : ''}
+          <div data-profile-live="${esc(u.userId)}">${profileLivePanel(u)}</div>
         </section>
         ${profileGameSection('Created experiences', u.createdGames || [])}
         ${profileGameSection('Favorite experiences', u.favoriteGames || [])}
@@ -1284,6 +1471,21 @@ document.addEventListener('click', async (e) => {
       if (state.view === 'accounts') views.accounts();
       break;
     }
+    case 'reauth-account': {
+      if (state.addingAccount) break;
+      state.addingAccount = true;
+      if (state.view === 'accounts') views.accounts();
+      toast('Opening Roblox sign-in…');
+      const r = await call(() => api.accounts.add());
+      state.addingAccount = false;
+      if (r && r.ok) {
+        await loadAccounts();
+        toast('Signed in again: ' + (r.account ? r.account.username : ''), 'good');
+      } else if (r && r.canceled) toast('Sign-in canceled');
+      else toast((r && r.error) || 'Could not sign in again', 'bad');
+      if (state.view === 'accounts') views.accounts();
+      break;
+    }
     case 'remove-account': {
       const acc = state.accounts.find(a => a.id === id);
       const ok = await confirmDialog({ title: 'Remove account?', body: 'Remove “' + (acc ? acc.username : '') + '” from Fleet? This deletes its stored session on this PC.', confirmText: 'Remove', danger: true });
@@ -1307,15 +1509,38 @@ document.addEventListener('click', async (e) => {
 
     case 'refresh-games': gamesBrowse(); break;
     case 'random-game': {
-      const list = state.games.list;
+      const list = visibleGames();
       if (!list.length) { toast('No games loaded yet', 'bad'); break; }
       const gm = list[Math.floor(Math.random() * list.length)];
       joinPlace(gm.placeId, gm.name);
       break;
     }
+    case 'games-sort':
+      state.games.sort = elAction.dataset.sort || 'players';
+      views.games();
+      break;
+    case 'games-hide-empty':
+      state.games.hideEmpty = !state.games.hideEmpty;
+      views.games();
+      break;
     case 'join-game': joinPlace(elAction.dataset.place, elAction.dataset.name); break;
+    case 'open-game-web':
+      await call(() => api.openExternal(`https://www.roblox.com/games/${encodeURIComponent(elAction.dataset.place || '')}`));
+      break;
+    case 'copy-place-id':
+      try {
+        await navigator.clipboard.writeText(String(elAction.dataset.place || ''));
+        toast('Place ID copied', 'good');
+      } catch (_) { toast('Could not copy place ID', 'bad'); }
+      break;
     case 'open-servers': openServersModal(elAction.dataset.place, elAction.dataset.name); break;
     case 'join-server': joinServer(elAction.dataset.place, elAction.dataset.server, elAction.dataset.name); break;
+    case 'server-sort':
+      if (state.servers) {
+        state.servers.sort = elAction.dataset.sort || 'best';
+        renderServersModal();
+      }
+      break;
     case 'servers-more': loadServers(true); break;
 
     case 'open-friends': state.people.route = 'friends'; views.people(); break;
@@ -1325,6 +1550,22 @@ document.addEventListener('click', async (e) => {
     case 'people-search-retry': runPeopleSearch(state.people.search.query); break;
     case 'people-search-clear': clearPeopleSearch(); break;
     case 'people-search-more': runPeopleSearch(state.people.search.query, true); break;
+    case 'people-filter':
+      state.people.filter = elAction.dataset.filter || 'all';
+      if (state.people.route === 'friends') views.people();
+      else if (state.people.route === 'home') renderPeopleSearchResults();
+      break;
+    case 'people-sort':
+      state.people.sort = elAction.dataset.sort || 'status';
+      if (state.people.route === 'friends') views.people();
+      else if (state.people.route === 'home') renderPeopleSearchResults();
+      break;
+    case 'copy-user-id':
+      try {
+        await navigator.clipboard.writeText(String(elAction.dataset.user || ''));
+        toast('User ID copied', 'good');
+      } catch (_) { toast('Could not copy user ID', 'bad'); }
+      break;
     case 'open-person': openPerson(elAction.dataset.user); break;
     case 'people-prev': if (state.people.hasPrev) loadPeople(state.people.page - 1); break;
     case 'people-next': if (state.people.hasNext) loadPeople(state.people.page + 1); break;
@@ -1516,13 +1757,12 @@ if (api) {
   });
   // Real-time presence/game: patch only the changed account card.
   api.onAccountUpdate((acc) => applyAccountUpdate(acc));
-  // Session expired: drop the card; main is already opening the sign-in window.
+  // Session expired: keep the card and wait for an explicit Sign in again click.
+  // Background polling must never open a login window or Roblox client.
   api.onAccountExpired((acc) => {
-    state.selected.delete(acc.id);
-    state.accounts = state.accounts.filter(a => a.id !== acc.id);
-    updateAccountsCount();
+    applyAccountUpdate(acc);
     if (state.view === 'accounts') views.accounts();
-    toast('Session expired for ' + (acc.username || 'an account') + ' — sign in again', 'bad');
+    toast('Session expired for ' + (acc.username || 'an account') + ' — click Sign in again', 'bad');
   });
   // Re-authenticated (or new account added in background): reload the list.
   api.onAccountAdded(async () => { await loadAccounts(); if (state.view === 'accounts') views.accounts(); });

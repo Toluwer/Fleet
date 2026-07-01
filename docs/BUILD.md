@@ -68,14 +68,16 @@ npm run build     # -> dist\Fleet\Fleet.exe  (portable; run or zip the folder)
 
 `scripts/build-portable.ps1` copies the Electron runtime, renames the binary to **`Fleet.exe`**, stages the app (`src`, `build`, and the single runtime dep `koffi`) into `resources\app`, and applies the icon + version metadata with `rcedit`. The result is a self-contained, correctly-named app — running it shows up as **`Fleet.exe`** in Task Manager (not `electron.exe`).
 
-## Package an installer (optional)
+## Package the official installer
 
 ```bash
-npm run dist      # full NSIS installer  -> dist\Fleet Setup <version>.exe
+npm run dist      # branded NSIS installer -> dist\FleetInstaller.exe
 npm run pack      # unpacked app only    -> dist\win-unpacked\
 ```
 
-electron-builder settings live in the `build` block of `package.json` (`appId: com.toluwa.fleet`, `productName: Fleet`, `executableName: Fleet`, NSIS per-user target with shortcuts, and `asarUnpack` so koffi's native `.node` loads at runtime).
+`FleetInstaller.exe` is intentionally versionless: every GitHub release uses the same asset name, so the permanent latest-download URL stays stable. The installed app reads `latest.yml`, downloads updates in the background, and installs a ready update on restart/exit.
+
+electron-builder settings live in the `build` block of `package.json` (`appId: com.toluwa.fleet`, `productName: Fleet`, `executableName: Fleet`, branded NSIS per-user target with Fleet icons/shortcuts, GitHub auto-update metadata, and `asarUnpack` so koffi's native `.node` loads at runtime).
 
 > **Note:** electron-builder downloads a `winCodeSign` helper and extracts macOS symlinks, which fails on Windows without **Developer Mode** or an **elevated** shell ("A required privilege is not held by the client"). If `npm run dist`/`pack` fails there, either enable Developer Mode (Settings → For developers) / run elevated, or just use `npm run build` above — it needs no signing helper.
 

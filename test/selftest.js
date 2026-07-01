@@ -192,13 +192,35 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   check('People Join opens an account picker', rendererSource.includes("case 'join-person': openPersonJoinDialog") && rendererSource.includes('data-action="select-join-account"'));
   check('People Join resolves the selected accounts together', rendererSource.includes('api.launch.joinPersonMulti(ids, join.userId)'));
   check('Join buttons carry the target user id', (rendererSource.match(/data-user="\$\{esc\(u\.userId\)\}"/g) || []).length >= 2);
-  check('friend/search cards and profile view expose join actions', (rendererSource.match(/data-action="join-person"/g) || []).length >= 2);
+  check('friend/search cards and profile view expose join actions',
+    rendererSource.includes('function personJoinButton(u, className)')
+    && rendererSource.includes('data-action="join-person"')
+    && rendererSource.includes('personCardActions(u)')
+    && rendererSource.includes('profileHeroActions(u)'));
   check('People Join dialog can open before a place id is visible',
     rendererSource.includes('if (!userId)')
     && !rendererSource.includes('if (!userId || !placeId)'));
   check('visible people presence refreshes automatically',
     rendererSource.includes('setInterval(refreshVisiblePeoplePresence, 10000)')
     && rendererSource.includes('api.people.presence(ids)'));
+  const presenceRefreshStart = rendererSource.indexOf('async function refreshVisiblePeoplePresence()');
+  const presenceRefreshEnd = rendererSource.indexOf('\nfunction peopleStat', presenceRefreshStart);
+  const presenceRefreshSource = rendererSource.slice(presenceRefreshStart, presenceRefreshEnd);
+  check('people presence patches only the changed person without refreshing the page',
+    presenceRefreshSource.includes('presenceChanged(user, next)')
+    && presenceRefreshSource.includes('patchPersonPresence(next)')
+    && !presenceRefreshSource.includes('renderPeopleSearchResults()')
+    && !presenceRefreshSource.includes('renderPeopleGrid()')
+    && !presenceRefreshSource.includes('renderPeopleProfile()'));
+  check('People has live filters, sorting and copy-user tools',
+    rendererSource.includes("case 'people-filter':")
+    && rendererSource.includes("case 'people-sort':")
+    && rendererSource.includes("case 'copy-user-id':"));
+  check('Games has advanced sorting, filtering and server ranking',
+    rendererSource.includes("case 'games-sort':")
+    && rendererSource.includes("case 'games-hide-empty':")
+    && rendererSource.includes("case 'server-sort':")
+    && rendererSource.includes('function sortedServers(list, mode)'));
   const ipcSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc.js'), 'utf8');
   check('player join no longer requires presence-visible server ids',
     ipcSource.includes('getPersonJoinLaunchInfo(accountIds[i], targetUserId)')
@@ -206,6 +228,13 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
 
   const mainSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'main.js'), 'utf8');
   check('startup has a splash recovery watchdog', mainSource.includes('Startup watchdog revealed the main window'));
+  check('startup never opens an account sign-in window automatically',
+    mainSource.includes('waiting for explicit sign-in')
+    && !mainSource.includes('Promise.resolve(accounts.add())'));
+  const accountsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'accounts.js'), 'utf8');
+  check('expired accounts stay saved until the user explicitly signs in again',
+    accountsSource.includes('sessionExpired: !!a.sessionExpired')
+    && !accountsSource.includes('const remaining = readRaw().filter(x => x.id !== a.id)'));
   check('renderer API calls time out instead of hanging boot', rendererSource.includes('Promise.race([work, timeout])'));
 
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
@@ -213,6 +242,9 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     manifest.dependencies['electron-updater']
     && manifest.build.publish.provider === 'github'
     && manifest.build.win.target.some(target => target.target === 'nsis'));
+  check('official installer keeps the permanent FleetInstaller.exe name',
+    manifest.build.artifactName === 'FleetInstaller.${ext}'
+    && manifest.build.nsis.runAfterFinish === false);
 
   await section('Resilient people search');
   const response = (status, data, headers) => ({

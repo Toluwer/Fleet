@@ -97,8 +97,9 @@ async function onReady() {
   // 4. Stream new log lines to the Diagnostics page
   logger.onEntry((entry) => sendToRenderer('log:entry', entry));
 
-  // 4b. Real-time per-account presence: push only the cards that changed,
-  //     and auto re-authenticate accounts whose session expired.
+  // 4b. Real-time per-account presence: push only the cards that changed.
+  // Expired sessions are reported to the UI, but Fleet never opens a login
+  // window or Roblox client during startup/background polling.
   accounts.startPolling({
     intervalMs: 12000,
     onUpdate: (acc) => sendToRenderer('account:update', acc),
@@ -208,17 +209,9 @@ function finishSplashThenShow() {
   }
 }
 
-let reauthing = false;
 function handleExpiredAccount(acc) {
-  logger.warn('Account session expired: ' + acc.username + ' — removed; opening sign-in');
+  logger.warn('Account session expired: ' + acc.username + ' — waiting for explicit sign-in');
   sendToRenderer('account:expired', acc);
-  if (reauthing) return;
-  reauthing = true;
-  // Open the login window immediately so the account can be re-added (no manual step).
-  Promise.resolve(accounts.add())
-    .then((r) => { if (r && r.ok) sendToRenderer('account:added', r.account); })
-    .catch(() => {})
-    .finally(() => { reauthing = false; });
 }
 
 function sendToRenderer(channel, payload) {

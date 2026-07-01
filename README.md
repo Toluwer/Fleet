@@ -8,6 +8,8 @@
 
 Run several Roblox clients at once — signed into different accounts or signed out — and manage them all from one polished, native Windows app.
 
+[**Download FleetInstaller.exe**](https://github.com/Toluwer/Fleet/releases/latest/download/FleetInstaller.exe) — the permanent official installer name. Install once; Fleet checks, downloads, and installs newer releases automatically.
+
 </div>
 
 ---
@@ -18,7 +20,8 @@ Roblox normally lets you run only **one** client at a time. Fleet works around t
 
 - **Launch multiple Roblox clients** — they open as real, separate clients and stay side by side.
 - **Account manager** — sign in to your Roblox accounts once in a real Roblox login window; Fleet stores each session **encrypted on your PC** (Windows DPAPI) and launches any of them already signed in. Pick several and launch them all at once; optionally join a specific experience by Place ID. Live **online / offline / in-game** presence per account.
-- **Games browser** — browse popular experiences and search Roblox (thumbnails, live player counts, likes). **Join** any game signed in to your selected account, or hit **Random Game**. Infinite-scroll search.
+- **Games browser** — browse/search experiences, sort by players/rating/name, hide empty games, open or copy Place IDs, browse public servers, and rank servers by best match, lowest ping, or most available space.
+- **People explorer** — search users or merge friends across saved accounts, filter by live status, sort by live status/name, inspect detailed public profiles, copy user IDs, and **Join** when Roblox exposes a joinable presence. Background checks patch only the person whose status changed; the page is never continuously refreshed.
 - **Live instance manager** — every running client (whether Fleet started it or not) with status dot, PID, window title, memory and start time, refreshed live and reliably even while many clients boot at once.
 - **Per-instance tools** — Focus the window, Restart, or End a client; right-click for a context menu (+ Copy PID). Bulk **End all** and **Cleanup** (also clears leftover Roblox crash-handler processes).
 - **Automatic Roblox detection** — registry + filesystem, with a manual override + Browse picker.
@@ -48,6 +51,12 @@ Build a standalone, correctly-named **`Fleet.exe`**:
 
 ```bash
 npm run build    # -> dist\Fleet\Fleet.exe (portable; run or zip it)
+```
+
+Build the branded permanent-name installer:
+
+```bash
+npm run dist     # -> dist\FleetInstaller.exe
 ```
 
 Then: open **Accounts -> Add account** and sign in, go to **Instances**, choose **With account**, select one or more accounts, and click **Launch**. (Or switch to **Signed out** and pick a number.)

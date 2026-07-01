@@ -1,6 +1,6 @@
 {
   "name": "fleet",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Fleet — a clean, white, minimalist multi-instance launcher for Roblox",
   "author": "Toluwa",
   "license": "MIT",
@@ -36,7 +36,7 @@
     "asarUnpack": [
       "**/node_modules/koffi/**"
     ],
-    "artifactName": "Fleet-Setup-${version}-${arch}.${ext}",
+    "artifactName": "FleetInstaller.${ext}",
     "publish": {
       "provider": "github",
       "owner": "Toluwer",
@@ -63,12 +63,12 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Fleet",
-      "runAfterFinish": true,
+      "runAfterFinish": false,
       "include": "build/installer.nsh",
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
       "installerHeaderIcon": "build/icon.ico",
-      "uninstallDisplayName": "Fleet ${version}"
+      "uninstallDisplayName": "Fleet"
     }
   }
 }

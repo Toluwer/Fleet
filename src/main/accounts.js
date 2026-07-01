@@ -95,6 +95,7 @@ function sanitize(a) {
     avatar: a.avatar || null,
     presence: a.presence || 'Offline',
     presenceError: a.presenceError || null,
+    sessionExpired: !!a.sessionExpired,
     game: a.game || null,            // { name, placeId, rootPlaceId, gameId } when in a game
     addedAt: a.addedAt,
   };
@@ -437,6 +438,7 @@ async function add() {
       avatar: avatar || (existing && existing.avatar) || null,
       presence: pres.status,
       presenceError: pres.error || null,
+      sessionExpired: false,
       game: gameFromPresence(pres),
       addedAt: existing ? existing.addedAt : new Date().toISOString(),
     };
@@ -478,6 +480,7 @@ async function refresh(id, full) {
     const pres = await getPresence(a.userId, cookie);
     a.presence = pres.status;
     a.presenceError = pres.error || null;
+    a.sessionExpired = !!pres.expired;
     a.game = gameFromPresence(pres);
   }
   writeRaw(raw);
@@ -513,18 +516,26 @@ function startPolling(opts) {
         }
         const pres = await getPresence(a.userId, cookie);
         if (pres.expired) {
-          logger.warn('Session expired for ' + a.username + ' (' + a.userId + ')');
-          // Remove the expired account, persist, and notify so the UI can re-auth.
-          const remaining = readRaw().filter(x => x.id !== a.id);
-          writeRaw(remaining);
-          onExpired({ id: a.id, userId: a.userId, username: a.username, displayName: a.displayName });
-          return; // re-read fresh next tick
+          const firstNotice = !a.sessionExpired;
+          if (firstNotice || a.presence !== 'Offline' || a.presenceError !== 'Session expired' || a.game) {
+            a.presence = 'Offline';
+            a.presenceError = 'Session expired';
+            a.sessionExpired = true;
+            a.game = null;
+            changed = true;
+          }
+          if (firstNotice) {
+            logger.warn('Session expired for ' + a.username + ' (' + a.userId + ')');
+            onExpired(sanitize(a));
+          }
+          continue;
         }
         if (pres.error) continue; // transient (rate-limit/network) — keep last good value
         const game = gameFromPresence(pres);
-        if (a.presence !== pres.status || !sameGame(a.game, game) || a.presenceError) {
+        if (a.presence !== pres.status || !sameGame(a.game, game) || a.presenceError || a.sessionExpired) {
           a.presence = pres.status;
           a.presenceError = null;
+          a.sessionExpired = false;
           a.game = game;
           changed = true;
           onUpdate(sanitize(a));

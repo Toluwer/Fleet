@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $out  = Join-Path $root 'dist\Fleet'
 $electronDist = Join-Path $root 'node_modules\electron\dist'
+$version = (Get-Content (Join-Path $root 'package.json') -Raw | ConvertFrom-Json).version
 
 if (-not (Test-Path $electronDist)) { throw "Electron not installed. Run npm install first." }
 
@@ -53,7 +54,7 @@ if ($rcedit) {
     '--set-version-string', 'CompanyName', 'Toluwa',
     '--set-version-string', 'OriginalFilename', 'Fleet.exe',
     '--set-version-string', 'LegalCopyright', 'MIT License',
-    '--set-file-version', '1.1.0.0', '--set-product-version', '1.1.0.0'
+    '--set-file-version', "$version.0", '--set-product-version', "$version.0"
   )
   & $rcedit.FullName @rcArgs 2>&1 | Out-Null
   Write-Host "Applied icon + metadata via rcedit"

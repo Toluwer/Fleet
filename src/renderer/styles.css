@@ -262,6 +262,9 @@ svg.ico, svg.b-ico, svg.t-ico {
 .search > svg { position: absolute; left: 13px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px;
   color: var(--ink-3); fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
 .toolbar .search input { padding-left: 40px; }
+.games-tools, .people-tools { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  flex-wrap: wrap; margin: -6px 0 16px; }
+.btn.active-filter { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .games-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(234px, 1fr)); gap: 16px; }
 .game { border: 1px solid var(--hair); border-radius: var(--r-lg); overflow: hidden; background: var(--surface);
   box-shadow: var(--sh-sm); display: flex; flex-direction: column; animation: rowIn .3s var(--ease);
@@ -287,6 +290,7 @@ svg.ico, svg.b-ico, svg.t-ico {
 
 /* Server browser */
 .server-list { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow: auto; }
+.server-tools { margin: 0 0 12px; }
 .server-row { display: grid; grid-template-columns: 70px 1fr auto auto; align-items: center; gap: 14px;
   padding: 10px 12px; border: 1px solid var(--hair); border-radius: var(--r-sm); background: var(--surface); }
 .server-fill { display: flex; flex-direction: column; line-height: 1.15; }
@@ -306,6 +310,7 @@ svg.ico, svg.b-ico, svg.t-ico {
 
 /* ----------------------------- People ----------------------------- */
 .people-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(264px, 1fr)); gap: 14px; }
+.people-tools { margin-top: 0; }
 .person { border: 1px solid var(--hair); border-radius: var(--r-lg); padding: 16px; background: var(--surface);
   box-shadow: var(--sh-sm); display: flex; flex-direction: column; gap: 12px; min-height: 156px; animation: rowIn .3s var(--ease);
   transition: border-color .16s var(--ease), box-shadow .16s var(--ease), transform .16s var(--ease); }
@@ -349,6 +354,7 @@ textarea { resize: vertical; min-height: 70px; }
 .segmented button { border: 0; background: transparent; padding: 8px 16px; font: inherit; font-weight: 550; color: var(--ink-2); cursor: pointer; transition: all .15s var(--ease); }
 .segmented button + button { border-left: 1px solid var(--hair); }
 .segmented button.on { background: var(--accent); color: #fff; }
+.segmented.compact button { padding: 6px 10px; font-size: 11.5px; }
 
 .toggle { position: relative; width: 42px; height: 24px; flex: none; }
 .toggle input { opacity: 0; width: 0; height: 0; }
