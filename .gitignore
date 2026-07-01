@@ -1,0 +1,14 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+backups/
+
+# Logs / scratch
+*.log
+test/*.png
+
+# OS
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Fleet logo">
+  <rect x="8" y="8" width="240" height="240" rx="46" fill="#ffffff" stroke="#e0e1e4" stroke-width="3"/>
+  <rect x="24" y="104" width="120" height="120" rx="28" fill="#e3e4e7"/>
+  <rect x="68" y="68" width="120" height="120" rx="28" fill="#b7bbc1"/>
+  <rect x="112" y="32" width="120" height="120" rx="28" fill="#14161a"/>
+  <path d="M152 66 L152 118 L198 92 Z" fill="#ffffff"/>
+</svg>
