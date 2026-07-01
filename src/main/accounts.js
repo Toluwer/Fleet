@@ -631,11 +631,14 @@ async function people(page, pageSize) {
  * makes "Join" appear for a friend of ANY account, not just the first.
  * Returns Map(userId -> { status, lastLocation, placeId, rootPlaceId, gameId, universeId }).
  */
-async function presenceForIds(userIds) {
+async function presenceForIds(userIds, opts) {
   const ids = (userIds || []).map(Number).filter(Boolean);
   const merged = new Map();
   if (!ids.length) return merged;
-  const cookies = [...new Set(readRaw().map(a => decryptCookie(a.cookie)).filter(Boolean))];
+  let cookies = [...new Set(readRaw().map(a => decryptCookie(a.cookie)).filter(Boolean))];
+  // `firstOnly` (used for search lists of strangers) skips the multi-session
+  // merge — their game is never visible to us anyway, so one call gives status.
+  if (opts && opts.firstOnly) cookies = cookies.slice(0, 1);
   for (const cookie of cookies) {
     const m = await getPresenceBatch(ids, cookie);
     for (const [uid, rec] of m) {
@@ -651,11 +654,40 @@ async function presenceForIds(userIds) {
   return merged;
 }
 
+/**
+ * Authenticated GET returning HTTP metadata. Roblox's user-search endpoint is
+ * heavily rate-limited (and returns empty results) for anonymous callers, but
+ * generous for a signed-in session — so People search should always go through
+ * a stored account cookie when one exists.
+ * @returns {{ok, status, data, authenticated, retryAfterMs, error}}
+ */
+async function authedGet(url) {
+  const cookie = firstValidCookie();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 9000);
+  try {
+    const headers = cookie ? authHeaders(cookie) : { 'User-Agent': 'Roblox/WinInet' };
+    const res = await fetch(url, { headers, signal: controller.signal });
+    let data = null;
+    try { data = await res.json(); } catch (_) {}
+    const ra = Number(res.headers && res.headers.get && res.headers.get('retry-after'));
+    return {
+      ok: res.ok, status: res.status, data, authenticated: !!cookie,
+      retryAfterMs: Number.isFinite(ra) && ra > 0 ? ra * 1000 : null,
+      error: res.ok ? null : ('HTTP ' + res.status),
+    };
+  } catch (err) {
+    return { ok: false, status: 0, data: null, authenticated: !!cookie, retryAfterMs: null, error: (err && err.message) || 'Network error' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 module.exports = {
   configure, list, add, remove, refresh,
   getLaunchInfo, getFollowContext, getPersonJoinContext,
   startPolling, stopPolling,
-  people, loadFriends, presenceForIds, hasSession: () => !!firstValidCookie(),
+  people, loadFriends, presenceForIds, authedGet, hasSession: () => !!firstValidCookie(),
   // exposed for tests
   getAvatar, getAuthenticatedUser, getPresence, getPresenceBatch, buildLaunchUrl,
 };

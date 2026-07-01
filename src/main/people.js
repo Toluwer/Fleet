@@ -10,7 +10,7 @@ const accounts = require('./accounts');
 const CACHE_TTL = 2 * 60 * 1000;
 const FRIENDS_TTL = 5 * 60 * 1000;
 const SEARCH_TTL = 5 * 60 * 1000;
-const SEARCH_MIN_INTERVAL_MS = 1200;
+const SEARCH_MIN_INTERVAL_MS = 350;
 const cache = new Map();
 const searchCache = new Map();
 const searchInFlight = new Map();
@@ -98,13 +98,15 @@ async function keywordSearch(query, cursor) {
     if (cursor) params.set('cursor', cleanText(cursor, 500));
     const url = `https://users.roblox.com/v1/users/search?${params}`;
     lastKeywordSearchAt = Date.now();
-    let result = await getJsonResult(url);
+    // Authenticated: Roblox rate-limits anonymous user-search hard (and returns
+    // empty results), but a signed-in session gets full results + high limits.
+    let result = await accounts.authedGet(url);
     if (result.status === 429) {
-      const retryMs = Math.min(4000, Math.max(1200, result.retryAfterMs || 1600));
+      const retryMs = Math.min(3000, Math.max(700, result.retryAfterMs || 1000));
       logger.warn('People search rate-limited; retrying once', `${query} in ${retryMs}ms`);
       await delay(retryMs);
       lastKeywordSearchAt = Date.now();
-      result = await getJsonResult(url);
+      result = await accounts.authedGet(url);
     }
     return result;
   });
@@ -159,11 +161,11 @@ function adaptPresence(rec) {
 // Presence MUST be authenticated — Roblox only returns a player's game
 // (placeId/gameId) to a signed-in caller who can see them. Using a stored
 // account session is what makes the Join button appear for in-game players.
-async function getPresence(userIds) {
+async function getPresence(userIds, quick) {
   const ids = userIds.map(numericId).filter(Boolean).slice(0, 100);
   const out = new Map();
   if (!ids.length) return out;
-  const authed = await accounts.presenceForIds(ids);
+  const authed = await accounts.presenceForIds(ids, { firstOnly: !!quick });
   for (const id of ids) out.set(id, adaptPresence(authed.get(id)));
   return out;
 }
@@ -192,11 +194,11 @@ function baseUser(raw) {
   };
 }
 
-async function enrichUsers(users) {
+async function enrichUsers(users, quick) {
   const ids = users.map(u => numericId(u.userId || u.id)).filter(Boolean);
   const [heads, presences] = await Promise.all([
     thumbnails(ids, 'avatar-headshot', '150x150'),
-    getPresence(ids),
+    getPresence(ids, quick),
   ]);
   return users.map(raw => {
     const u = baseUser(raw);
@@ -320,7 +322,7 @@ async function performSearch(query, cursor) {
     const raw = rankSearchUsers((result.data && result.data.data) || [], query);
     return {
       ok: true,
-      people: await enrichUsers(raw.map(baseUser)),
+      people: await enrichUsers(raw.map(baseUser), true),
       nextPageCursor: result.data && result.data.nextPageCursor || null,
       query,
       source: 'keyword',
