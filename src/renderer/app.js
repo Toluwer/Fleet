@@ -8,6 +8,7 @@ const api = window.fleet;
 const state = {
   view: 'instances',
   status: null,
+  updater: null,
   instances: [],
   summary: null,
   accounts: [],
@@ -213,13 +214,20 @@ ctxmenu.addEventListener('click', (e) => {
 });
 
 /* ----------------------------- Safe API ----------------------------- */
-async function call(fn, fallback) {
+async function call(fn, fallback, timeoutMs) {
+  let timer = null;
   try {
     if (!api) throw new Error('Fleet bridge unavailable (run inside the Fleet app).');
-    return await fn();
+    const work = Promise.resolve().then(fn);
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Fleet did not respond in time. Check Diagnostics and retry.')), timeoutMs || 15000);
+    });
+    return await Promise.race([work, timeout]);
   } catch (err) {
     if (fallback !== undefined) return fallback;
-    return { ok: false, error: err.message };
+    return { ok: false, error: err && err.message ? err.message : String(err) };
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -229,6 +237,7 @@ function setView(name) {
   state.view = name;
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   (views[name] || views.instances)();
+  if (name === 'people') setTimeout(refreshVisiblePeoplePresence, 0);
 }
 $('#nav').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-view]');
@@ -807,6 +816,42 @@ async function runPeopleSearch(query, append) {
   if (state.view === 'people' && state.people.route === 'home') renderPeopleSearchResults();
 }
 
+let peoplePresenceBusy = false;
+function mergePresence(user, fresh) {
+  if (!user || !fresh) return user;
+  return Object.assign({}, user, fresh, {
+    placeId: fresh.game && fresh.game.placeId || null,
+    gameId: fresh.game && fresh.game.gameId || null,
+  });
+}
+
+/** Refresh only the visible cards/profile instead of repeating user search. */
+async function refreshVisiblePeoplePresence() {
+  if (!api || peoplePresenceBusy || state.view !== 'people') return;
+  const pp = state.people;
+  let users = [];
+  if (pp.route === 'home' && pp.search.searched) users = pp.search.list;
+  else if (pp.route === 'friends') users = pp.list;
+  else if (pp.route === 'profile' && pp.detail.profile) users = [pp.detail.profile];
+  const ids = Array.from(new Set(users.map(u => Number(u && u.userId)).filter(Boolean)));
+  if (!ids.length) return;
+  peoplePresenceBusy = true;
+  const r = await call(() => api.people.presence(ids), null, 12000);
+  peoplePresenceBusy = false;
+  if (!r || !r.ok || !Array.isArray(r.people)) return;
+  const byId = new Map(r.people.map(item => [Number(item.userId), item]));
+  if (pp.route === 'home') {
+    pp.search.list = pp.search.list.map(user => mergePresence(user, byId.get(Number(user.userId))));
+    renderPeopleSearchResults();
+  } else if (pp.route === 'friends') {
+    pp.list = pp.list.map(user => mergePresence(user, byId.get(Number(user.userId))));
+    renderPeopleGrid();
+  } else if (pp.route === 'profile' && pp.detail.profile) {
+    pp.detail.profile = mergePresence(pp.detail.profile, byId.get(Number(pp.detail.profile.userId)));
+    renderPeopleProfile();
+  }
+}
+
 function peopleStat(label, value) {
   return `<div class="profile-stat"><strong>${fmtNum(value)}</strong><span>${esc(label)}</span></div>`;
 }
@@ -1000,6 +1045,15 @@ views.settings = async function () {
   }
   const s = state.settings;
   const st = state.status || {};
+  if (!state.updater) state.updater = await call(() => api.updater.status(), { state: 'disabled' });
+  const up = state.updater || { state: 'disabled' };
+  const updateText = up.state === 'ready' ? `Version ${up.availableVersion} is ready to install`
+    : up.state === 'downloading' ? `Downloading ${Math.round(up.percent || 0)}%`
+      : up.state === 'available' ? `Downloading version ${up.availableVersion}`
+        : up.state === 'checking' ? 'Checking for updates…'
+          : up.state === 'error' ? `Update check failed: ${up.error || 'unknown error'}`
+            : up.state === 'disabled' ? 'Automatic updates activate in the installed version'
+              : `Fleet ${st.appVersion || ''} is up to date`;
   const auto = s.autoDetect !== false;
   mount(`
     <div class="page-head"><h1>Settings</h1><p>Everything is saved to your user profile and persists between sessions.</p></div>
@@ -1040,6 +1094,13 @@ views.settings = async function () {
         `<input id="set-warn" type="number" min="1" max="100" value="${s.warnInstanceCount}" style="width:120px">`)}
       ${settingRow('History entries to keep', 'Maximum launch-history rows stored (10–2000).',
         `<input id="set-historylimit" type="number" min="10" max="2000" step="10" value="${s.historyLimit}" style="width:120px">`)}
+    </div>
+    <div class="section-title">Updates</div>
+    <div class="card pad">
+      ${settingRow('Automatic updates', updateText,
+        up.state === 'ready'
+          ? `<button class="btn primary" data-action="update-install">${icon('refresh')} Restart and update</button>`
+          : `<button class="btn" data-action="update-check" ${up.state === 'checking' || up.state === 'downloading' ? 'disabled' : ''}>${icon('refresh')} Check now</button>`)}
     </div>
     <div class="inline" style="margin-top:20px">
       <button class="btn primary" data-action="settings-save">${icon('check')} Save settings</button>
@@ -1350,6 +1411,17 @@ document.addEventListener('click', async (e) => {
       break;
     }
     case 'redetect': { await refreshStatus(); views.settings(); toast(state.status && state.status.robloxFound ? 'Roblox detected' : 'Roblox not found', state.status && state.status.robloxFound ? 'good' : 'bad'); break; }
+    case 'update-check': {
+      state.updater = Object.assign({}, state.updater, { state: 'checking', error: null });
+      views.settings();
+      const r = await call(() => api.updater.check());
+      state.updater = await call(() => api.updater.status(), state.updater);
+      if (!(r && r.ok)) toast((r && r.error) || 'Update check failed', 'bad');
+      else if (state.updater.state === 'current') toast('Fleet is up to date', 'good');
+      if (state.view === 'settings') views.settings();
+      break;
+    }
+    case 'update-install': await call(() => api.updater.install()); break;
     case 'settings-save': saveSettings(); break;
     case 'settings-reset': {
       const ok = await confirmDialog({ title: 'Reset settings?', body: 'Restore all settings to their defaults.', confirmText: 'Reset', danger: true });
@@ -1454,8 +1526,14 @@ if (api) {
   });
   // Re-authenticated (or new account added in background): reload the list.
   api.onAccountAdded(async () => { await loadAccounts(); if (state.view === 'accounts') views.accounts(); });
+  api.onUpdaterStatus((status) => {
+    state.updater = status;
+    if (state.view === 'settings') views.settings();
+    if (status && status.state === 'ready') toast(`Fleet ${status.availableVersion || 'update'} is ready`, 'good');
+  });
 }
 setInterval(() => { if (state.view === 'instances') renderInstanceList(); }, 5000);
+setInterval(refreshVisiblePeoplePresence, 10000);
 
 // Infinite scroll for the Games search results
 (() => {
@@ -1474,9 +1552,9 @@ setInterval(() => { if (state.view === 'instances') renderInstanceList(); }, 500
       <div class="b-text"><b>Fleet bridge unavailable</b><span>Open this through the Fleet application, not a browser.</span></div></div></div>`;
     return;
   }
-  await refreshStatus();
-  await loadInstances();
-  await loadAccounts();
+  // Independent boot calls run together and each has a timeout, so one broken
+  // subsystem can no longer leave users staring at the splash forever.
+  await Promise.all([refreshStatus(), loadInstances(), loadAccounts()]);
   state.launchMode = state.accounts.length ? 'account' : 'plain';
   setView('instances');
 })();

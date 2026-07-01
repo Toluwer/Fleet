@@ -161,11 +161,13 @@ function adaptPresence(rec) {
 // Presence MUST be authenticated — Roblox only returns a player's game
 // (placeId/gameId) to a signed-in caller who can see them. Using a stored
 // account session is what makes the Join button appear for in-game players.
-async function getPresence(userIds, quick) {
+async function getPresence(userIds) {
   const ids = userIds.map(numericId).filter(Boolean).slice(0, 100);
   const out = new Map();
   if (!ids.length) return out;
-  const authed = await accounts.presenceForIds(ids, { firstOnly: !!quick });
+  // Try every stored session: a person may be visible to a secondary account
+  // even when the first account sees them as offline or hides their game.
+  const authed = await accounts.presenceForIds(ids);
   for (const id of ids) out.set(id, adaptPresence(authed.get(id)));
   return out;
 }
@@ -194,11 +196,11 @@ function baseUser(raw) {
   };
 }
 
-async function enrichUsers(users, quick) {
+async function enrichUsers(users) {
   const ids = users.map(u => numericId(u.userId || u.id)).filter(Boolean);
   const [heads, presences] = await Promise.all([
     thumbnails(ids, 'avatar-headshot', '150x150'),
-    getPresence(ids, quick),
+    getPresence(ids),
   ]);
   return users.map(raw => {
     const u = baseUser(raw);
@@ -322,7 +324,7 @@ async function performSearch(query, cursor) {
     const raw = rankSearchUsers((result.data && result.data.data) || [], query);
     return {
       ok: true,
-      people: await enrichUsers(raw.map(baseUser), true),
+      people: await enrichUsers(raw.map(baseUser)),
       nextPageCursor: result.data && result.data.nextPageCursor || null,
       query,
       source: 'keyword',
@@ -381,6 +383,18 @@ async function search(query, cursor) {
     .finally(() => searchInFlight.delete(key));
   searchInFlight.set(key, request);
   return request;
+}
+
+/** Lightweight live presence refresh for already-rendered cards/profiles. */
+async function presence(userIds) {
+  const ids = Array.from(new Set((Array.isArray(userIds) ? userIds : [])
+    .map(numericId).filter(Boolean))).slice(0, 100);
+  if (!ids.length) return { ok: true, people: [] };
+  const map = await getPresence(ids);
+  return {
+    ok: true,
+    people: ids.map(userId => Object.assign({ userId }, map.get(userId) || presenceFromRecord(null))),
+  };
 }
 
 function socialCount(j) {
@@ -512,6 +526,7 @@ module.exports = {
   listFriends,
   search,
   profile,
+  presence,
   // Pure helpers exported for focused tests.
   numericId,
   baseUser,

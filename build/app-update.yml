@@ -1,0 +1,4 @@
+provider: github
+owner: Toluwer
+repo: Fleet
+updaterCacheDirName: fleet-updater

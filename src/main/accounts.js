@@ -276,6 +276,25 @@ function buildLaunchUrl(ticket, placeId, gameInstanceId) {
 }
 
 /**
+ * Build Roblox's official "follow user" launch request. Roblox evaluates the
+ * selected account's join permission at launch time, so this also supports
+ * non-friends whose privacy setting allows everyone to join.
+ */
+function buildFollowUserLaunchUrl(ticket, targetUserId) {
+  const uid = Number(targetUserId);
+  if (!ticket || !Number.isSafeInteger(uid) || uid <= 0) return null;
+  const t = Date.now();
+  const params = new URLSearchParams({
+    request: 'RequestFollowUser',
+    browserTrackerId: '0',
+    userId: String(uid),
+    isPlayTogetherGame: 'false',
+  });
+  const pl = encodeURIComponent(`https://assetgame.roblox.com/game/PlaceLauncher.ashx?${params.toString()}`);
+  return `roblox-player:1+launchmode:play+gameinfo:${ticket}+launchtime:${t}+placelauncherurl:${pl}+browsertrackerid:0+robloxLocale:en_us+gameLocale:en_us+channel:`;
+}
+
+/**
  * Returns a ready-to-launch deep link for the given account, or
  * { ok:false, reason }.  placeId is optional (joins that experience).
  */
@@ -288,6 +307,17 @@ async function getLaunchInfo(accountId, placeId, gameInstanceId) {
   if (!ticket) return { ok: false, reason: 'Session expired — sign in again.' };
   const deeplink = buildLaunchUrl(ticket, placeId, gameInstanceId);
   if (!deeplink) return { ok: false, reason: 'The game or server identifier is invalid.' };
+  return { ok: true, deeplink, username: raw.username };
+}
+
+/** Mint a ticket and let Roblox follow a user with this selected account. */
+async function getPersonJoinLaunchInfo(accountId, targetUserId) {
+  const raw = readRaw().find(a => a.id === accountId);
+  if (!raw) return { ok: false, reason: 'Account not found.' };
+  const cookie = decryptCookie(raw.cookie);
+  if (!cookie) return { ok: false, reason: 'Stored session could not be read.' };
+  const deeplink = buildFollowUserLaunchUrl(await getAuthTicket(cookie), targetUserId);
+  if (!deeplink) return { ok: false, reason: 'Session expired or the player identifier is invalid.' };
   return { ok: true, deeplink, username: raw.username };
 }
 
@@ -685,9 +715,9 @@ async function authedGet(url) {
 
 module.exports = {
   configure, list, add, remove, refresh,
-  getLaunchInfo, getFollowContext, getPersonJoinContext,
+  getLaunchInfo, getFollowContext, getPersonJoinContext, getPersonJoinLaunchInfo,
   startPolling, stopPolling,
   people, loadFriends, presenceForIds, authedGet, hasSession: () => !!firstValidCookie(),
   // exposed for tests
-  getAvatar, getAuthenticatedUser, getPresence, getPresenceBatch, buildLaunchUrl,
+  getAvatar, getAuthenticatedUser, getPresence, getPresenceBatch, buildLaunchUrl, buildFollowUserLaunchUrl,
 };

@@ -1,6 +1,6 @@
 {
   "name": "fleet",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Fleet — a clean, white, minimalist multi-instance launcher for Roblox",
   "author": "Toluwa",
   "license": "MIT",
@@ -10,10 +10,11 @@
     "selftest": "node test/selftest.js",
     "make-icon": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make-icon.ps1",
     "build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder"
+    "pack": "electron-builder --dir --win --x64 -c.win.signAndEditExecutable=false",
+    "dist": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-installer.ps1"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "koffi": "^2.9.0"
   },
   "devDependencies": {
@@ -35,6 +36,14 @@
     "asarUnpack": [
       "**/node_modules/koffi/**"
     ],
+    "artifactName": "Fleet-Setup-${version}-${arch}.${ext}",
+    "publish": {
+      "provider": "github",
+      "owner": "Toluwer",
+      "repo": "Fleet",
+      "releaseType": "release"
+    },
+    "electronUpdaterCompatibility": ">=2.16",
     "win": {
       "target": [
         {
@@ -44,7 +53,8 @@
           ]
         }
       ],
-      "icon": "build/icon.ico"
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,
@@ -53,7 +63,12 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Fleet",
-      "runAfterFinish": true
+      "runAfterFinish": true,
+      "include": "build/installer.nsh",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "uninstallDisplayName": "Fleet ${version}"
     }
   }
 }

@@ -19,6 +19,11 @@ function subscribe(channel, cb) {
 contextBridge.exposeInMainWorld('fleet', {
   status: () => invoke('app:status'),
   detect: () => invoke('roblox:detect'),
+  updater: {
+    status: () => invoke('updater:status'),
+    check: () => invoke('updater:check'),
+    install: () => invoke('updater:install'),
+  },
 
   launch: {
     quick: (count) => invoke('launch:quick', { count }),
@@ -46,6 +51,7 @@ contextBridge.exposeInMainWorld('fleet', {
     list: (page, pageSize, force) => invoke('people:list', { page, pageSize, force }),
     search: (query, cursor) => invoke('people:search', { query, cursor }),
     profile: (userId) => invoke('people:profile', { userId }),
+    presence: (userIds) => invoke('people:presence', { userIds }),
   },
 
   instances: {
@@ -85,4 +91,5 @@ contextBridge.exposeInMainWorld('fleet', {
   onAccountUpdate: (cb) => subscribe('account:update', cb),
   onAccountExpired: (cb) => subscribe('account:expired', cb),
   onAccountAdded: (cb) => subscribe('account:added', cb),
+  onUpdaterStatus: (cb) => subscribe('updater:status', cb),
 });

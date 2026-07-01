@@ -117,6 +117,11 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   check('follow launch includes place id', placeLauncher.includes('placeId=123456789'));
   check('follow launch includes game instance id', placeLauncher.includes('gameId=' + jobId));
   check('invalid server id is rejected', accounts.buildLaunchUrl('test-ticket', '123456789', 'bad&id') === null);
+  const personFollowLink = accounts.buildFollowUserLaunchUrl('test-ticket', 8216975346);
+  const personFollowLauncher = decodeURIComponent((personFollowLink.match(/placelauncherurl:([^+]+)/) || [])[1] || '');
+  check('non-friend join uses Roblox follow-user request', personFollowLauncher.includes('request=RequestFollowUser'));
+  check('non-friend join carries the target user id', personFollowLauncher.includes('userId=8216975346'));
+  check('invalid follow-user id is rejected', accounts.buildFollowUserLaunchUrl('test-ticket', 'bad&id') === null);
 
   const accountId = 'follow-target';
   fs.writeFileSync(path.join(tmp, 'accounts.json'), JSON.stringify([{
@@ -191,6 +196,23 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   check('People Join dialog can open before a place id is visible',
     rendererSource.includes('if (!userId)')
     && !rendererSource.includes('if (!userId || !placeId)'));
+  check('visible people presence refreshes automatically',
+    rendererSource.includes('setInterval(refreshVisiblePeoplePresence, 10000)')
+    && rendererSource.includes('api.people.presence(ids)'));
+  const ipcSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc.js'), 'utf8');
+  check('player join no longer requires presence-visible server ids',
+    ipcSource.includes('getPersonJoinLaunchInfo(accountIds[i], targetUserId)')
+    && ipcSource.includes('return doLaunch({ accountIds, targetUserId });'));
+
+  const mainSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'main.js'), 'utf8');
+  check('startup has a splash recovery watchdog', mainSource.includes('Startup watchdog revealed the main window'));
+  check('renderer API calls time out instead of hanging boot', rendererSource.includes('Promise.race([work, timeout])'));
+
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  check('Windows installer is configured for GitHub auto-update',
+    manifest.dependencies['electron-updater']
+    && manifest.build.publish.provider === 'github'
+    && manifest.build.win.target.some(target => target.target === 'nsis'));
 
   await section('Resilient people search');
   const response = (status, data, headers) => ({

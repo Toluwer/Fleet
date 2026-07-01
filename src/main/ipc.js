@@ -23,6 +23,7 @@ const guard = require('./guard');
 const accounts = require('./accounts');
 const people = require('./people');
 const games = require('./games');
+const updater = require('./updater');
 
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -64,6 +65,9 @@ function register(ctx) {
   }
 
   safe('app:status', () => buildStatus());
+  safe('updater:status', () => updater.status());
+  safe('updater:check', () => updater.check(true));
+  safe('updater:install', () => updater.install());
 
   safe('roblox:detect', () => {
     const settings = store.getSettings();
@@ -104,7 +108,7 @@ function register(ctx) {
     return r;
   }
 
-  async function doLaunch({ mode, deeplink, count, profileName, accountIds, placeId, gameInstanceId }) {
+  async function doLaunch({ mode, deeplink, count, profileName, accountIds, placeId, gameInstanceId, targetUserId }) {
     const settings = store.getSettings();
     const loc = roblox.locate(settings);
     if (!loc.found) {
@@ -121,7 +125,9 @@ function register(ctx) {
       // Authenticated launches: one client per selected account.
       const pid = (placeId || '').toString().trim() || null;
       for (let i = 0; i < accountIds.length; i++) {
-        const li = await accounts.getLaunchInfo(accountIds[i], pid, gameInstanceId);
+        const li = targetUserId
+          ? await accounts.getPersonJoinLaunchInfo(accountIds[i], targetUserId)
+          : await accounts.getLaunchInfo(accountIds[i], pid, gameInstanceId);
         if (!li.ok) {
           results.push({ ok: false, reason: li.reason });
           store.addHistory({ profileName: 'Account', mode: 'account', result: 'failed', message: li.reason });
@@ -170,31 +176,18 @@ function register(ctx) {
     const accountId = String(p.accountId || '');
     const targetUserId = asInt(p.targetUserId);
     if (!accountId || !targetUserId) return { ok: false, error: 'Choose an account and player first.' };
-    const context = await accounts.getPersonJoinContext(accountId, targetUserId);
-    if (!context.ok) return { ok: false, error: context.reason };
-    return doLaunch({
-      accountIds: [accountId],
-      placeId: context.placeId,
-      gameInstanceId: context.gameInstanceId,
-    });
+    return doLaunch({ accountIds: [accountId], targetUserId });
   });
 
-  // Join a player's exact server with SEVERAL accounts at once. The server is
-  // resolved once (via any selected account that can see the target), then every
-  // chosen account is launched into that same server.
+  // Follow the same player with several selected accounts. Each account gets
+  // its own single-use ticket and Roblox evaluates its join permission.
   safe('launch:join-person-multi', async (p) => {
     const targetUserId = asInt(p.targetUserId);
     const accountIds = Array.from(new Set(
       (Array.isArray(p.accountIds) ? p.accountIds : []).map(id => String(id || '')).filter(Boolean),
     )).slice(0, 20);
     if (!targetUserId || !accountIds.length) return { ok: false, error: 'Choose at least one account and a player.' };
-    let context = null;
-    for (const id of accountIds) {
-      const c = await accounts.getPersonJoinContext(id, targetUserId);
-      if (c.ok) { context = c; break; }
-    }
-    if (!context) return { ok: false, error: 'Could not find that player’s server — they may be in a private/reserved server or their game is hidden.' };
-    return doLaunch({ accountIds, placeId: context.placeId, gameInstanceId: context.gameInstanceId });
+    return doLaunch({ accountIds, targetUserId });
   });
 
   /* ----------------------------- People ----------------------------- */
@@ -202,6 +195,7 @@ function register(ctx) {
   safe('people:list', (p) => people.listFriends(asInt(p.page) || 0, asInt(p.pageSize) || 9, !!p.force));
   safe('people:search', (p) => people.search(p.query, p.cursor));
   safe('people:profile', (p) => people.profile(p.userId));
+  safe('people:presence', (p) => people.presence(p.userIds));
 
   /* ----------------------------- Accounts ----------------------------- */
 

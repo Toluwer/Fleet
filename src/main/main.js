@@ -23,6 +23,7 @@ const guard = require('./guard');
 const accounts = require('./accounts');
 const games = require('./games');
 const people = require('./people');
+const updater = require('./updater');
 const ipc = require('./ipc');
 const { ProcessMonitor } = require('./monitor');
 
@@ -30,7 +31,9 @@ let mainWindow = null;
 let splashWindow = null;
 let splashShownAt = 0;
 let monitor = null;
-const SPLASH_MIN_MS = 5000;
+const SPLASH_MIN_MS = 900;
+let mainShown = false;
+let startupWatchdog = null;
 
 // Only allow a single Fleet instance; a second launch focuses the first.
 const gotLock = app.requestSingleInstanceLock();
@@ -46,23 +49,29 @@ if (!gotLock) {
     }
   });
 
-  app.whenReady().then(onReady).catch(err => {
-    console.error('STARTUP FAILED:', err && (err.stack || err.message));
-    logger.error('Startup failed', err && err.message);
-  });
+  app.whenReady().then(onReady).catch(showStartupError);
 }
 
-function onReady() {
+async function onReady() {
   // 1. Storage + logging
   const userData = app.getPath('userData');
   logger.configure(userData);
   store.configure(userData, logger);
   logger.info('Fleet ' + app.getVersion() + ' starting');
 
+  // Put something on screen before probing Roblox/native components. On slow
+  // or locked-down PCs those probes can take several seconds.
+  createSplash();
+  startupWatchdog = setTimeout(() => {
+    logger.warn('Startup watchdog revealed the main window');
+    finishSplashThenShow();
+  }, 12000);
+  await new Promise(resolve => setTimeout(resolve, 60));
+
   const settings = store.getSettings();
 
   // 2. Initialise FFI + multi-instance machinery
-  native.init();
+  try { native.init(); } catch (err) { logger.warn('Native initialization failed', err && err.message); }
   if (!native.isAvailable()) {
     logger.warn('Native FFI unavailable; multi-instance disabled', native.getLoadError());
   } else {
@@ -104,8 +113,8 @@ function onReady() {
 
   // 6. Window + menu
   Menu.setApplicationMenu(null); // keep it minimal; native frame stays
-  createSplash();
   createWindow();
+  updater.configure({ app, logger, getWindow: () => mainWindow, send: sendToRenderer });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -113,6 +122,7 @@ function onReady() {
 }
 
 function createWindow() {
+  mainShown = false;
   mainWindow = new BrowserWindow({
     width: 1120,
     height: 740,
@@ -142,6 +152,21 @@ function createWindow() {
     setTimeout(() => finishSplashThenShow(), wait);
   });
 
+  // ready-to-show is not guaranteed after a renderer/GPU hiccup. A completed
+  // load and a hard timeout both reveal the window so users are never trapped
+  // behind a permanent splash screen.
+  mainWindow.webContents.once('did-finish-load', () => {
+    setTimeout(() => finishSplashThenShow(), SPLASH_MIN_MS);
+  });
+  mainWindow.webContents.on('did-fail-load', (_event, code, description) => {
+    logger.error('UI load failed', `${code}: ${description}`);
+    finishSplashThenShow();
+    try { dialog.showErrorBox('Fleet could not load its interface', `${description}\n\nOpen Diagnostics after restarting Fleet, or reinstall the latest version.`); } catch (_) {}
+  });
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    logger.error('Renderer stopped', details && details.reason);
+  });
+
   mainWindow.on('closed', () => { mainWindow = null; });
 
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'))
@@ -164,7 +189,11 @@ function createSplash() {
 function finishSplashThenShow() {
   const showMain = () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    mainWindow.show();
+    if (!mainShown) {
+      mainShown = true;
+      if (startupWatchdog) { clearTimeout(startupWatchdog); startupWatchdog = null; }
+      mainWindow.show();
+    }
     if (monitor) sendToRenderer('instances:update', { instances: monitor.snapshot(), summary: null });
   };
   if (splashWindow && !splashWindow.isDestroyed()) {
@@ -211,6 +240,7 @@ app.on('before-quit', () => {
   try { accounts.stopPolling(); } catch (_) {}
   try { guard.stop(); } catch (_) {}
   try { clones.cleanup(); } catch (_) {}
+  try { updater.stop(); } catch (_) {}
   logger.info('Fleet shutting down');
 });
 
@@ -222,3 +252,13 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason) => {
   logger.error('Unhandled rejection', reason && (reason.stack || reason.message || String(reason)));
 });
+
+function showStartupError(err) {
+  const detail = err && (err.stack || err.message) || String(err);
+  console.error('STARTUP FAILED:', detail);
+  try {
+    logger.error('Startup failed', detail);
+    dialog.showErrorBox('Fleet could not start', `${detail}\n\nReinstall Fleet or open its logs under your AppData folder.`);
+  } catch (_) {}
+  app.quit();
+}

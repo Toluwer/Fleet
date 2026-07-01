@@ -29,9 +29,17 @@ New-Item -ItemType Directory -Force $app | Out-Null
 Copy-Item (Join-Path $root 'package.json') $app
 robocopy (Join-Path $root 'src')   (Join-Path $app 'src')   /E /NFL /NDL /NJH /NJS /NP | Out-Null
 robocopy (Join-Path $root 'build') (Join-Path $app 'build') /E /NFL /NDL /NJH /NJS /NP | Out-Null
-# Only runtime dependency: koffi (with its prebuilt native binaries)
+# Copy the complete production dependency closure (koffi, electron-updater and
+# their runtime dependencies) while keeping development/build packages out.
 New-Item -ItemType Directory -Force (Join-Path $app 'node_modules') | Out-Null
-robocopy (Join-Path $root 'node_modules\koffi') (Join-Path $app 'node_modules\koffi') /E /NFL /NDL /NJH /NJS /NP | Out-Null
+$prodDirs = & npm.cmd ls --omit=dev --all --parseable 2>$null
+$modulesRoot = Join-Path $root 'node_modules'
+foreach ($dep in $prodDirs) {
+  if (-not $dep -or $dep -eq $root -or -not $dep.StartsWith($modulesRoot, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+  $relative = $dep.Substring($modulesRoot.Length).TrimStart('\')
+  if (-not $relative) { continue }
+  robocopy $dep (Join-Path (Join-Path $app 'node_modules') $relative) /E /NFL /NDL /NJH /NJS /NP | Out-Null
+}
 
 # Set icon + version metadata on the exe (rcedit ships with electron-builder's cache)
 $rcedit = Get-ChildItem (Join-Path $env:LOCALAPPDATA 'electron-builder\Cache\winCodeSign') -Recurse -Filter 'rcedit-x64.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -45,7 +53,7 @@ if ($rcedit) {
     '--set-version-string', 'CompanyName', 'Toluwa',
     '--set-version-string', 'OriginalFilename', 'Fleet.exe',
     '--set-version-string', 'LegalCopyright', 'MIT License',
-    '--set-file-version', '1.0.0.0', '--set-product-version', '1.0.0.0'
+    '--set-file-version', '1.1.0.0', '--set-product-version', '1.1.0.0'
   )
   & $rcedit.FullName @rcArgs 2>&1 | Out-Null
   Write-Host "Applied icon + metadata via rcedit"
