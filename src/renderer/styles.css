@@ -269,7 +269,8 @@ svg.ico, svg.b-ico, svg.t-ico {
 /* Avatar chips (launch selector) */
 .chips { display: flex; gap: 9px; flex-wrap: wrap; }
 .chip { display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px 5px 5px; border-radius: var(--r-pill);
-  border: 1px solid var(--hair-2); background: var(--surface); cursor: pointer; transition: all .15s var(--ease); font-size: 12.5px; font-weight: 500; }
+  border: 1px solid var(--hair-2); background: var(--surface); color: var(--ink); font: inherit; cursor: pointer;
+  transition: all .15s var(--ease); font-size: 12.5px; font-weight: 500; }
 .chip:hover { border-color: var(--ink-3); }
 .chip.on { background: var(--accent); color: var(--on-ink); border-color: var(--accent); }
 .chip img { width: 24px; height: 24px; border-radius: 50%; background: var(--surface-2); }

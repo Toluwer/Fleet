@@ -90,7 +90,10 @@ async function main() {
     const facts = await evaluate(`(async () => {
       localStorage.removeItem('fleet-sessions');
       state.status = { robloxFound: true, version: 'test', source: 'test', ffiAvailable: true };
-      state.accounts = [{ id: 'acct-1', username: 'Tester', displayName: 'Test Account', presence: 'Offline' }];
+      state.accounts = [
+        { id: 'acct-1', username: 'Tester', displayName: 'Test Account', presence: 'Offline' },
+        { id: 'acct-2', username: 'Unselected', displayName: 'Unselected Account', presence: 'Offline' },
+      ];
       state.selected = new Set(['acct-1']);
       state.launchMode = 'account';
       state.sessionDraft = null;
@@ -103,6 +106,7 @@ async function main() {
         body: getComputedStyle(document.body).backgroundColor,
         surface: getComputedStyle(document.querySelector('.card')).backgroundColor,
         primaryText: getComputedStyle(document.querySelector('.btn.primary')).color,
+        unselectedChipText: getComputedStyle(document.querySelector('.chip:not(.on)')).color,
       };
       setThemePref('light');
       const light = {
@@ -139,7 +143,8 @@ async function main() {
       return { dark, light, draft, saved, rowText, invalidRejected, corruptSafe };
     })()`);
 
-    if (facts.dark.theme !== 'dark' || facts.dark.body === facts.light.body || facts.dark.surface === facts.light.surface) {
+    if (facts.dark.theme !== 'dark' || facts.dark.body === facts.light.body || facts.dark.surface === facts.light.surface
+      || facts.dark.unselectedChipText !== 'rgb(242, 243, 245)') {
       throw new Error('Theme switching did not change the rendered palette: ' + JSON.stringify(facts));
     }
     if (!facts.saved.length || facts.saved[0].name !== 'Night crew' || !facts.saved[0].arrange) {
