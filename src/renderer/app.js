@@ -4,6 +4,27 @@
    reached only through the `window.fleet` bridge exposed by the preload. */
 
 const api = window.fleet;
+const { parseRobloxTarget, normalizeThemePreference, normalizeSessions } = window.FleetModel;
+
+/* ----------------------------- Theme ----------------------------- */
+const THEME_KEY = 'fleet-theme';
+function themePref() {
+  try { return normalizeThemePreference(localStorage.getItem(THEME_KEY)); }
+  catch (_) { return 'system'; }
+}
+function applyTheme() {
+  const pref = themePref();
+  const dark = pref === 'dark' || (pref === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  try { if (api && api.ui && api.ui.titlebar) api.ui.titlebar(dark); } catch (_) { /* bridge optional */ }
+}
+function setThemePref(pref) {
+  try { localStorage.setItem(THEME_KEY, normalizeThemePreference(pref)); } catch (_) { /* use current theme */ }
+  applyTheme();
+}
+const systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
+if (systemTheme.addEventListener) systemTheme.addEventListener('change', () => { if (themePref() === 'system') applyTheme(); });
+applyTheme();
 
 const state = {
   view: 'instances',
@@ -24,6 +45,7 @@ const state = {
   followSelected: new Set(),
   following: false,
   personJoin: null,
+  sessionDraft: null,
   games: {
     list: [], query: '', nextPageToken: null, loading: false, error: null, loaded: false,
     sort: 'players', hideEmpty: false, categories: [], category: 'All',
@@ -298,6 +320,37 @@ $('#nav').addEventListener('click', (e) => {
 function mount(html) { content.innerHTML = `<div class="view view-enter">${html}</div>`; }
 
 /* ----------------------------- Instances view ----------------------------- */
+
+/* ----------------------------- Sessions ----------------------------- */
+/* A session = a saved multi-launch setup (accounts + target + arrange).
+   One click reproduces the whole thing. Stored locally, survives restarts. */
+const SESSIONS_KEY = 'fleet-sessions';
+function loadSessions() {
+  try { return normalizeSessions(JSON.parse(localStorage.getItem(SESSIONS_KEY) || '[]')); }
+  catch (_) { return []; }
+}
+function saveSessions(list) {
+  try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(normalizeSessions(list))); return true; }
+  catch (_) { return false; }
+}
+
+function sessionRows() {
+  const sessions = loadSessions();
+  if (!sessions.length) return '<div class="hint">No sessions yet — set up a launch above, then save it here.</div>';
+  return sessions.map(s => {
+    const known = s.accountIds.filter(id => state.accounts.some(a => a.id === id));
+    const target = s.gameId ? 'specific server' : (s.placeId ? `place ${s.placeId}` : 'Roblox home');
+    const missing = known.length < s.accountIds.length ? ` · ${s.accountIds.length - known.length} account(s) missing` : '';
+    return `<div class="setting">
+      <div><div class="s-label">${esc(s.name)}</div>
+      <div class="s-desc">${known.length} account${known.length === 1 ? '' : 's'} · ${esc(target)}${s.arrange ? ' · auto-arrange' : ''}${esc(missing)}</div></div>
+      <div class="s-control inline">
+        <button class="btn sm primary" data-action="session-launch" data-id="${esc(s.id)}" ${known.length ? '' : 'disabled'}>${icon('play')} Launch</button>
+        <button class="btn sm icon" data-action="session-delete" data-id="${esc(s.id)}" data-tip="Delete this session">${icon('x')}</button>
+      </div></div>`;
+  }).join('');
+}
+
 views.instances = function () {
   const s = state.status || {};
   let detection;
@@ -328,7 +381,7 @@ views.instances = function () {
       <div class="hint" style="margin:2px 0 12px">Select one or more accounts — Fleet opens a signed-in client for each.</div>
       <div class="chips">${hasAccounts ? accountChips : '<span class="hint">No accounts yet.</span>'}</div>
       <div class="inline" style="margin-top:16px">
-        <input id="lp-place" type="text" inputmode="numeric" placeholder="Place ID (optional — join a game)" value="${esc(state.placeId)}" style="max-width:280px" data-tip="Leave blank to open the Roblox home signed in" />
+        <input id="lp-place" type="text" placeholder="Place ID or game link (optional)" value="${esc(state.placeId)}" style="max-width:320px" data-tip="Paste a place ID, a roblox.com game URL, or a share link with a server ID" />
         <div class="spacer" style="flex:1"></div>
         <button class="btn primary lg" data-action="launch-accounts" ${s.robloxFound ? '' : 'disabled'}>${icon('play')} <span id="lp-count-label">Launch ${state.selected.size || ''}</span></button>
       </div>
@@ -368,6 +421,15 @@ views.instances = function () {
       </div>
       ${accountPanel}
       ${plainPanel}
+    </div>
+
+    <div class="card pad" style="margin-top:14px">
+      <div class="row-split" style="margin-bottom:6px">
+        <div style="font-weight:600;font-size:15px">Sessions</div>
+        <button class="btn sm" data-action="session-save" ${hasAccounts ? '' : 'disabled'} data-tip="Save the current account selection and game as a one-click setup">${icon('plus')} Save current setup</button>
+      </div>
+      <div class="hint" style="margin-bottom:10px">One click relaunches an entire setup — accounts, game, even window arrangement.</div>
+      <div id="sessions-list">${sessionRows()}</div>
     </div>
 
     <div class="row-split" style="margin:26px 2px 12px">
@@ -1371,6 +1433,15 @@ views.settings = async function () {
   const auto = s.autoDetect !== false;
   mount(`
     <div class="page-head"><h1>Settings</h1><p>Everything is saved to your user profile and persists between sessions.</p></div>
+    <div class="section-title">Appearance</div>
+    <div class="card pad">
+      ${settingRow('Theme', 'Follow Windows, or force light or dark.',
+        `<div class="segmented compact" id="set-theme">
+          <button type="button" data-action="set-theme" data-theme="system" class="${themePref() === 'system' ? 'on' : ''}">System</button>
+          <button type="button" data-action="set-theme" data-theme="light" class="${themePref() === 'light' ? 'on' : ''}">Light</button>
+          <button type="button" data-action="set-theme" data-theme="dark" class="${themePref() === 'dark' ? 'on' : ''}">Dark</button>
+        </div>`)}
+    </div>
     <div class="section-title">Roblox location</div>
     <div class="card pad">
       <div class="field">
@@ -1455,11 +1526,14 @@ views.help = function () {
 
       <h2>Quick start</h2>
       <div class="step"><div class="n">1</div><div>On <b>Accounts</b>, click <b>Add account</b> and sign in to Roblox in the window that opens. Your session is stored encrypted on this PC.</div></div>
-      <div class="step"><div class="n">2</div><div>On <b>Instances</b>, choose <b>With account</b>, pick one or more accounts (optionally enter a Place ID to join a game), and click <b>Launch</b>.</div></div>
+      <div class="step"><div class="n">2</div><div>On <b>Instances</b>, choose <b>With account</b>, pick one or more accounts, optionally paste a Place ID, game URL, or exact-server link, and click <b>Launch</b>.</div></div>
       <div class="step"><div class="n">3</div><div>Every client appears under <b>Running clients</b>, where you can focus, restart or end it. Prefer signed-out clients? Switch the toggle to <b>Signed out</b> and pick a number.</div></div>
 
       <h2>Accounts</h2>
       <p>Add as many accounts as you like. Each card shows the avatar, name and presence. Select several and use <b>Launch selected</b> to open them all at once — Fleet signs each client in automatically using a single-use launch ticket, the same mechanism the Roblox site uses when you press Play. When an account is <b>In game</b>, click <b>Follow</b> and choose other accounts to join its exact server.</p>
+
+      <h2>Sessions and appearance</h2>
+      <p>On <b>Instances</b>, <b>Save current setup</b> stores the selected accounts, game/server target, and optional window arrangement for one-click reuse. In <b>Settings → Appearance</b>, choose System, Light, or Dark.</p>
 
       <h2>How multi-instance works</h2>
       <p>Roblox guards single-instance with named Windows objects, including a mutex tied to the client's exact program path. Fleet launches each client through its own folder “junction” (a unique path, no files copied) and a small guard clears the shared lock as it reappears — so every launch opens a new client that stays running.</p>
@@ -1475,7 +1549,7 @@ views.help = function () {
       <div class="faq">
         <details><summary>“Roblox not found”</summary><div class="a">Install Roblox, or open <b>Settings → Roblox location</b>, switch to <b>Manual path</b> and point Fleet at <code>RobloxPlayerBeta.exe</code>.</div></details>
         <details><summary>A client closes after sign-in</summary><div class="a">The launch ticket may have expired — try again. Give each launch a few seconds (raise <b>Settings → Delay between launches</b> on a slow PC).</div></details>
-        <details><summary>An account shows “Session expired”</summary><div class="a">Roblox sessions don't last forever. Remove the account and add it again to refresh the sign-in.</div></details>
+        <details><summary>An account shows “Session expired”</summary><div class="a">Roblox sessions don't last forever. Click <b>Sign in again</b> on the account card. Fleet will never open that window automatically.</div></details>
         <details><summary>Is my login safe?</summary><div class="a">Your session cookie is encrypted with Windows DPAPI and stored only on this PC. It never leaves your machine and is never shown in the interface.</div></details>
       </div>
 
@@ -1539,12 +1613,16 @@ document.addEventListener('click', async (e) => {
       const ids = Array.from(state.selected);
       if (!ids.length) { toast('Select at least one account', 'bad'); break; }
       const placeEl = $('#lp-place');
-      const placeId = placeEl ? placeEl.value.trim() : state.placeId;
-      state.placeId = placeId;
+      const raw = placeEl ? placeEl.value.trim() : state.placeId;
+      const target = parseRobloxTarget(raw);
+      if (target.invalid) { toast('Could not read a place ID from that — paste a Roblox game link or a numeric ID', 'bad'); break; }
+      state.placeId = raw;
       elAction.disabled = true;
-      const r = await call(() => api.launch.accounts(ids, placeId));
+      const r = target.gameId && target.placeId
+        ? await call(() => api.launch.join(ids, target.placeId, target.gameId))
+        : await call(() => api.launch.accounts(ids, target.placeId));
       elAction.disabled = false;
-      if (r && r.ok) toast(`Launched ${r.launched} client${r.launched === 1 ? '' : 's'}` + (r.failed ? `, ${r.failed} failed` : ''), r.failed ? 'bad' : 'good');
+      if (r && r.ok) toast(`Launched ${r.launched} client${r.launched === 1 ? '' : 's'}` + (target.gameId ? ' into the exact server' : '') + (r.failed ? `, ${r.failed} failed` : ''), r.failed ? 'bad' : 'good');
       else toast((r && r.error) || 'Launch failed', 'bad');
       break;
     }
@@ -1651,6 +1729,80 @@ document.addEventListener('click', async (e) => {
       renderGamesCategories();
       renderGamesGrid();
       break;
+    case 'set-theme':
+      setThemePref(elAction.dataset.theme || 'system');
+      if (state.view === 'settings') views.settings();
+      break;
+    case 'session-save': {
+      const ids = Array.from(state.selected);
+      if (!ids.length) { toast('Select the accounts to include first', 'bad'); break; }
+      const placeEl = $('#lp-place');
+      const target = parseRobloxTarget(placeEl ? placeEl.value.trim() : state.placeId);
+      if (target.invalid) { toast('Could not read a place ID from that — paste a Roblox game link or a numeric ID', 'bad'); break; }
+      state.sessionDraft = {
+        accountIds: ids.filter(id => state.accounts.some(account => account.id === id)),
+        placeId: target.placeId,
+        gameId: target.gameId,
+      };
+      openModal(`
+        <div class="m-head"><h3>Save session</h3><p>${ids.length} account${ids.length === 1 ? '' : 's'} · ${target.placeId ? 'place ' + esc(target.placeId) : 'Roblox home'}</p></div>
+        <div class="m-body">
+          <div class="field"><label for="session-name">Name</label>
+          <input id="session-name" type="text" maxlength="40" placeholder="e.g. Farming crew" value="Session ${loadSessions().length + 1}"></div>
+          <label class="toggle-row inline" style="gap:10px;margin-top:4px;cursor:pointer">
+            <input type="checkbox" id="session-arrange"> <span>Auto-arrange windows ~20s after launch</span>
+          </label>
+        </div>
+        <div class="m-foot"><button class="btn" data-action="modal-cancel">Cancel</button>
+        <button class="btn primary" data-action="session-save-confirm">${icon('check')} Save session</button></div>`);
+      const inp = $('#session-name');
+      if (inp) { inp.focus(); inp.select(); }
+      break;
+    }
+    case 'session-save-confirm': {
+      const draft = state.sessionDraft;
+      if (!draft || !draft.accountIds.length) { closeModal(); toast('That session setup is no longer available', 'bad'); break; }
+      const nameEl = $('#session-name');
+      const sessions = loadSessions();
+      sessions.push({
+        id: 's' + Date.now(),
+        name: (nameEl && nameEl.value.trim()) || `Session ${sessions.length + 1}`,
+        accountIds: draft.accountIds,
+        placeId: draft.placeId,
+        gameId: draft.gameId,
+        arrange: !!($('#session-arrange') && $('#session-arrange').checked),
+      });
+      const saved = saveSessions(sessions);
+      state.sessionDraft = null;
+      closeModal();
+      toast(saved ? 'Session saved' : 'Could not save the session on this PC', saved ? 'good' : 'bad');
+      if (state.view === 'instances') views.instances();
+      break;
+    }
+    case 'session-launch': {
+      const session = loadSessions().find(x => x.id === elAction.dataset.id);
+      if (!session) break;
+      const ids = session.accountIds.filter(i => state.accounts.some(a => a.id === i));
+      if (!ids.length) { toast('None of this session\'s accounts exist anymore', 'bad'); break; }
+      elAction.disabled = true;
+      const r = session.gameId && session.placeId
+        ? await call(() => api.launch.join(ids, session.placeId, session.gameId))
+        : await call(() => api.launch.accounts(ids, session.placeId || ''));
+      elAction.disabled = false;
+      if (r && r.ok) {
+        toast(`Session "${session.name}": launched ${r.launched} client${r.launched === 1 ? '' : 's'}` + (r.failed ? `, ${r.failed} failed` : ''), r.failed ? 'bad' : 'good');
+        if (session.arrange) {
+          toast('Windows will be arranged in ~20s', 'good');
+          setTimeout(() => { call(() => api.instances.arrange()); }, 20000);
+        }
+      } else toast((r && r.error) || 'Session launch failed', 'bad');
+      break;
+    }
+    case 'session-delete': {
+      if (!saveSessions(loadSessions().filter(x => x.id !== elAction.dataset.id))) toast('Could not delete the session', 'bad');
+      if (state.view === 'instances') views.instances();
+      break;
+    }
     case 'games-hide-empty':
       state.games.hideEmpty = !state.games.hideEmpty;
       views.games();
@@ -1765,7 +1917,7 @@ document.addEventListener('click', async (e) => {
     case 'modal-cancel':
       if (state.personJoin) closePersonJoinDialog();
       else if (state.followTargetId) closeFollowDialog();
-      else { state.servers = null; closeModal(); }
+      else { state.servers = null; state.sessionDraft = null; closeModal(); }
       break;
     case 'confirm-yes': if (confirmResolver) { confirmResolver(true); confirmResolver = null; } closeModal(); break;
     case 'confirm-no': if (confirmResolver) { confirmResolver(false); confirmResolver = null; } closeModal(); break;

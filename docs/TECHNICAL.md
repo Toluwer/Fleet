@@ -3,7 +3,7 @@
 ## Goals & constraints
 
 - Production-quality Windows desktop app to launch and manage **multiple Roblox clients**.
-- White, minimalist UI; **native** title bar and window buttons.
+- Light/dark minimalist UI; custom drag strip with **native** Windows window buttons.
 - Clean architecture, robust error handling, no orphaned processes, no memory leaks.
 - Every advertised feature actually works — no placeholders.
 
@@ -26,7 +26,7 @@ Strict separation of concerns across three layers:
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │ renderer/  (pure UI — no Node, contextIsolation on)          │
-│   index.html · styles.css · app.js                           │
+│   index.html · model.js · styles.css · app.js                │
 │   talks ONLY through window.fleet (preload bridge)           │
 └───────────────▲─────────────────────────────────────────────┘
                 │ ipcRenderer.invoke / on   (preload/preload.js)
@@ -156,6 +156,7 @@ Early on, launching 3+ clients made the running-clients list go blank. Root caus
 | `%APPDATA%\fleet\history.json` | launch history (capped) |
 | `%APPDATA%\fleet\logs\fleet-YYYY-MM-DD.log` | daily rolling log |
 | `%APPDATA%\fleet\clones\instance-N\` | per-instance junctions (cleaned on quit) |
+| Electron Local Storage | theme preference and non-secret saved launch-session metadata |
 
 ## IPC surface
 

@@ -9,7 +9,7 @@ Testing was done at three levels: (1) a headless functional suite over the servi
 
 ## 1. Service-layer suite — `npm run selftest`
 
-**Result: 29 / 29 passed.**
+**Current result: 81 / 81 passed.** The suite now also covers People joining/search resilience, targeted presence patching, Games filtering/ranking, updater/installer invariants, Smart Launch parsing, saved-session normalization, and theme preference validation.
 
 | Area | Checks |
 |------|--------|
@@ -102,7 +102,7 @@ Fixed by replacing `tasklist` with **spawn-free in-process enumeration** (koffi 
 
 ### 3.5 UI integrity
 
-All pages render with **no JavaScript errors** (`jsErrors: null` via CDP after each navigation): Instances, **Accounts**, History, Diagnostics, Settings, Help. The window uses the native Windows title bar; an animated splash plays on startup and fades into the app; layout is responsive (the running-clients grid drops the "Started" column at narrow widths). The redesigned UI uses a monochrome-premium theme with smooth transitions.
+All pages render with **no JavaScript errors** (`jsErrors: null` via CDP after each navigation). `npm run test:ui` also starts Fleet in an isolated profile and behaviorally verifies light/dark palette switching, exact-server session save/render, invalid-link rejection, corrupt-session recovery, and **zero newly launched Roblox processes**.
 
 ![Diagnostics](images/diagnostics.png)
 ![Settings](images/settings.png)
@@ -142,7 +142,8 @@ Across all launch/kill/restart activity, the application log contained **0 WARN 
 | Launch chosen account(s) | ✅ `launch:accounts`, path-isolated, auth-ticket deep links |
 | Clear feedback when Roblox missing | ✅ banner + Settings path override |
 | Real launching (no placeholders) | ✅ every action drives real processes |
-| Native title bar / white minimalist UI + splash | ✅ premium redesign, animated intro |
+| Native window controls / light-dark minimalist UI + splash | ✅ theme-synced controls, premium redesign, animated intro |
+| Smart Launch + saved sessions | ✅ exact-server parsing, normalized local storage, isolated UI test |
 | Instance list / restart / cleanup / history | ✅ |
 | Auto path detection (+ manual) | ✅ registry + filesystem + Browse |
 | Settings panel + persistence | ✅ atomic JSON, clamped |
@@ -156,7 +157,8 @@ Across all launch/kill/restart activity, the application log contained **0 WARN 
 
 ```bash
 npm install
-npm run selftest                       # 29/29
+npm run selftest                       # 81/81
+npm run test:ui                        # isolated renderer test; launches no Roblox
 node test/multitest6.js                # junction + guard recipe (launches/cleans up real clients)
 # UI: npm start, or with CDP:
 #   electron . --remote-debugging-port=9222

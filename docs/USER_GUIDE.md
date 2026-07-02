@@ -29,13 +29,17 @@ Your session is encrypted with Windows' built-in protection and stored only on t
 
 In the **Launch Roblox** card on **Instances**:
 
-**With account** (if you've added any) — select one or more account chips, optionally type a **Place ID** to join a specific experience, then click **Launch**. Fleet opens one signed-in client per selected account.
+**With account** (if you've added any) — select one or more account chips, optionally paste a **Place ID**, Roblox game URL, or exact-server deep link, then click **Launch**. Fleet opens one signed-in client per selected account and preserves the exact server when the link contains one.
 
 **Signed out** — switch the toggle, use the **– / +** stepper to choose how many clients to open, then **Launch**.
 
 Either way, Fleet opens real, separate Roblox clients, waiting a few seconds between each so every one starts cleanly. Each appears in the **Running clients** list below as it comes up, tagged **Fleet** (with the account name when signed in).
 
 > Tip: you can also launch a single account straight from its card on the **Accounts** page, or select several there and use **Launch N selected**.
+
+### Save a launch session
+
+After selecting accounts and an optional game/server target, click **Save current setup** in the **Sessions** card. Give it a name and optionally enable **Auto-arrange windows**. The saved row relaunches that complete setup with one click. It stores only account IDs and the game target locally—not login cookies—and safely ignores accounts you later remove.
 
 ## 4. Manage running clients
 
@@ -69,7 +73,7 @@ On the **Accounts** page each card has:
 
 **Refresh all** updates every account's status at once.
 
-If an account ever shows **"Session expired"** when launching, remove it and add it again — Roblox sessions don't last forever.
+If an account shows **"Session expired"**, click **Sign in again** on that card. Fleet keeps the account saved and never opens a login window by itself.
 
 ## 6. Browse & join games
 
@@ -91,6 +95,7 @@ The **History** page lists every launch and restart with a timestamp, the accoun
 ![Settings](images/settings.png)
 
 - **Detection** — *Auto-detect* (recommended) or *Manual path* with a **Browse** button if Fleet can't find Roblox. **Re-detect** re-runs detection.
+- **Theme** — follow Windows automatically, or force **Light** or **Dark**. The native window buttons update with the selected palette.
 - **Confirm before bulk actions** — ask before *End all* / *Cleanup*.
 - **Refresh interval** — how often the running-clients list updates.
 - **Delay between launches** — pause between each client in a multi-launch (raise it if a slow PC drops instances).

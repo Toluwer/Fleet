@@ -1,13 +1,12 @@
 ; Fleet custom installer — fully custom card UI, no wizard chrome at all.
 ;
-; The window is stripped to a borderless, rounded, all-white card:
-;   page 1  "Update detected" / "Welcome to Fleet" + flat black Update/Install
-;           button and a quiet Cancel — both custom-drawn (no native buttons).
-;   page 2  the install progress, restyled to a thin monochrome bar centered
-;           on the same white card (status text, buttons and theme removed).
-;   then    Fleet launches and the installer closes itself. No finish page.
-; electron-updater runs this with /S for background updates — silent installs
-; never execute any of this UI.
+; Card states (detected from the installed DisplayVersion in the registry):
+;   fresh   "Welcome to Fleet"              + "Version X.Y.Z"        [Install]
+;   update  "Update detected"               + "Fleet A.B.C -> X.Y.Z" [Update]
+;   same    "You already have Fleet installed!" + version note       [Reinstall]
+; Progress page: same white card, heading + version and a clean thin bar.
+; Fleet launches when done; installer closes itself. No finish page.
+; Silent (/S) auto-updates never execute any of this UI.
 ;
 ; NOTE: this file is !included BEFORE common.nsh/assistedInstaller.nsh, so all
 ; functions live inside the custom page macros — those expand later, when the
@@ -21,9 +20,8 @@
 !define FLEET_MUTED 0x8A8F98
 !define FLEET_WHITE 0xFFFFFF
 ; COLORREF (BGR) variants for the progress bar messages
-; (PBM_SETBARCOLOR / PBM_SETBKCOLOR come from WinMessages.nsh)
 !define FLEET_INK_BGR 0x141110
-!define FLEET_TRACK_BGR 0xF4F2F1
+!define FLEET_TRACK_BGR 0xEDE9E7
 
 !macro customHeader
   AutoCloseWindow true
@@ -49,7 +47,8 @@
   Var FleetHeadFont
   Var FleetSubFont
   Var FleetBtnFont
-  Var FleetIsUpdate
+  Var FleetState      ; "fresh" | "update" | "same"
+  Var FleetOldVer
   Var FleetSkinned
 
   ; One-time window surgery: borderless + rounded + white, all wizard chrome
@@ -82,15 +81,22 @@
     System::Call `user32::SetWindowLong(i $HWNDPARENT, i -16, i r0)`
     System::Call `user32::SetWindowPos(i $HWNDPARENT, i 0, i 0, i 0, i 0, i 0, i 0x37)`
 
-    ; Rounded corners.
-    System::Call `*(i, i, i, i) i .R0`
-    System::Call `user32::GetWindowRect(i $HWNDPARENT, i R0)`
-    System::Call `*$R0(i .r1, i .r2, i .r3, i .r4)`
-    System::Free $R0
-    IntOp $3 $3 - $1
-    IntOp $4 $4 - $2
-    System::Call `gdi32::CreateRoundRectRgn(i 0, i 0, i r3, i r4, i 20, i 20) i .r5`
-    System::Call `user32::SetWindowRgn(i $HWNDPARENT, i r5, i 1)`
+    ; Rounded corners: ask DWM first (Windows 11 renders smooth antialiased
+    ; corners with a shadow); fall back to a subtle 8px window region on
+    ; Windows 10, where regions are the only option.
+    System::Call `dwmapi::DwmSetWindowAttribute(i $HWNDPARENT, i 33, *i 2, i 4) i .r9`
+    ${If} $9 != 0
+      System::Call `*(i, i, i, i) i .R0`
+      System::Call `user32::GetWindowRect(i $HWNDPARENT, i R0)`
+      System::Call `*$R0(i .r1, i .r2, i .r3, i .r4)`
+      System::Free $R0
+      IntOp $3 $3 - $1
+      IntOp $4 $4 - $2
+      IntOp $3 $3 + 1
+      IntOp $4 $4 + 1
+      System::Call `gdi32::CreateRoundRectRgn(i 0, i 0, i r3, i r4, i 16, i 16) i .r5`
+      System::Call `user32::SetWindowRgn(i $HWNDPARENT, i r5, i 1)`
+    ${EndIf}
 
     ; Page area (1018) fills the entire card — no button strip.
     System::Call `*(i, i, i, i) i .R0`
@@ -99,6 +105,10 @@
     System::Free $R0
     GetDlgItem $R9 $HWNDPARENT 1018
     System::Call `user32::MoveWindow(i $R9, i 0, i 0, i r1, i r2, i 1)`
+
+    CreateFont $FleetHeadFont "Segoe UI Semibold" "20" "600"
+    CreateFont $FleetSubFont  "Segoe UI"          "10" "400"
+    CreateFont $FleetBtnFont  "Segoe UI Semibold" "11" "600"
   FunctionEnd
 
   Function FleetGoClick
@@ -112,11 +122,16 @@
   FunctionEnd
 
   Function FleetWelcomeShow
-    ; Existing install => update. $INSTDIR resolves to the prior location
-    ; during .onInit, so the exe already being there means an update.
-    StrCpy $FleetIsUpdate "0"
+    ; Detect the installed copy + its version (written by previous installs).
+    StrCpy $FleetState "fresh"
+    StrCpy $FleetOldVer ""
+    ReadRegStr $FleetOldVer SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" DisplayVersion
     ${If} ${FileExists} "$INSTDIR\Fleet.exe"
-      StrCpy $FleetIsUpdate "1"
+      ${If} $FleetOldVer == "${VERSION}"
+        StrCpy $FleetState "same"
+      ${Else}
+        StrCpy $FleetState "update"
+      ${EndIf}
     ${EndIf}
 
     Call FleetSkinWindow
@@ -128,11 +143,7 @@
     ${EndIf}
     SetCtlColors $FleetDlg ${FLEET_INK} ${FLEET_WHITE}
 
-    CreateFont $FleetHeadFont "Segoe UI Semibold" "21" "600"
-    CreateFont $FleetSubFont  "Segoe UI"          "10" "400"
-    CreateFont $FleetBtnFont  "Segoe UI Semibold" "11" "600"
-
-    ${NSD_CreateLabel} 0 26% 100% 15% ""
+    ${NSD_CreateLabel} 0 27% 100% 14% ""
     Pop $FleetHeading
     ${NSD_AddStyle} $FleetHeading 0x00000001 ; SS_CENTER
     SetCtlColors $FleetHeading ${FLEET_INK} ${FLEET_WHITE}
@@ -144,29 +155,37 @@
     SetCtlColors $FleetSub ${FLEET_MUTED} ${FLEET_WHITE}
     SendMessage $FleetSub ${WM_SETFONT} $FleetSubFont 1
 
-    ; Flat black action "button" (a clickable centered static — no native
+    ; Flat black action "button" (clickable centered static — no native
     ; button chrome anywhere in this installer).
-    ${NSD_CreateLabel} 35% 62% 30% 11% ""
+    ${NSD_CreateLabel} 34% 61% 32% 12% ""
     Pop $FleetGo
     ${NSD_AddStyle} $FleetGo 0x00000301 ; SS_CENTER|SS_NOTIFY|SS_CENTERIMAGE
     SetCtlColors $FleetGo ${FLEET_WHITE} ${FLEET_INK}
     SendMessage $FleetGo ${WM_SETFONT} $FleetBtnFont 1
     ${NSD_OnClick} $FleetGo FleetGoClick
 
-    ${NSD_CreateLabel} 35% 78% 30% 8% "Cancel"
+    ${NSD_CreateLabel} 34% 78% 32% 8% "Cancel"
     Pop $FleetCancel
     ${NSD_AddStyle} $FleetCancel 0x00000301
     SetCtlColors $FleetCancel ${FLEET_MUTED} ${FLEET_WHITE}
     SendMessage $FleetCancel ${WM_SETFONT} $FleetSubFont 1
     ${NSD_OnClick} $FleetCancel FleetCancelClick
 
-    ${If} $FleetIsUpdate == "1"
+    ${If} $FleetState == "same"
+      ${NSD_SetText} $FleetHeading "You already have Fleet installed!"
+      ${NSD_SetText} $FleetSub "Fleet ${VERSION} is already on this PC"
+      ${NSD_SetText} $FleetGo "Reinstall"
+    ${ElseIf} $FleetState == "update"
       ${NSD_SetText} $FleetHeading "Update detected"
-      ${NSD_SetText} $FleetSub "Fleet will update to the latest version"
+      ${If} $FleetOldVer != ""
+        ${NSD_SetText} $FleetSub "Fleet $FleetOldVer  →  ${VERSION}"
+      ${Else}
+        ${NSD_SetText} $FleetSub "Updating Fleet to ${VERSION}"
+      ${EndIf}
       ${NSD_SetText} $FleetGo "Update"
     ${Else}
       ${NSD_SetText} $FleetHeading "Welcome to Fleet"
-      ${NSD_SetText} $FleetSub "Fleet will be set up on your PC"
+      ${NSD_SetText} $FleetSub "Version ${VERSION}"
       ${NSD_SetText} $FleetGo "Install"
     ${EndIf}
 
@@ -178,8 +197,8 @@
 
 ; ---------------------------------------------------------------- page 2 ----
 ; This macro expands immediately before MUI_PAGE_INSTFILES, so the SHOW
-; define below attaches to the progress page: restyle it into a thin
-; monochrome bar centered on the white card.
+; define below attaches to the progress page: white card, heading + version,
+; and a clean thin monochrome bar (no borders, no status spam, no buttons).
 !macro customPageAfterChangeDir
   Function FleetInstFilesShow
     ; MUI re-shows wizard buttons on page change — remove them again.
@@ -194,7 +213,7 @@
     ${EndIf}
     SetCtlColors $0 ${FLEET_INK} ${FLEET_WHITE}
 
-    ; Hide the status line + details control; only the bar remains.
+    ; Hide the stock status line and details list; only the bar remains.
     GetDlgItem $1 $0 1006
     ShowWindow $1 ${SW_HIDE}
     GetDlgItem $1 $0 1027
@@ -202,19 +221,45 @@
     GetDlgItem $1 $0 1016
     ShowWindow $1 ${SW_HIDE}
 
-    ; Thin, unthemed, monochrome progress bar centered on the card.
     System::Call `*(i, i, i, i) i .R0`
     System::Call `user32::GetClientRect(i r0, i R0)`
     System::Call `*$R0(i, i, i .r2, i .r3)`
     System::Free $R0
+
+    ; Heading + version, centered above the bar.
+    IntOp $4 $3 * 30
+    IntOp $4 $4 / 100
+    ${If} $FleetState == "update"
+    ${OrIf} $FleetState == "same"
+      StrCpy $7 "Updating Fleet"
+    ${Else}
+      StrCpy $7 "Installing Fleet"
+    ${EndIf}
+    System::Call `user32::CreateWindowEx(i 0, t "STATIC", t "$7", i 0x50000001, i 0, i r4, i r2, i 34, i r0, i 0, i 0, i 0) i .r5`
+    SendMessage $5 ${WM_SETFONT} $FleetHeadFont 1
+    SetCtlColors $5 ${FLEET_INK} ${FLEET_WHITE}
+    IntOp $4 $4 + 38
+    System::Call `user32::CreateWindowEx(i 0, t "STATIC", t "Version ${VERSION}", i 0x50000001, i 0, i r4, i r2, i 20, i r0, i 0, i 0, i 0) i .r5`
+    SendMessage $5 ${WM_SETFONT} $FleetSubFont 1
+    SetCtlColors $5 ${FLEET_MUTED} ${FLEET_WHITE}
+
+    ; The bar: strip WS_BORDER + client/static edges, unskin the theme so the
+    ; monochrome colors apply, then center it as a clean 8px line.
     GetDlgItem $1 $0 1004
     System::Call `uxtheme::SetWindowTheme(i r1, w " ", w " ")`
-    IntOp $4 $2 * 15
-    IntOp $4 $4 / 100          ; x = 15%
-    IntOp $5 $2 * 70
-    IntOp $5 $5 / 100          ; width = 70%
-    IntOp $6 $3 / 2            ; y = middle
-    System::Call `user32::MoveWindow(i r1, i r4, i r6, i r5, i 6, i 1)`
+    System::Call `user32::GetWindowLong(i r1, i -16) i .r6`
+    IntOp $6 $6 & 0xFF7FFFFF   ; ~WS_BORDER
+    System::Call `user32::SetWindowLong(i r1, i -16, i r6)`
+    System::Call `user32::GetWindowLong(i r1, i -20) i .r6`
+    IntOp $6 $6 & 0xFFFDFDFF   ; ~WS_EX_CLIENTEDGE & ~WS_EX_STATICEDGE
+    System::Call `user32::SetWindowLong(i r1, i -20, i r6)`
+    IntOp $4 $2 * 18
+    IntOp $4 $4 / 100          ; x = 18%
+    IntOp $5 $2 * 64
+    IntOp $5 $5 / 100          ; width = 64%
+    IntOp $6 $3 * 52
+    IntOp $6 $6 / 100          ; y = 52%
+    System::Call `user32::SetWindowPos(i r1, i 0, i r4, i r6, i r5, i 8, i 0x34)` ; NOZORDER|NOACTIVATE|FRAMECHANGED
     SendMessage $1 ${PBM_SETBARCOLOR} 0 ${FLEET_INK_BGR}
     SendMessage $1 ${PBM_SETBKCOLOR} 0 ${FLEET_TRACK_BGR}
   FunctionEnd

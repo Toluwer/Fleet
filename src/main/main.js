@@ -122,6 +122,21 @@ async function onReady() {
   });
 }
 
+// Renderer theme changes recolor the native window-controls overlay so the
+// min/max/close buttons match light/dark mode.
+ipcMain.handle('ui:titlebar', (_event, payload) => {
+  const dark = !!(payload && payload.dark);
+  try {
+    if (mainWindow) {
+      mainWindow.setTitleBarOverlay({ color: dark ? '#0b0c0e' : '#ffffff', symbolColor: dark ? '#f2f3f5' : '#14161a', height: 44 });
+      mainWindow.setBackgroundColor(dark ? '#0b0c0e' : '#ffffff');
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
 function createWindow() {
   mainShown = false;
   mainWindow = new BrowserWindow({

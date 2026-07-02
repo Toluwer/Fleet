@@ -4,7 +4,7 @@
 
 # Fleet
 
-**A clean, white, minimalist multi-instance launcher and account manager for Roblox.**
+**A clean, minimalist multi-instance launcher and account manager for Roblox.**
 
 Run several Roblox clients at once — signed into different accounts or signed out — and manage them all from one polished, native Windows app.
 
@@ -19,15 +19,17 @@ Run several Roblox clients at once — signed into different accounts or signed 
 Roblox normally lets you run only **one** client at a time. Fleet works around that automatically and gives you a proper control panel for every client on your PC.
 
 - **Launch multiple Roblox clients** — they open as real, separate clients and stay side by side.
-- **Account manager** — sign in to your Roblox accounts once in a real Roblox login window; Fleet stores each session **encrypted on your PC** (Windows DPAPI) and launches any of them already signed in. Pick several and launch them all at once; optionally join a specific experience by Place ID. Live **online / offline / in-game** presence per account.
+- **Account manager + Smart Launch** — sign in once in a real Roblox login window; Fleet stores each login **encrypted on your PC** (Windows DPAPI). Launch several accounts at once using a Place ID, a Roblox game URL, or an exact-server deep link.
+- **Saved launch sessions** — save an account group, game/server target, and optional auto-arrange setting, then relaunch the whole setup with one click. Session metadata stays on this PC and never contains login cookies.
 - **Games browser** — browse/search experiences, sort by players/rating/name, hide empty games, open or copy Place IDs, browse public servers, and rank servers by best match, lowest ping, or most available space.
 - **People explorer** — search users or merge friends across saved accounts, filter by live status, sort by live status/name, inspect detailed public profiles, copy user IDs, and **Join** when Roblox exposes a joinable presence. Background checks patch only the person whose status changed; the page is never continuously refreshed.
 - **Live instance manager** — every running client (whether Fleet started it or not) with status dot, PID, window title, memory and start time, refreshed live and reliably even while many clients boot at once.
 - **Per-instance tools** — Focus the window, Restart, or End a client; right-click for a context menu (+ Copy PID). Bulk **End all** and **Cleanup** (also clears leftover Roblox crash-handler processes).
 - **Automatic Roblox detection** — registry + filesystem, with a manual override + Browse picker.
+- **Light, dark, or system theme** — including matching native Windows window controls and readable semantic status colors in both palettes.
 - **Launch history**, **Diagnostics** with a live log, **Settings** that persist, and a built-in **Help** page.
 
-A clean custom top bar with the **native** Windows minimize / maximize / close buttons (no title-bar icon), an animated intro splash, smooth transitions, refined typography, and a white / monochrome aesthetic throughout.
+A clean custom top bar with the **native** Windows minimize / maximize / close buttons (no title-bar icon), an animated intro splash, smooth transitions, refined typography, and a light/dark monochrome aesthetic throughout.
 
 ## How multi-instance actually works
 

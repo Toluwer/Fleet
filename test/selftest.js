@@ -21,6 +21,7 @@ const processes = require('../src/main/processes');
 const launcher = require('../src/main/launcher');
 const accounts = require('../src/main/accounts');
 const people = require('../src/main/people');
+const rendererModel = require('../src/renderer/model');
 
 let pass = 0, fail = 0;
 const results = [];
@@ -245,12 +246,59 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && nshSource.includes('CreateRoundRectRgn')
     && nshSource.includes('customFinishPage')
     && nshSource.includes('ExecShellAsUser'));
+  check('Installer detects installed version and states it',
+    nshSource.includes('DisplayVersion')
+    && nshSource.includes('You already have Fleet installed!')
+    && nshSource.includes('Update detected')
+    && nshSource.includes('DwmSetWindowAttribute')
+    && nshSource.includes('i 0x34)` ; NOZORDER|NOACTIVATE|FRAMECHANGED'));
+  const cssSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'styles.css'), 'utf8');
+  const mainSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'main.js'), 'utf8');
+  const preloadSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload', 'preload.js'), 'utf8');
+  check('Dark and light themes exist and sync the native titlebar',
+    cssSource.includes(':root[data-theme="dark"]')
+    && cssSource.includes('--on-ink')
+    && rendererSource.includes('function applyTheme()')
+    && rendererSource.includes("case 'set-theme':")
+    && mainSource.includes("ipcMain.handle('ui:titlebar'")
+    && preloadSource.includes("invoke('ui:titlebar'"));
+  check('Sessions save and relaunch full setups',
+    rendererSource.includes('function loadSessions()')
+    && rendererSource.includes("case 'session-launch':")
+    && rendererSource.includes("case 'session-save-confirm':")
+    && rendererSource.includes('api.instances.arrange()'));
+  const exactServerId = '12345678-abcd-4abc-8abc-1234567890ab';
+  const gameUrlTarget = rendererModel.parseRobloxTarget(`https://www.roblox.com/games/987654/Test?gameInstanceId=${exactServerId}`);
+  const protocolTarget = rendererModel.parseRobloxTarget(`roblox-player:1+placelauncherurl:https%3A%2F%2Fassetgame.roblox.com%2Fgame%2FPlaceLauncher.ashx%3FplaceId%3D24680%26gameId%3D${exactServerId}`);
+  check('Smart Launch parses game URLs and exact servers',
+    gameUrlTarget.placeId === '987654'
+    && gameUrlTarget.gameId === exactServerId
+    && protocolTarget.placeId === '24680'
+    && protocolTarget.gameId === exactServerId
+    && rendererSource.includes('api.launch.join(ids, target.placeId, target.gameId)'));
+  check('Smart Launch rejects share-code-only and malformed links',
+    rendererModel.parseRobloxTarget('https://www.roblox.com/share?code=not-a-place&type=ExperienceDetails').invalid === true
+    && rendererModel.parseRobloxTarget('not a Roblox target').invalid === true
+    && rendererModel.parseRobloxTarget('').invalid === false);
+  const normalizedSessions = rendererModel.normalizeSessions([
+    { id: 'good', name: '  Night run  ', accountIds: ['a', 'a', 2], placeId: '123', gameId: exactServerId, arrange: true },
+    { id: 'broken', accountIds: 'not-an-array', placeId: 'bad' },
+    null,
+  ]);
+  check('Saved sessions are normalized before rendering',
+    normalizedSessions.length === 1
+    && normalizedSessions[0].name === 'Night run'
+    && normalizedSessions[0].accountIds.join(',') === 'a,2'
+    && normalizedSessions[0].gameId === exactServerId
+    && normalizedSessions[0].arrange === true);
+  check('Theme preferences reject corrupt local values',
+    rendererModel.normalizeThemePreference('DARK') === 'dark'
+    && rendererModel.normalizeThemePreference('unknown') === 'system');
   const ipcSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc.js'), 'utf8');
   check('player join no longer requires presence-visible server ids',
     ipcSource.includes('getPersonJoinLaunchInfo(accountIds[i], targetUserId)')
     && ipcSource.includes('return doLaunch({ accountIds, targetUserId });'));
 
-  const mainSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'main.js'), 'utf8');
   check('startup has a splash recovery watchdog', mainSource.includes('Startup watchdog revealed the main window'));
   check('startup never opens an account sign-in window automatically',
     mainSource.includes('waiting for explicit sign-in')

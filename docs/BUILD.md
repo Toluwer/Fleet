@@ -85,6 +85,7 @@ electron-builder settings live in the `build` block of `package.json` (`appId: c
 
 ```bash
 npm run selftest                 # headless functional tests of the service layer
+npm run test:ui                  # isolated renderer/theme/session test; launches no Roblox
 FLEET_LIVE=1 npm run selftest    # also launches + cleans up one real client
 ```
 
@@ -113,7 +114,7 @@ Fleet/
       logger.js         file log + ring buffer
       ipc.js            wires renderer requests to services
     preload/preload.js  the only renderer<->main bridge (contextBridge)
-    renderer/           pure UI (splash.html, index.html, styles.css, app.js)
+    renderer/           pure UI (splash.html, index.html, model.js, styles.css, app.js)
   docs/                 this documentation
-  test/                 selftest + multi-instance harnesses + UI inspector
+  test/                 selftest + isolated UI test + multi-instance harnesses + UI inspector
 ```

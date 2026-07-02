@@ -19,6 +19,9 @@ function subscribe(channel, cb) {
 contextBridge.exposeInMainWorld('fleet', {
   status: () => invoke('app:status'),
   detect: () => invoke('roblox:detect'),
+  ui: {
+    titlebar: (dark) => invoke('ui:titlebar', { dark }),
+  },
   updater: {
     status: () => invoke('updater:status'),
     check: () => invoke('updater:check'),
