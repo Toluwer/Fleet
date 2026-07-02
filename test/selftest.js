@@ -231,6 +231,20 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     ["'best'", "'ping'", "'space'", "'players'", "'fps'"].every(m => rendererSource.includes(m))
     && rendererSource.includes('function serverStats(')
     && rendererSource.includes('SERVER_SORTS'));
+  check('Games search keeps relevance order and ranks close matches first',
+    rendererSource.includes('function matchScore(')
+    && rendererSource.includes('function normName(')
+    && rendererSource.includes('if (g.query) {'));
+  check('Games search is live (debounced) as you type',
+    rendererSource.includes("inp.addEventListener('input'")
+    && rendererSource.includes('clearTimeout(debounce)'));
+  const nshSource = fs.readFileSync(path.join(__dirname, '..', 'build', 'installer.nsh'), 'utf8');
+  check('Installer is a fully custom card (no wizard chrome)',
+    nshSource.includes('customWelcomePage')
+    && nshSource.includes('FleetSkinWindow')
+    && nshSource.includes('CreateRoundRectRgn')
+    && nshSource.includes('customFinishPage')
+    && nshSource.includes('ExecShellAsUser'));
   const ipcSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc.js'), 'utf8');
   check('player join no longer requires presence-visible server ids',
     ipcSource.includes('getPersonJoinLaunchInfo(accountIds[i], targetUserId)')

@@ -549,7 +549,16 @@ views.games = function () {
     <div class="games-grid" id="games-grid"></div>
   `);
   const inp = $('#games-search');
-  if (inp) inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') doGamesSearch(inp.value); });
+  if (inp) {
+    let debounce = null;
+    inp.addEventListener('input', () => {
+      clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        if (state.view === 'games' && inp.value.trim() !== state.games.query) doGamesSearch(inp.value);
+      }, 450);
+    });
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { clearTimeout(debounce); doGamesSearch(inp.value); } });
+  }
   renderGamesCategories();
   if (!g.loaded && !g.loading) gamesBrowse();
   else renderGamesGrid();
@@ -577,13 +586,37 @@ function gameRating(gm) {
   return total > 0 ? Math.round(up / total * 100) : null;
 }
 
+// Loose text match for search ranking: normalized exact > prefix > substring,
+// plus per-token prefix overlap (so "grow a gard" pins "Grow a Garden" first).
+function normName(s) {
+  return String(s || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function matchScore(name, query) {
+  const n = normName(name), q = normName(query);
+  if (!q || !n) return 0;
+  if (n === q) return 100;
+  let s = 0;
+  if (n.startsWith(q)) s = 80;
+  else if (n.includes(q)) s = 62;
+  const nt = n.split(' '), qt = q.split(' ');
+  let hit = 0;
+  for (const t of qt) if (t && nt.some(w => w.startsWith(t))) hit++;
+  s += (hit / qt.length) * 30;
+  return s;
+}
+
 function visibleGames() {
   const g = state.games;
   const list = g.list.filter(game =>
     (!g.hideEmpty || Number(game.playerCount) > 0)
     && (!g.category || g.category === 'All' || (game.categories || []).includes(g.category))
   ).slice();
-  if (g.sort === 'rating') {
+  if (g.query) {
+    // Search mode: the API order is relevance — keep it, but float the games
+    // whose names actually resemble the query to the top (stable).
+    const idx = new Map(list.map((game, i) => [game, i]));
+    list.sort((a, b) => matchScore(b.name, g.query) - matchScore(a.name, g.query) || idx.get(a) - idx.get(b));
+  } else if (g.sort === 'rating') {
     list.sort((a, b) => (gameRating(b) == null ? -1 : gameRating(b)) - (gameRating(a) == null ? -1 : gameRating(a))
       || Number(b.playerCount || 0) - Number(a.playerCount || 0));
   } else if (g.sort === 'name') {
