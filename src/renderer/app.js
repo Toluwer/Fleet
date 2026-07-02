@@ -290,8 +290,13 @@ async function call(fn, fallback, timeoutMs) {
   try {
     if (!api) throw new Error('Fleet bridge unavailable (run inside the Fleet app).');
     const work = Promise.resolve().then(fn);
+    const limit = timeoutMs === undefined ? 15000 : Number(timeoutMs);
+    // Interactive operations such as account sign-in resolve when their own
+    // window closes. A non-positive timeout lets that user-driven flow finish
+    // without showing a false "did not respond" error after 15 seconds.
+    if (!(limit > 0)) return await work;
     const timeout = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error('Fleet did not respond in time. Check Diagnostics and retry.')), timeoutMs || 15000);
+      timer = setTimeout(() => reject(new Error('Fleet did not respond in time. Check Diagnostics and retry.')), limit);
     });
     return await Promise.race([work, timeout]);
   } catch (err) {
@@ -1668,7 +1673,7 @@ document.addEventListener('click', async (e) => {
       state.addingAccount = true;
       if (state.view === 'accounts') views.accounts();
       toast('Opening Roblox sign-in…');
-      const r = await call(() => api.accounts.add());
+      const r = await call(() => api.accounts.add(), undefined, 0);
       state.addingAccount = false;
       if (r && r.ok) { await loadAccounts(); toast((r.updated ? 'Account updated: ' : 'Account added: ') + (r.account ? r.account.username : ''), 'good'); }
       else if (r && r.canceled) toast('Sign-in canceled');
@@ -1681,7 +1686,7 @@ document.addEventListener('click', async (e) => {
       state.addingAccount = true;
       if (state.view === 'accounts') views.accounts();
       toast('Opening Roblox sign-in…');
-      const r = await call(() => api.accounts.add());
+      const r = await call(() => api.accounts.add(), undefined, 0);
       state.addingAccount = false;
       if (r && r.ok) {
         await loadAccounts();

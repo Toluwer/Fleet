@@ -101,12 +101,22 @@ async function main() {
       views.instances();
 
       setThemePref('dark');
+      toast('Dark error', 'bad');
+      const errorToastText = getComputedStyle(document.querySelector('.toast.bad')).color;
+      document.querySelector('.toast.bad').remove();
+      const interactiveNoTimeout = await call(
+        () => new Promise(resolve => setTimeout(() => resolve({ ok: true }), 25)),
+        undefined,
+        0,
+      );
       const dark = {
         theme: document.documentElement.dataset.theme,
         body: getComputedStyle(document.body).backgroundColor,
         surface: getComputedStyle(document.querySelector('.card')).backgroundColor,
         primaryText: getComputedStyle(document.querySelector('.btn.primary')).color,
         unselectedChipText: getComputedStyle(document.querySelector('.chip:not(.on)')).color,
+        errorToastText,
+        interactiveNoTimeout: interactiveNoTimeout && interactiveNoTimeout.ok,
       };
       setThemePref('light');
       const light = {
@@ -144,7 +154,9 @@ async function main() {
     })()`);
 
     if (facts.dark.theme !== 'dark' || facts.dark.body === facts.light.body || facts.dark.surface === facts.light.surface
-      || facts.dark.unselectedChipText !== 'rgb(242, 243, 245)') {
+      || facts.dark.unselectedChipText !== 'rgb(242, 243, 245)'
+      || facts.dark.errorToastText !== 'rgb(255, 255, 255)'
+      || !facts.dark.interactiveNoTimeout) {
       throw new Error('Theme switching did not change the rendered palette: ' + JSON.stringify(facts));
     }
     if (!facts.saved.length || facts.saved[0].name !== 'Night crew' || !facts.saved[0].arrange) {

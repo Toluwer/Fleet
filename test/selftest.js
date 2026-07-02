@@ -251,7 +251,8 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && nshSource.includes('You already have Fleet installed!')
     && nshSource.includes('Update detected')
     && nshSource.includes('DwmSetWindowAttribute')
-    && nshSource.includes('i 0x34)` ; NOZORDER|NOACTIVATE|FRAMECHANGED'));
+    && nshSource.includes('IntOp $8 $4 + 44')
+    && nshSource.includes('i r4, i r8, i r5, i 8, i 0x34)'));
   const cssSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'styles.css'), 'utf8');
   const mainSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'main.js'), 'utf8');
   const preloadSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload', 'preload.js'), 'utf8');
@@ -308,6 +309,9 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     accountsSource.includes('sessionExpired: !!a.sessionExpired')
     && !accountsSource.includes('const remaining = readRaw().filter(x => x.id !== a.id)'));
   check('renderer API calls time out instead of hanging boot', rendererSource.includes('Promise.race([work, timeout])'));
+  check('interactive account sign-in is not cut off by the normal API timeout',
+    (rendererSource.match(/api\.accounts\.add\(\), undefined, 0/g) || []).length === 2
+    && rendererSource.includes('if (!(limit > 0)) return await work;'));
 
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
   check('Windows installer is configured for GitHub auto-update',

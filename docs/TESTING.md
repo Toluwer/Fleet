@@ -9,7 +9,7 @@ Testing was done at three levels: (1) a headless functional suite over the servi
 
 ## 1. Service-layer suite — `npm run selftest`
 
-**Current result: 81 / 81 passed.** The suite now also covers People joining/search resilience, targeted presence patching, Games filtering/ranking, updater/installer invariants, Smart Launch parsing, saved-session normalization, and theme preference validation.
+**Current result: 82 / 82 passed.** The suite now also covers People joining/search resilience, targeted presence patching, Games filtering/ranking, updater/installer invariants, Smart Launch parsing, saved-session normalization, theme preference validation, and interactive sign-in timeout behavior.
 
 | Area | Checks |
 |------|--------|
@@ -157,7 +157,7 @@ Across all launch/kill/restart activity, the application log contained **0 WARN 
 
 ```bash
 npm install
-npm run selftest                       # 81/81
+npm run selftest                       # 82/82
 npm run test:ui                        # isolated renderer test; launches no Roblox
 node test/multitest6.js                # junction + guard recipe (launches/cleans up real clients)
 # UI: npm start, or with CDP:

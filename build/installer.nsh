@@ -242,6 +242,9 @@
     System::Call `user32::CreateWindowEx(i 0, t "STATIC", t "Version ${VERSION}", i 0x50000001, i 0, i r4, i r2, i 20, i r0, i 0, i 0, i 0) i .r5`
     SendMessage $5 ${WM_SETFONT} $FleetSubFont 1
     SetCtlColors $5 ${FLEET_MUTED} ${FLEET_WHITE}
+    ; Anchor the bar below the version line instead of using an unrelated
+    ; percentage that can overlap the text on shorter/scaled installer cards.
+    IntOp $8 $4 + 44
 
     ; The bar: strip WS_BORDER + client/static edges, unskin the theme so the
     ; monochrome colors apply, then center it as a clean 8px line.
@@ -257,9 +260,7 @@
     IntOp $4 $4 / 100          ; x = 18%
     IntOp $5 $2 * 64
     IntOp $5 $5 / 100          ; width = 64%
-    IntOp $6 $3 * 52
-    IntOp $6 $6 / 100          ; y = 52%
-    System::Call `user32::SetWindowPos(i r1, i 0, i r4, i r6, i r5, i 8, i 0x34)` ; NOZORDER|NOACTIVATE|FRAMECHANGED
+    System::Call `user32::SetWindowPos(i r1, i 0, i r4, i r8, i r5, i 8, i 0x34)` ; NOZORDER|NOACTIVATE|FRAMECHANGED
     SendMessage $1 ${PBM_SETBARCOLOR} 0 ${FLEET_INK_BGR}
     SendMessage $1 ${PBM_SETBKCOLOR} 0 ${FLEET_TRACK_BGR}
   FunctionEnd

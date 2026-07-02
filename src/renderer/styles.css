@@ -511,7 +511,7 @@ textarea { resize: vertical; min-height: 70px; }
   font-size: 13px; display: flex; align-items: center; gap: 11px; min-width: 240px; max-width: 380px; animation: toastIn .26s var(--ease); }
 .toast .t-ico { width: 17px; height: 17px; flex: none; }
 .toast.good .t-ico { color: #74e6a4; }
-.toast.bad { background: #7a1c1c; }
+.toast.bad { background: #7a1c1c; color: #fff; }
 .toast.bad .t-ico { color: #ffd0d0; }
 @keyframes toastIn { from { opacity: 0; transform: translateY(14px) scale(.96); } to { opacity: 1; transform: none; } }
 
