@@ -165,6 +165,12 @@ async function getPresence(userIds) {
   const ids = userIds.map(numericId).filter(Boolean).slice(0, 100);
   const out = new Map();
   if (!ids.length) return out;
+  // Without a session Roblox reveals nothing — report "Unknown" instead of
+  // falsely labelling everyone Offline on account-less installs.
+  if (!accounts.hasSession()) {
+    for (const id of ids) out.set(id, { presence: 'Unknown', lastOnline: null, game: null, canJoin: false });
+    return out;
+  }
   // Try every stored session: a person may be visible to a secondary account
   // even when the first account sees them as offline or hides their game.
   const authed = await accounts.presenceForIds(ids);
@@ -314,6 +320,18 @@ async function performSearch(query, cursor) {
     const user = await numericUserLookup(query);
     if (!user) return { ok: true, people: [], nextPageCursor: null, query, source: 'id', notice: 'No user exists with that ID.' };
     return { ok: true, people: await enrichUsers([user]), nextPageCursor: null, query, source: 'id', notice: 'Matched by Roblox user ID.' };
+  }
+
+  // Text search REQUIRES a signed-in session: anonymous callers get empty
+  // results plus an instant 429 from Roblox, which reads as "search is
+  // broken" on machines without an added account. Say so instead of burning
+  // the shared IP quota.
+  if (!accounts.hasSession()) {
+    return {
+      ok: false,
+      needsAccount: true,
+      error: 'Add a Roblox account to search people. Roblox only answers user search for signed-in sessions — open Accounts and sign in once, then search works.',
+    };
   }
 
   // Text searches should stay broad: a full username can still have many

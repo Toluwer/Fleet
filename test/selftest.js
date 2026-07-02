@@ -289,6 +289,38 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     rendererModel.parseRobloxTarget('https://www.roblox.com/share?code=not-a-place&type=ExperienceDetails').invalid === true
     && rendererModel.parseRobloxTarget('not a Roblox target').invalid === true
     && rendererModel.parseRobloxTarget('').invalid === false);
+  const peopleSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'people.js'), 'utf8');
+  check('Account-less installs are told what to do instead of failing',
+    peopleSource.includes('needsAccount: true')
+    && peopleSource.includes("presence: 'Unknown'")
+    && rendererSource.includes('Sign in once to unlock search')
+    && rendererSource.includes('Add a Roblox account to unlock People')
+    && rendererSource.includes("case 'goto-accounts':"));
+  check('Games have favorites and recent-joins',
+    rendererSource.includes('function toggleFav(')
+    && rendererSource.includes('function recordRecentGame(')
+    && rendererSource.includes("case 'toggle-fav':")
+    && rendererSource.includes("'__fav'") && rendererSource.includes("'__recent'"));
+  check('Clipboard quick-join offers copied game links locally',
+    mainSource.includes("ipcMain.handle('ui:clipboard'")
+    && preloadSource.includes("invoke('ui:clipboard')")
+    && rendererSource.includes('function checkClipboardForGameLink(')
+    && rendererSource.includes("case 'clip-use':"));
+  check('Progress page centers by resizing the inner dialog to the card',
+    nshSource.includes('stretch it first')
+    && nshSource.includes('MoveWindow(i r0, i 0, i 0, i r2, i r3, i 1)'));
+  check('Keep-alive auto-rejoins crashed clients with cooldown and strike-out',
+    rendererSource.includes('function maybeKeepAlive(')
+    && rendererSource.includes('KEEPALIVE_COOLDOWN_MS')
+    && rendererSource.includes('t.fails >= 3')
+    && rendererSource.includes('everInGame')
+    && rendererSource.includes("case 'keepalive-off':")
+    && rendererSource.includes('session.keepAlive && session.placeId'));
+  const accountsSrcEarly = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'accounts.js'), 'utf8');
+  check('Login window spoofs a clean Chrome UA and surfaces load errors',
+    accountsSrcEarly.includes('LOGIN_UA')
+    && accountsSrcEarly.includes('setUserAgent(LOGIN_UA)')
+    && accountsSrcEarly.includes("did-fail-load"));
   const normalizedSessions = rendererModel.normalizeSessions([
     { id: 'good', name: '  Night run  ', accountIds: ['a', 'a', 2], placeId: '123', gameId: exactServerId, arrange: true },
     { id: 'broken', accountIds: 'not-an-array', placeId: 'bad' },

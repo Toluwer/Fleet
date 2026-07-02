@@ -307,6 +307,17 @@ svg.ico, svg.b-ico, svg.t-ico {
 .games-tools, .people-tools { display: flex; align-items: center; justify-content: space-between; gap: 10px;
   flex-wrap: wrap; margin: -6px 0 16px; }
 .btn.active-filter { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.keepalive-chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 6px 4px 12px; border-radius: var(--r-pill);
+  border: 1px solid var(--green-ring); background: var(--green-bg); color: var(--green); font-size: 12px; font-weight: 600; }
+.keepalive-chip[hidden] { display: none; }
+.keepalive-chip .ico { width: 13px; height: 13px; }
+.clip-offer { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding: 10px 14px;
+  border: 1px dashed var(--hair-2); border-radius: var(--r); background: var(--surface-2); font-size: 12.5px; color: var(--ink-2); }
+.clip-offer[hidden] { display: none; }
+.clip-offer .ico { width: 15px; height: 15px; color: var(--ink-3); flex: none; }
+.clip-offer span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.btn.fav.on { color: var(--amber); border-color: var(--amber); }
+.btn.fav.on svg { fill: currentColor; }
 .games-cats { display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 14px; }
 .games-cats[hidden] { display: none; }
 .cat-chip { display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border: 1px solid var(--hair-2);

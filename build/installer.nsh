@@ -94,7 +94,10 @@
       IntOp $4 $4 - $2
       IntOp $3 $3 + 1
       IntOp $4 $4 + 1
-      System::Call `gdi32::CreateRoundRectRgn(i 0, i 0, i r3, i r4, i 16, i 16) i .r5`
+      ; Small radius: window regions can't antialias, and a subtle curve shows
+      ; far fewer stair-steps than a big one. (Windows 11 uses smooth DWM
+      ; corners via the attribute above and never reaches this path.)
+      System::Call `gdi32::CreateRoundRectRgn(i 0, i 0, i r3, i r4, i 12, i 12) i .r5`
       System::Call `user32::SetWindowRgn(i $HWNDPARENT, i r5, i 1)`
     ${EndIf}
 
@@ -144,8 +147,9 @@
     ${EndIf}
     SetCtlColors $FleetDlg ${FLEET_INK} ${FLEET_WHITE}
 
-    ; Generous vertical bounds keep Segoe UI from clipping at 125-200% DPI.
-    ${NSD_CreateLabel} 4% 25% 92% 20% ""
+    ; Generous bounds keep Segoe UI from clipping at 125-200% DPI, and the
+    ; near-full width fits "You already have Fleet installed!" comfortably.
+    ${NSD_CreateLabel} 2% 24% 96% 22% ""
     Pop $FleetHeading
     ${NSD_AddStyle} $FleetHeading 0x00000001 ; SS_CENTER
     SetCtlColors $FleetHeading ${FLEET_INK} ${FLEET_WHITE}
@@ -224,6 +228,14 @@
     ${EndIf}
     SetCtlColors $0 ${FLEET_INK} ${FLEET_WHITE}
 
+    ; The inner page keeps the ORIGINAL 1018 placeholder geometry, not the
+    ; full-card one — stretch it first or everything centers off-card.
+    System::Call `*(i, i, i, i) i .R0`
+    System::Call `user32::GetClientRect(i $HWNDPARENT, i R0)`
+    System::Call `*$R0(i, i, i .r2, i .r3)`
+    System::Free $R0
+    System::Call `user32::MoveWindow(i r0, i 0, i 0, i r2, i r3, i 1)`
+
     ; Hide the stock status line and details list; only the bar remains.
     GetDlgItem $1 $0 1006
     ShowWindow $1 ${SW_HIDE}
@@ -232,12 +244,7 @@
     GetDlgItem $1 $0 1016
     ShowWindow $1 ${SW_HIDE}
 
-    System::Call `*(i, i, i, i) i .R0`
-    System::Call `user32::GetClientRect(i r0, i R0)`
-    System::Call `*$R0(i, i, i .r2, i .r3)`
-    System::Free $R0
-
-    ; Heading + version, centered above the bar.
+    ; Heading + version, centered above the bar ($2/$3 = full card size now).
     IntOp $4 $3 * 27
     IntOp $4 $4 / 100
     ${If} $FleetState == "update"

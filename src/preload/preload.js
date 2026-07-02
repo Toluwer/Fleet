@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('fleet', {
   detect: () => invoke('roblox:detect'),
   ui: {
     titlebar: (dark) => invoke('ui:titlebar', { dark }),
+    clipboard: () => invoke('ui:clipboard'),
   },
   updater: {
     status: () => invoke('updater:status'),

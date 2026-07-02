@@ -378,12 +378,20 @@ async function getPersonJoinContext(accountId, targetUserId) {
 /* ----------------------------- Add / manage ----------------------------- */
 
 /** Open a Roblox login window and resolve with the captured cookie (or null). */
+// A clean desktop-Chrome user agent. Roblox's login page renders BLANK for
+// user agents containing "Electron"/the app name (bot detection), which is the
+// classic "Add account is white and never loads" bug — so spoof Chrome on both
+// the session and the webContents before navigating.
+const LOGIN_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+
 function captureLogin() {
   return new Promise((resolve) => {
     const partition = 'fleet-add-' + Date.now();
     const ses = sessionApi.fromPartition(partition);
+    try { ses.setUserAgent(LOGIN_UA); } catch (_) {}
     const win = new BrowserWindow({
-      width: 500, height: 680, title: 'Sign in to Roblox', autoHideMenuBar: true,
+      width: 520, height: 720, title: 'Sign in to Roblox', autoHideMenuBar: true,
+      backgroundColor: '#ffffff', show: false,
       icon: path.join(__dirname, '..', '..', 'build', 'icon.ico'),
       webPreferences: { partition, nodeIntegration: false, contextIsolation: true, sandbox: true },
     });
@@ -396,7 +404,33 @@ function captureLogin() {
       resolve(cookie);
     };
     win.on('closed', () => { if (!done) { done = true; if (timer) clearInterval(timer); resolve(null); } });
-    win.loadURL('https://www.roblox.com/login').catch(() => finish(null));
+    win.once('ready-to-show', () => { try { win.show(); } catch (_) {} });
+
+    // Strip UA-Client-Hints/UA header that still leak "Electron" on some builds.
+    try {
+      ses.webRequest.onBeforeSendHeaders((details, cb) => {
+        details.requestHeaders['User-Agent'] = LOGIN_UA;
+        delete details.requestHeaders['sec-ch-ua'];
+        delete details.requestHeaders['Sec-CH-UA'];
+        cb({ requestHeaders: details.requestHeaders });
+      });
+    } catch (_) {}
+
+    win.webContents.on('did-fail-load', (_e, code, desc, url) => {
+      // -3 is an aborted sub-resource (normal on SPA nav); ignore those.
+      if (code === -3) return;
+      logger.warn('Login page load failed', code + ' ' + desc + ' ' + url);
+      try {
+        if (!win.isDestroyed()) win.loadURL('data:text/html,' + encodeURIComponent(
+          '<body style="font:15px Segoe UI;margin:40px;color:#0e0f12">Could not reach the Roblox sign-in page.<br><br>'
+          + 'Check your internet connection and close this window, then try <b>Add account</b> again.</body>'));
+      } catch (_) {}
+    });
+
+    win.loadURL('https://www.roblox.com/login', { userAgent: LOGIN_UA }).catch((err) => {
+      logger.warn('Login loadURL rejected', err && err.message);
+    });
+
     timer = setInterval(async () => {
       try {
         const cookies = await ses.cookies.get({ name: '.ROBLOSECURITY' });

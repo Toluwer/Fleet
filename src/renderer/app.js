@@ -336,6 +336,60 @@ function mount(html) { content.innerHTML = `<div class="view view-enter">${html}
 
 /* ----------------------------- Instances view ----------------------------- */
 
+/* ----------------------------- Favorites & Recents ----------------------------- */
+/* Starred games and the last games joined, persisted locally so they survive
+   restarts and searches. Stored as full game objects (name/thumbnail/votes)
+   so the grid renders them even when they're not in the current browse list. */
+const FAV_KEY = 'fleet-fav-games';
+const RECENT_KEY = 'fleet-recent-games';
+function loadGameStore(key) {
+  try { const l = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(l) ? l : []; }
+  catch (_) { return []; }
+}
+function favGames() { return loadGameStore(FAV_KEY); }
+function recentGames() { return loadGameStore(RECENT_KEY); }
+function isFav(gm) { return favGames().some(g => String(g.placeId) === String(gm.placeId)); }
+function toggleFav(gm) {
+  const list = favGames();
+  const idx = list.findIndex(g => String(g.placeId) === String(gm.placeId));
+  if (idx >= 0) list.splice(idx, 1); else list.unshift(gm);
+  localStorage.setItem(FAV_KEY, JSON.stringify(list.slice(0, 60)));
+  return idx < 0;
+}
+function recordRecentGame(gm) {
+  if (!gm || !gm.placeId) return;
+  const list = recentGames().filter(g => String(g.placeId) !== String(gm.placeId));
+  list.unshift(Object.assign({}, gm, { joinedAt: Date.now() }));
+  localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 12)));
+}
+function gameByPlaceId(placeId) {
+  return state.games.list.find(g => String(g.placeId) === String(placeId))
+    || favGames().find(g => String(g.placeId) === String(placeId))
+    || recentGames().find(g => String(g.placeId) === String(placeId))
+    || null;
+}
+
+/* ----------------------------- Clipboard quick-join ----------------------------- */
+/* If a Roblox game link is sitting on the clipboard when Instances is opened
+   or refocused, offer it — one click drops it into the launch box. Local only. */
+let lastClipboardOffer = '';
+async function checkClipboardForGameLink() {
+  if (state.view !== 'instances' || !api.ui || !api.ui.clipboard) return;
+  const r = await call(() => api.ui.clipboard(), { ok: false, text: '' });
+  const text = (r && r.text || '').trim();
+  if (!text || text === lastClipboardOffer) return;
+  const target = parseRobloxTarget(text);
+  if (!target.placeId) return;
+  lastClipboardOffer = text;
+  const box = $('#clip-offer');
+  if (!box) return;
+  box.hidden = false;
+  box.innerHTML = `${icon('copy')} <span>Roblox link on your clipboard — place <b>${esc(target.placeId)}</b>${target.gameId ? ' (specific server)' : ''}</span>
+    <button class="btn sm primary" data-action="clip-use" data-text="${esc(text)}">Use it</button>
+    <button class="btn sm ghost" data-action="clip-dismiss">Dismiss</button>`;
+}
+window.addEventListener('focus', () => { setTimeout(checkClipboardForGameLink, 150); });
+
 /* ----------------------------- Sessions ----------------------------- */
 /* A session = a saved multi-launch setup (accounts + target + arrange).
    One click reproduces the whole thing. Stored locally, survives restarts. */
@@ -358,7 +412,7 @@ function sessionRows() {
     const missing = known.length < s.accountIds.length ? ` · ${s.accountIds.length - known.length} account(s) missing` : '';
     return `<div class="setting">
       <div><div class="s-label">${esc(s.name)}</div>
-      <div class="s-desc">${known.length} account${known.length === 1 ? '' : 's'} · ${esc(target)}${s.arrange ? ' · auto-arrange' : ''}${esc(missing)}</div></div>
+      <div class="s-desc">${known.length} account${known.length === 1 ? '' : 's'} · ${esc(target)}${s.arrange ? ' · auto-arrange' : ''}${s.keepAlive ? ' · keep-alive' : ''}${esc(missing)}</div></div>
       <div class="s-control inline">
         <button class="btn sm primary" data-action="session-launch" data-id="${esc(s.id)}" ${known.length ? '' : 'disabled'}>${icon('play')} Launch</button>
         <button class="btn sm icon" data-action="session-delete" data-id="${esc(s.id)}" data-tip="Delete this session">${icon('x')}</button>
@@ -374,7 +428,7 @@ views.instances = function () {
       <div class="b-text"><b>Roblox detected</b><span>${esc(s.version || '')} · found via ${esc(s.source || '')}</span></div></div>`;
   } else {
     detection = `<div class="banner bad"><svg class="b-ico"><use href="#i-alert-circle"/></svg>
-      <div class="b-text"><b>Roblox not found</b><span>Install Roblox, or set the path manually in Settings.</span></div>
+      <div class="b-text"><b>Roblox not found</b><span>Install the regular desktop Roblox from roblox.com. The Microsoft Store version and custom launchers (Bloxstrap) aren't detected — or point Settings at your RobloxPlayerBeta.exe manually.</span></div>
       <div class="b-actions"><button class="btn sm" data-action="goto-settings">Open Settings</button></div></div>`;
   }
   let lockBanner = '';
@@ -397,6 +451,7 @@ views.instances = function () {
       <div class="chips">${hasAccounts ? accountChips : '<span class="hint">No accounts yet.</span>'}</div>
       <div class="inline" style="margin-top:16px">
         <input id="lp-place" type="text" placeholder="Place ID or game link (optional)" value="${esc(state.placeId)}" style="max-width:320px" data-tip="Paste a place ID, a roblox.com game URL, or a share link with a server ID" />
+        <label class="inline" style="gap:7px;cursor:pointer;font-size:12.5px;color:var(--ink-2);white-space:nowrap" data-tip="If a client crashes or disconnects, Fleet puts that account straight back into the game"><input type="checkbox" id="lp-keepalive"> Keep alive</label>
         <div class="spacer" style="flex:1"></div>
         <button class="btn primary lg" data-action="launch-accounts" ${s.robloxFound ? '' : 'disabled'}>${icon('play')} <span id="lp-count-label">Launch ${state.selected.size || ''}</span></button>
       </div>
@@ -429,6 +484,7 @@ views.instances = function () {
     </div>
     ${detection}
     ${lockBanner}
+    <div id="clip-offer" class="clip-offer" hidden></div>
     <div class="card pad" style="margin-top:14px">
       <div class="row-split" style="margin-bottom:16px">
         <div style="font-weight:600;font-size:15px">Launch Roblox</div>
@@ -449,6 +505,7 @@ views.instances = function () {
 
     <div class="row-split" style="margin:26px 2px 12px">
       <div class="section-title" style="margin:0">Running clients</div>
+      <span id="keepalive-chip" class="keepalive-chip" hidden></span>
       <div class="inline">
         <button class="btn sm" data-action="refresh-instances" data-tip="Refresh now">${icon('refresh')} Refresh</button>
         <button class="btn sm" data-action="arrange" data-tip="Tile all Roblox windows into a grid">${icon('grid')} Arrange</button>
@@ -460,6 +517,8 @@ views.instances = function () {
     <div id="ilist" class="ilist" style="margin-top:14px"></div>
   `);
   renderInstanceList();
+  renderKeepAliveChip();
+  setTimeout(checkClipboardForGameLink, 200);
 };
 
 function renderInstanceList() {
@@ -604,6 +663,52 @@ function applyAccountUpdate(acc) {
     if (acc.game && acc.game.name) { gameEl.hidden = false; gameEl.innerHTML = icon('compass') + ' ' + esc(acc.game.name); }
     else { gameEl.hidden = true; gameEl.innerHTML = ''; }
   }
+  maybeKeepAlive(state.accounts[i >= 0 ? i : -1] || acc);
+}
+
+/* ----------------------------- Keep-alive (auto-rejoin) ----------------------------- */
+/* Armed per launch: if a watched account stops being in-game (crash, kick,
+   disconnect), Fleet relaunches it into the same game. Rides the existing 12s
+   presence stream — no extra polling. 90s cooldown + 3 strikes per account so
+   a genuinely broken join can't loop forever. */
+const keepAlive = { armed: new Map() }; // accountId -> {placeId, gameId, name, lastRelaunch, fails, everInGame}
+const KEEPALIVE_COOLDOWN_MS = 90000;
+
+function armKeepAlive(ids, placeId, gameId, name) {
+  if (!placeId) return;
+  const now = Date.now();
+  ids.forEach(id => keepAlive.armed.set(id, { placeId: String(placeId), gameId: gameId || '', name: name || 'game', lastRelaunch: now, fails: 0, everInGame: false }));
+  renderKeepAliveChip();
+}
+function disarmKeepAlive() { keepAlive.armed.clear(); renderKeepAliveChip(); }
+
+function renderKeepAliveChip() {
+  const el = $('#keepalive-chip');
+  if (!el) return;
+  const n = keepAlive.armed.size;
+  el.hidden = !n;
+  el.innerHTML = n ? `${icon('activity')} Keep-alive: ${n} account${n === 1 ? '' : 's'} <button class="btn sm ghost" data-action="keepalive-off">Stop</button>` : '';
+}
+
+async function maybeKeepAlive(acc) {
+  if (!acc || !acc.id) return;
+  const t = keepAlive.armed.get(acc.id);
+  if (!t) return;
+  const inGame = presenceClass(acc.presence) === 'ingame';
+  if (inGame) { t.everInGame = true; t.fails = 0; return; }
+  // Only react after the account has actually made it in once (joining takes
+  // a while), then rate-limit relaunches and give up after 3 straight fails.
+  if (!t.everInGame) return;
+  const now = Date.now();
+  if (now - t.lastRelaunch < KEEPALIVE_COOLDOWN_MS) return;
+  if (t.fails >= 3) { keepAlive.armed.delete(acc.id); renderKeepAliveChip(); toast(`Keep-alive gave up on ${acc.displayName || acc.username} after 3 tries`, 'bad'); return; }
+  t.lastRelaunch = now;
+  t.fails += 1;
+  toast(`Keep-alive: putting ${esc(acc.displayName || acc.username)} back into ${esc(t.name)}…`);
+  const r = t.gameId
+    ? await call(() => api.launch.join([acc.id], t.placeId, t.gameId))
+    : await call(() => api.launch.accounts([acc.id], t.placeId));
+  if (!(r && r.ok)) toast('Keep-alive relaunch failed — will retry', 'bad');
 }
 
 /* ----------------------------- Games view ----------------------------- */
@@ -647,13 +752,18 @@ function renderGamesCategories() {
   if (!box) return;
   const g = state.games;
   const cats = g.categories || [];
-  if (!cats.length) { box.innerHTML = ''; box.hidden = true; return; }
+  const favs = favGames().length;
+  const recents = recentGames().length;
+  if (!cats.length && !favs && !recents) { box.innerHTML = ''; box.hidden = true; return; }
   box.hidden = false;
-  const chip = (label, value) => {
-    const n = value === 'All' ? g.list.length : g.list.filter(x => (x.categories || []).includes(value)).length;
+  const chip = (label, value, count) => {
+    const n = count != null ? count : (value === 'All' ? g.list.length : g.list.filter(x => (x.categories || []).includes(value)).length);
     return `<button class="cat-chip ${g.category === value ? 'on' : ''}" data-action="games-category" data-cat="${esc(value)}">${esc(label)}<span class="cat-n">${n}</span></button>`;
   };
-  box.innerHTML = chip('All', 'All') + cats.map(c => chip(c, c)).join('');
+  box.innerHTML = (cats.length ? chip('All', 'All') : '')
+    + (favs ? chip('Favorites', '__fav', favs) : '')
+    + (recents ? chip('Recent', '__recent', recents) : '')
+    + cats.map(c => chip(c, c)).join('');
 }
 
 function gameRating(gm) {
@@ -684,6 +794,10 @@ function matchScore(name, query) {
 
 function visibleGames() {
   const g = state.games;
+  // Favorites and Recents render straight from their stores (kept in saved
+  // order — player counts there are snapshots, not live).
+  if (g.category === '__fav') return favGames();
+  if (g.category === '__recent') return recentGames();
   const list = g.list.filter(game =>
     (!g.hideEmpty || Number(game.playerCount) > 0)
     && (!g.category || g.category === 'All' || (game.categories || []).includes(g.category))
@@ -717,6 +831,7 @@ function gameCard(gm) {
       <div class="game-meta">${gm.creator ? '<span>' + esc(gm.creator) + '</span>' : ''}${likes}</div>
       <div class="game-actions">
         <button class="btn primary sm" data-action="join-game" data-place="${esc(gm.placeId)}" data-name="${esc(gm.name)}">${icon('play')} Join</button>
+        <button class="btn sm icon fav ${isFav(gm) ? 'on' : ''}" data-action="toggle-fav" data-place="${esc(gm.placeId)}" data-tip="${isFav(gm) ? 'Remove from favorites' : 'Save to favorites'}">${icon('bookmark')}</button>
         <button class="btn sm" data-action="open-servers" data-place="${esc(gm.placeId)}" data-name="${esc(gm.name)}" data-tip="Browse & join a specific server">${icon('server')}</button>
         <button class="btn sm icon" data-action="open-game-web" data-place="${esc(gm.placeId)}" data-tip="Open on Roblox">${icon('box')}</button>
         <button class="btn sm icon" data-action="copy-place-id" data-place="${esc(gm.placeId)}" data-tip="Copy place ID">${icon('copy')}</button>
@@ -931,8 +1046,11 @@ async function joinServer(placeId, serverId, name) {
   if (!state.accounts.length) { toast('Add an account to join a server', 'bad'); closeModal(); state.servers = null; setView('accounts'); return; }
   const ids = state.selected.size ? Array.from(state.selected) : [state.accounts[0].id];
   const r = await call(() => api.launch.join(ids, String(placeId), String(serverId)));
-  if (r && r.ok) { toast(`Joining ${name} · ${r.launched} client${r.launched === 1 ? '' : 's'}`, r.failed ? 'bad' : 'good'); closeModal(); state.servers = null; }
-  else toast((r && r.error) || 'Join failed', 'bad');
+  if (r && r.ok) {
+    toast(`Joining ${name} · ${r.launched} client${r.launched === 1 ? '' : 's'}`, r.failed ? 'bad' : 'good');
+    recordRecentGame(gameByPlaceId(placeId));
+    closeModal(); state.servers = null;
+  } else toast((r && r.error) || 'Join failed', 'bad');
 }
 
 function renderGamesGrid() {
@@ -989,8 +1107,10 @@ async function joinPlace(placeId, name) {
   const ids = state.selected.size ? Array.from(state.selected) : [state.accounts[0].id];
   toast('Joining ' + (name || 'game') + (ids.length > 1 ? ' with ' + ids.length + ' accounts' : '') + '…');
   const r = await call(() => api.launch.accounts(ids, String(placeId)));
-  if (r && r.ok) toast(`Launched ${r.launched} client${r.launched === 1 ? '' : 's'}`, r.failed ? 'bad' : 'good');
-  else toast((r && r.error) || 'Join failed', 'bad');
+  if (r && r.ok) {
+    toast(`Launched ${r.launched} client${r.launched === 1 ? '' : 's'}`, r.failed ? 'bad' : 'good');
+    recordRecentGame(gameByPlaceId(placeId));
+  } else toast((r && r.error) || 'Join failed', 'bad');
 }
 
 /* ----------------------------- People view ----------------------------- */
@@ -1003,11 +1123,17 @@ views.people = function () {
 function renderPeopleHome() {
   const pp = state.people;
   const search = pp.search;
+  const onboarding = state.accounts.length ? '' : `
+    <div class="banner warn" style="margin-bottom:14px"><svg class="b-ico"><use href="#i-user-plus"/></svg>
+      <div class="b-text"><b>Add a Roblox account to unlock People</b><span>Search, friends, live presence and Join buttons all need a signed-in session — Roblox hides them from anonymous apps. Sign in once and everything here lights up.</span></div>
+      <div class="b-actions"><button class="btn sm primary" data-action="goto-accounts">Add account</button></div>
+    </div>`;
   mount(`
     <div class="page-head">
       <h1>People</h1>
       <p>Find Roblox users or browse friends shared across your saved accounts.</p>
     </div>
+    ${onboarding}
     <div class="toolbar people-searchbar">
       <div class="search">${icon('search')}<input id="people-search" type="text" maxlength="50" placeholder="Username, display name, or user ID" value="${esc(search.query)}"></div>
       <button class="btn" data-action="people-search-clear" ${search.searched || search.query ? '' : 'disabled'}>Clear</button>
@@ -1182,6 +1308,11 @@ function renderPeopleSearchResults() {
     root.innerHTML = `<div class="people-search-state"><span class="spinner dark"></span><div><strong>Searching Roblox</strong><small>Checking matching public profiles...</small></div></div>`;
     return;
   }
+  if (search.needsAccount) {
+    root.innerHTML = `<div class="people-search-state">${icon('user-plus')}<div><strong>Sign in once to unlock search</strong><small>Roblox only answers user search for signed-in sessions. Add any account and search, presence and Join buttons all start working.</small></div>
+      <button class="btn sm primary" data-action="goto-accounts">${icon('user-plus')} Add account</button></div>`;
+    return;
+  }
   if (search.error) {
     root.innerHTML = `<div class="people-search-state error">${icon('alert-circle')}<div><strong>Search paused</strong><small>${esc(search.error)}</small></div>
       ${search.retryable ? `<button class="btn sm" data-action="people-search-retry">${icon('refresh')} Retry</button>` : ''}</div>`;
@@ -1229,7 +1360,7 @@ async function runPeopleSearch(query, append) {
   if (!append) { search.query = q; search.list = []; search.nextPageCursor = null; }
   const requestId = ++search.requestId;
   search.loading = true; search.error = null; search.searched = true; search.notice = null;
-  search.source = null; search.cached = false; search.retryable = false;
+  search.source = null; search.cached = false; search.retryable = false; search.needsAccount = false;
   setPeopleSearchBusy(true);
   renderPeopleSearchResults();
   const r = await call(() => api.people.search(search.query, append ? search.nextPageCursor : null));
@@ -1245,6 +1376,7 @@ async function runPeopleSearch(query, append) {
   } else {
     search.error = (r && r.error) || 'Search failed.';
     search.retryable = !!(r && r.retryable);
+    search.needsAccount = !!(r && r.needsAccount);
   }
   if (state.view === 'people' && state.people.route === 'home') renderPeopleSearchResults();
 }
@@ -1692,6 +1824,7 @@ document.addEventListener('click', async (e) => {
       break;
     }
     case 'goto-settings': setView('settings'); break;
+    case 'goto-accounts': setView('accounts'); break;
 
     case 'launch-mode': {
       state.launchMode = elAction.dataset.mode;
@@ -1736,8 +1869,11 @@ document.addEventListener('click', async (e) => {
         ? await call(() => api.launch.join(ids, target.placeId, target.gameId))
         : await call(() => api.launch.accounts(ids, target.placeId));
       elAction.disabled = false;
-      if (r && r.ok) toast(`Launched ${r.launched} client${r.launched === 1 ? '' : 's'}` + (target.gameId ? ' into the exact server' : '') + (r.failed ? `, ${r.failed} failed` : ''), r.failed ? 'bad' : 'good');
-      else toast((r && r.error) || 'Launch failed', 'bad');
+      if (r && r.ok) {
+        toast(`Launched ${r.launched} client${r.launched === 1 ? '' : 's'}` + (target.gameId ? ' into the exact server' : '') + (r.failed ? `, ${r.failed} failed` : ''), r.failed ? 'bad' : 'good');
+        const ka = $('#lp-keepalive');
+        if (ka && ka.checked && target.placeId) { armKeepAlive(ids, target.placeId, target.gameId, 'the game'); toast('Keep-alive armed — crashed clients rejoin automatically', 'good'); }
+      } else toast((r && r.error) || 'Launch failed', 'bad');
       break;
     }
     case 'launch-account': {
@@ -1843,6 +1979,34 @@ document.addEventListener('click', async (e) => {
       renderGamesCategories();
       renderGamesGrid();
       break;
+    case 'toggle-fav': {
+      const gm = gameByPlaceId(elAction.dataset.place);
+      if (!gm) break;
+      const added = toggleFav(gm);
+      toast(added ? 'Saved to favorites' : 'Removed from favorites', 'good');
+      renderGamesCategories();
+      renderGamesGrid();
+      break;
+    }
+    case 'clip-use': {
+      const text = elAction.dataset.text || '';
+      state.placeId = text;
+      const inp = $('#lp-place');
+      if (inp) { inp.value = text; inp.focus(); }
+      const box = $('#clip-offer');
+      if (box) { box.hidden = true; box.innerHTML = ''; }
+      toast('Link loaded — pick accounts and launch', 'good');
+      break;
+    }
+    case 'clip-dismiss': {
+      const box = $('#clip-offer');
+      if (box) { box.hidden = true; box.innerHTML = ''; }
+      break;
+    }
+    case 'keepalive-off':
+      disarmKeepAlive();
+      toast('Keep-alive stopped', 'good');
+      break;
     case 'set-theme':
       setThemePref(elAction.dataset.theme || 'system');
       if (state.view === 'settings') views.settings();
@@ -1866,6 +2030,9 @@ document.addEventListener('click', async (e) => {
           <label class="toggle-row inline" style="gap:10px;margin-top:4px;cursor:pointer">
             <input type="checkbox" id="session-arrange"> <span>Auto-arrange windows ~20s after launch</span>
           </label>
+          <label class="toggle-row inline" style="gap:10px;margin-top:8px;cursor:pointer">
+            <input type="checkbox" id="session-keepalive"> <span>Keep alive — auto-rejoin accounts that crash or disconnect</span>
+          </label>
         </div>
         <div class="m-foot"><button class="btn" data-action="modal-cancel">Cancel</button>
         <button class="btn primary" data-action="session-save-confirm">${icon('check')} Save session</button></div>`);
@@ -1885,6 +2052,7 @@ document.addEventListener('click', async (e) => {
         placeId: draft.placeId,
         gameId: draft.gameId,
         arrange: !!($('#session-arrange') && $('#session-arrange').checked),
+        keepAlive: !!($('#session-keepalive') && $('#session-keepalive').checked),
       });
       const saved = saveSessions(sessions);
       state.sessionDraft = null;
@@ -1909,6 +2077,7 @@ document.addEventListener('click', async (e) => {
           toast('Windows will be arranged in ~20s', 'good');
           setTimeout(() => { call(() => api.instances.arrange()); }, 20000);
         }
+        if (session.keepAlive && session.placeId) armKeepAlive(ids, session.placeId, session.gameId, session.name);
       } else toast((r && r.error) || 'Session launch failed', 'bad');
       break;
     }

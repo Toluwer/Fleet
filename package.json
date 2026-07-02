@@ -1,7 +1,7 @@
 {
   "name": "fleet",
-  "version": "1.4.0",
-  "description": "Fleet — a clean, minimalist multi-instance launcher for Roblox",
+  "version": "1.4.1",
+  "description": "Fleet â€” a clean, minimalist multi-instance launcher for Roblox",
   "author": "Toluwa",
   "license": "MIT",
   "main": "src/main/main.js",

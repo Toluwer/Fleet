@@ -137,6 +137,13 @@ ipcMain.handle('ui:titlebar', (_event, payload) => {
   }
 });
 
+// Local-only clipboard peek so the renderer can offer "join the game link you
+// just copied". Nothing is stored or sent anywhere.
+ipcMain.handle('ui:clipboard', () => {
+  try { return { ok: true, text: String(require('electron').clipboard.readText() || '').slice(0, 2000) }; }
+  catch (err) { return { ok: false, text: '', error: (err && err.message) || String(err) }; }
+});
+
 function createWindow() {
   mainShown = false;
   mainWindow = new BrowserWindow({
