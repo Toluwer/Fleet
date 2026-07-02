@@ -21,6 +21,8 @@ const processes = require('../src/main/processes');
 const launcher = require('../src/main/launcher');
 const accounts = require('../src/main/accounts');
 const people = require('../src/main/people');
+const games = require('../src/main/games');
+const updater = require('../src/main/updater');
 const rendererModel = require('../src/renderer/model');
 
 let pass = 0, fail = 0;
@@ -232,6 +234,12 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     ["'best'", "'ping'", "'space'", "'players'", "'fps'"].every(m => rendererSource.includes(m))
     && rendererSource.includes('function serverStats(')
     && rendererSource.includes('SERVER_SORTS'));
+  check('Server Intelligence exposes deep scans, multi-filters, quality and live refresh',
+    rendererSource.includes('function deepScanServers(')
+    && rendererSource.includes('function filteredServers(')
+    && rendererSource.includes('function serverQuality(')
+    && rendererSource.includes("case 'servers-auto-refresh':")
+    && rendererSource.includes('api.games.scanServers'));
   check('Games search keeps relevance order and ranks close matches first',
     rendererSource.includes('function matchScore(')
     && rendererSource.includes('function normName(')
@@ -251,7 +259,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && nshSource.includes('You already have Fleet installed!')
     && nshSource.includes('Update detected')
     && nshSource.includes('DwmSetWindowAttribute')
-    && nshSource.includes('IntOp $8 $4 + 44')
+    && nshSource.includes('IntOp $8 $4 + 52')
     && nshSource.includes('i r4, i r8, i r5, i 8, i 0x34)'));
   const cssSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'styles.css'), 'utf8');
   const mainSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'main.js'), 'utf8');
@@ -321,6 +329,46 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   check('official installer keeps the permanent FleetInstaller.exe name',
     manifest.build.artifactName === 'FleetInstaller.${ext}'
     && manifest.build.nsis.runAfterFinish === false);
+
+  await section('Server intelligence and updater safety');
+  const mockResponse = (status, data) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => data,
+  });
+  try {
+    global.fetch = async (url) => {
+      const u = new URL(String(url));
+      if (u.searchParams.get('sortOrder') === 'Asc') {
+        return mockResponse(200, { data: [{ id: 'quiet', playing: 1, maxPlayers: 28, ping: 8, fps: 60 }], nextPageCursor: null });
+      }
+      return mockResponse(200, { data: [{ id: 'busy', playing: 27, maxPlayers: 28, ping: 60, fps: 58 }], nextPageCursor: null });
+    };
+    const rankedPool = await games.servers('4924922222');
+    check('Most Players receives busy joinable servers, not only the emptiest page',
+      rankedPool.ok && rankedPool.servers.some(s => s.id === 'busy' && s.playing === 27));
+
+    let fallbackPages = 0;
+    global.fetch = async (url) => {
+      const u = new URL(String(url));
+      const exclude = u.searchParams.get('excludeFullGames');
+      const cursor = u.searchParams.get('cursor');
+      if (exclude === 'true') return mockResponse(200, { data: [], nextPageCursor: null });
+      fallbackPages++;
+      if (!cursor) return mockResponse(200, { data: [{ id: 'full', playing: 28, maxPlayers: 28 }], nextPageCursor: 'page-two' });
+      return mockResponse(200, { data: [{ id: 'busy-fallback', playing: 25, maxPlayers: 28, ping: 75, fps: 55 }], nextPageCursor: null });
+    };
+    const fallbackPool = await games.scanServers('4924922222', 4);
+    check('Deep scan walks past full Roblox pages when joinable filtering returns empty',
+      fallbackPool.ok && fallbackPool.servers.some(s => s.id === 'busy-fallback') && fallbackPages === 2);
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  const rawUpdateError = '404 method: GET url: https://github.com/Toluwer/Fleet/releases.atom Headers: { "set-cookie": "secret-marker" }';
+  const safeUpdateError = updater.updaterErrorMessage(rawUpdateError);
+  check('Updater errors are concise and never expose headers or cookies',
+    /HTTP 404/.test(safeUpdateError) && !/headers|cookie|secret-marker/i.test(safeUpdateError));
 
   await section('Resilient people search');
   const response = (status, data, headers) => ({

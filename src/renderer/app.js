@@ -114,8 +114,18 @@ function toast(message, type) {
 }
 
 /* ----------------------------- Modal ----------------------------- */
-function openModal(htmlStr) { $('#modal').innerHTML = htmlStr; $('#modal-back').classList.add('open'); }
-function closeModal() { $('#modal-back').classList.remove('open'); $('#modal').innerHTML = ''; }
+function openModal(htmlStr, className) {
+  const modal = $('#modal');
+  modal.className = 'modal' + (className ? ' ' + className : '');
+  modal.innerHTML = htmlStr;
+  $('#modal-back').classList.add('open');
+}
+function closeModal() {
+  if (state.servers && state.servers.refreshTimer) clearInterval(state.servers.refreshTimer);
+  $('#modal-back').classList.remove('open');
+  $('#modal').className = 'modal';
+  $('#modal').innerHTML = '';
+}
 let confirmResolver = null;
 function confirmDialog({ title, body, confirmText, danger }) {
   return new Promise((resolve) => {
@@ -749,20 +759,66 @@ function sortedServers(list, mode) {
 function serverStats(list) {
   const l = list || [];
   const withPing = l.filter(s => s.ping != null);
+  const withFps = l.filter(s => s.fps != null);
+  const pings = withPing.map(s => Number(s.ping)).sort((a, b) => a - b);
   const avgPing = withPing.length ? Math.round(withPing.reduce((n, s) => n + Number(s.ping), 0) / withPing.length) : null;
   const bestPing = withPing.length ? Math.min(...withPing.map(s => Number(s.ping))) : null;
-  return { count: l.length, avgPing, bestPing };
+  const medianPing = pings.length ? pings[Math.floor(pings.length / 2)] : null;
+  const avgFps = withFps.length ? Math.round(withFps.reduce((n, s) => n + Number(s.fps), 0) / withFps.length) : null;
+  const peakPlayers = l.length ? Math.max(...l.map(s => Number(s.playing) || 0)) : 0;
+  return { count: l.length, avgPing, bestPing, medianPing, avgFps, peakPlayers };
 }
 
-function serverSortControls(sv) {
+function filteredServers(sv) {
+  const f = sv.filters || {};
+  return (sv.list || []).filter(s => {
+    const capacity = Number(s.maxPlayers) || 0;
+    const occupancy = capacity ? (Number(s.playing) || 0) / capacity * 100 : 0;
+    const free = Math.max(0, capacity - (Number(s.playing) || 0));
+    return occupancy >= Number(f.occupancy || 0)
+      && (Number(f.maxPing || 0) <= 0 || (s.ping != null && Number(s.ping) <= Number(f.maxPing)))
+      && (Number(f.minFps || 0) <= 0 || (s.fps != null && Number(s.fps) >= Number(f.minFps)))
+      && free >= Number(f.freeSlots || 1);
+  });
+}
+
+function serverQuality(s) {
+  const ping = s.ping == null ? 180 : Number(s.ping);
+  const fps = s.fps == null ? 30 : Number(s.fps);
+  const fill = s.maxPlayers ? Number(s.playing || 0) / Number(s.maxPlayers) : 0;
+  const score = Math.max(0, Math.min(100, Math.round(100 - ping * .28 + (fps - 30) * .5 - Math.max(0, fill - .9) * 80)));
+  return { score, label: score >= 80 ? 'Excellent' : score >= 60 ? 'Good' : score >= 40 ? 'Fair' : 'Weak' };
+}
+
+function filterSelect(label, key, value, options) {
+  return `<label class="server-filter"><span>${label}</span><select data-server-filter="${key}">
+    ${options.map(([v, text]) => `<option value="${v}"${String(value) === String(v) ? ' selected' : ''}>${text}</option>`).join('')}
+  </select></label>`;
+}
+
+function serverSortControls(sv, visible) {
   const sort = sv.sort || 'best';
-  const st = serverStats(sv.list);
-  const summary = `${st.count} joinable server${st.count === 1 ? '' : 's'}${st.bestPing != null ? ` · best ${st.bestPing} ms` : ''}${st.avgPing != null ? ` · avg ${st.avgPing} ms` : ''}`;
+  const st = serverStats(visible);
+  const f = sv.filters || {};
+  const scanText = sv.scanning ? 'Scanning Roblox pages…' : sv.deepScanned ? `${sv.scan && sv.scan.pagesScanned || 0} pages analyzed` : 'Quick sample';
   return `<div class="server-tools">
-    <div class="seg-wrap" role="tablist" aria-label="Sort servers">
+    <div class="server-tool-head"><div class="seg-wrap" role="tablist" aria-label="Sort servers">
       ${SERVER_SORTS.map(([v, label]) => `<button class="seg-chip ${sort === v ? 'on' : ''}" data-action="server-sort" data-sort="${v}">${label}</button>`).join('')}
+    </div><button class="btn sm" data-action="servers-scan" ${sv.scanning ? 'disabled' : ''}>${sv.scanning ? '<span class="spinner dark"></span>' : icon('search')} Deep scan</button></div>
+    <div class="server-filters">
+      ${filterSelect('Occupancy', 'occupancy', f.occupancy, [[0, 'Any'], [25, '25%+'], [50, '50%+'], [75, '75%+']])}
+      ${filterSelect('Max ping', 'maxPing', f.maxPing, [[0, 'Any'], [50, '50 ms'], [100, '100 ms'], [150, '150 ms'], [250, '250 ms']])}
+      ${filterSelect('Min FPS', 'minFps', f.minFps, [[0, 'Any'], [30, '30'], [45, '45'], [55, '55']])}
+      ${filterSelect('Free slots', 'freeSlots', f.freeSlots, [[1, '1+'], [2, '2+'], [5, '5+'], [10, '10+']])}
+      <button class="server-reset" data-action="servers-filter-reset">Reset</button>
     </div>
-    <div class="server-summary">${summary}</div>
+    <div class="server-intel">
+      <div><strong>${st.count}</strong><span>Visible</span></div>
+      <div><strong>${st.medianPing == null ? '—' : st.medianPing + ' ms'}</strong><span>Median ping</span></div>
+      <div><strong>${st.avgFps == null ? '—' : st.avgFps}</strong><span>Average FPS</span></div>
+      <div><strong>${st.peakPlayers}</strong><span>Peak players</span></div>
+    </div>
+    <div class="server-summary">${scanText}${sv.error ? ` · ${esc(sv.error)}` : ''}</div>
   </div>`;
 }
 
@@ -773,27 +829,41 @@ function renderServersModal() {
   if (sv.loading && !sv.list.length) body = `<div class="games-end"><span class="spinner dark"></span> Loading servers…</div>`;
   else if (sv.error && !sv.list.length) body = `<div class="games-end">${esc(sv.error)}</div>`;
   else if (!sv.list.length) body = `<div class="games-end">No joinable servers found — every server is full right now.</div>`;
-  else body = `${serverSortControls(sv)}<div class="server-list">${sortedServers(sv.list, sv.sort).map((s, i) => `
+  else {
+    const visible = filteredServers(sv);
+    const sorted = sortedServers(visible, sv.sort);
+    body = `${serverSortControls(sv, visible)}<div class="server-list">${sorted.length ? sorted.map((s, i) => {
+      const quality = serverQuality(s);
+      return `
       <div class="server-row">
         <div class="server-fill"><strong>${s.playing}/${s.maxPlayers}</strong><span>players</span></div>
         <div class="server-bar"><span style="width:${s.maxPlayers ? Math.min(100, Math.round(s.playing / s.maxPlayers * 100)) : 0}%"></span></div>
-        <div class="server-meta">${s.ping != null ? `${s.ping} ms` : ''}${s.fps != null ? ` · ${s.fps} fps` : ''}</div>
+        <div class="server-meta"><span class="server-quality q-${quality.label.toLowerCase()}">${quality.score} · ${quality.label}</span>${s.ping != null ? `${s.ping} ms` : ''}${s.fps != null ? ` · ${s.fps} fps` : ''}</div>
+        <button class="server-copy" data-action="copy-server-id" data-server="${esc(s.id)}" data-tip="Copy server ID">${icon('copy')}</button>
         <button class="btn primary sm" data-action="join-server" data-place="${esc(sv.placeId)}" data-server="${esc(s.id)}" data-name="${esc(sv.name)}" data-tip="Server #${i + 1}">${icon('play')} Join</button>
-      </div>`).join('')}
+      </div>`;
+    }).join('') : '<div class="games-end">No servers match these filters.</div>'}
       ${sv.nextPageCursor ? `<button class="btn sm servers-more" data-action="servers-more">Load more servers</button>` : ''}</div>`;
+  }
   const hasList = !!sv.list.length;
   openModal(`
     <div class="m-head"><h3>Servers — ${esc(sv.name)}</h3><p>Join a specific public server${state.accounts.length ? ' with your selected account' : ''}.</p></div>
     <div class="m-body">${body}</div>
     <div class="m-foot">
-      ${hasList ? `<button class="btn" data-action="servers-refresh" style="margin-right:auto" data-tip="Reload the server list">${icon('refresh')} Refresh</button>` : ''}
+      ${hasList ? `<button class="btn" data-action="servers-refresh" style="margin-right:auto" data-tip="Reload the server list">${icon('refresh')} Refresh</button>
+      <button class="btn ${sv.autoRefresh ? 'on' : ''}" data-action="servers-auto-refresh" data-tip="Refresh this server list every 30 seconds">Live ${sv.autoRefresh ? 'on' : 'off'}</button>` : ''}
       <button class="btn" data-action="modal-cancel">Close</button>
       ${hasList ? `<button class="btn primary" data-action="join-best" data-tip="Join the top server for this filter">${icon('play')} Join best</button>` : ''}
-    </div>`);
+    </div>`, 'server-modal');
 }
 
 async function openServersModal(placeId, name) {
-  state.servers = { placeId: String(placeId), name: name || 'game', list: [], cursor: null, nextPageCursor: null, loading: true, error: null, sort: 'best' };
+  state.servers = {
+    placeId: String(placeId), name: name || 'game', list: [], cursor: null, nextPageCursor: null,
+    loading: true, scanning: false, deepScanned: false, scan: null, error: null, sort: 'best',
+    filters: { occupancy: 0, maxPing: 0, minFps: 0, freeSlots: 1 },
+    autoRefresh: false, refreshTimer: null, requestId: 0,
+  };
   renderServersModal();
   await loadServers(false);
 }
@@ -801,10 +871,12 @@ async function openServersModal(placeId, name) {
 async function loadServers(append) {
   const sv = state.servers;
   if (!sv) return;
+  const requestId = ++sv.requestId;
   sv.loading = true;
+  sv.error = null;
   renderServersModal();
-  const r = await call(() => api.games.servers(sv.placeId, append ? sv.nextPageCursor : null));
-  if (!state.servers) return;
+  const r = await call(() => api.games.servers(sv.placeId, append ? sv.nextPageCursor : null), undefined, 45000);
+  if (!state.servers || state.servers !== sv || sv.requestId !== requestId) return;
   sv.loading = false;
   if (r && r.ok) {
     if (append) {
@@ -814,7 +886,44 @@ async function loadServers(append) {
       sv.list = r.servers || [];
     }
     sv.nextPageCursor = r.nextPageCursor;
+    if (r.scan) sv.scan = r.scan;
   } else sv.error = (r && r.error) || 'Could not load servers.';
+  renderServersModal();
+}
+
+async function deepScanServers(silent) {
+  const sv = state.servers;
+  if (!sv || sv.scanning) return;
+  const requestId = ++sv.requestId;
+  sv.scanning = true;
+  sv.error = null;
+  renderServersModal();
+  const r = await call(() => api.games.scanServers(sv.placeId, 8), undefined, 120000);
+  if (!state.servers || state.servers !== sv || sv.requestId !== requestId) return;
+  sv.scanning = false;
+  if (r && r.ok) {
+    const byId = new Map(sv.list.map(s => [s.id, s]));
+    (r.servers || []).forEach(s => byId.set(s.id, s));
+    sv.list = Array.from(byId.values());
+    sv.deepScanned = true;
+    sv.scan = r.scan || null;
+    if (!silent) toast(`Analyzed ${r.scan && r.scan.examined || sv.list.length} servers`, 'good');
+  } else {
+    sv.error = (r && r.error) || 'Deep scan failed.';
+    if (!silent) toast(sv.error, 'bad');
+  }
+  renderServersModal();
+}
+
+function setServerAutoRefresh(enabled) {
+  const sv = state.servers;
+  if (!sv) return;
+  if (sv.refreshTimer) clearInterval(sv.refreshTimer);
+  sv.refreshTimer = null;
+  sv.autoRefresh = !!enabled;
+  if (sv.autoRefresh) sv.refreshTimer = setInterval(() => {
+    if (state.servers === sv && !sv.loading && !sv.scanning) loadServers(false);
+  }, 30000);
   renderServersModal();
 }
 
@@ -1828,13 +1937,28 @@ document.addEventListener('click', async (e) => {
       if (state.servers) {
         state.servers.sort = elAction.dataset.sort || 'best';
         renderServersModal();
+        if (state.servers.sort === 'players' && !state.servers.deepScanned) await deepScanServers(true);
       }
+      break;
+    case 'servers-scan': await deepScanServers(false); break;
+    case 'servers-filter-reset':
+      if (state.servers) {
+        state.servers.filters = { occupancy: 0, maxPing: 0, minFps: 0, freeSlots: 1 };
+        renderServersModal();
+      }
+      break;
+    case 'servers-auto-refresh':
+      if (state.servers) setServerAutoRefresh(!state.servers.autoRefresh);
+      break;
+    case 'copy-server-id':
+      try { await navigator.clipboard.writeText(String(elAction.dataset.server || '')); toast('Server ID copied', 'good'); }
+      catch (_) { toast('Could not copy server ID', 'bad'); }
       break;
     case 'servers-more': loadServers(true); break;
     case 'servers-refresh': loadServers(false); break;
     case 'join-best': {
       const sv = state.servers;
-      if (sv && sv.list.length) { const top = sortedServers(sv.list, sv.sort)[0]; if (top) joinServer(sv.placeId, top.id, sv.name); }
+      if (sv && sv.list.length) { const top = sortedServers(filteredServers(sv), sv.sort)[0]; if (top) joinServer(sv.placeId, top.id, sv.name); }
       break;
     }
 
@@ -1922,7 +2046,7 @@ document.addEventListener('click', async (e) => {
     case 'modal-cancel':
       if (state.personJoin) closePersonJoinDialog();
       else if (state.followTargetId) closeFollowDialog();
-      else { state.servers = null; state.sessionDraft = null; closeModal(); }
+      else { closeModal(); state.servers = null; state.sessionDraft = null; }
       break;
     case 'confirm-yes': if (confirmResolver) { confirmResolver(true); confirmResolver = null; } closeModal(); break;
     case 'confirm-no': if (confirmResolver) { confirmResolver(false); confirmResolver = null; } closeModal(); break;
@@ -1977,6 +2101,16 @@ document.addEventListener('click', async (e) => {
     case 'ext-link': await call(() => api.openExternal(elAction.dataset.url)); break;
   }
 });
+
+document.addEventListener('change', (e) => {
+  const filter = e.target.closest('[data-server-filter]');
+  if (!filter || !state.servers) return;
+  const key = filter.dataset.serverFilter;
+  if (!Object.prototype.hasOwnProperty.call(state.servers.filters, key)) return;
+  state.servers.filters[key] = Number(filter.value) || 0;
+  renderServersModal();
+});
+
 function needConfirm() { return !state.settings || state.settings.confirmCleanup !== false; }
 
 /* Right-click context menu on instance rows */

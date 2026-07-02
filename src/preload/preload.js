@@ -48,6 +48,7 @@ contextBridge.exposeInMainWorld('fleet', {
     browse: () => invoke('games:browse'),
     search: (query, pageToken) => invoke('games:search', { query, pageToken }),
     servers: (placeId, cursor) => invoke('games:servers', { placeId, cursor }),
+    scanServers: (placeId, pageLimit) => invoke('games:server-scan', { placeId, pageLimit }),
   },
 
   people: {

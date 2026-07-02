@@ -235,6 +235,7 @@ function register(ctx) {
   safe('games:browse', () => games.browse());
   safe('games:search', (p) => games.search(p.query, p.pageToken));
   safe('games:servers', (p) => games.servers(p.placeId, p.cursor));
+  safe('games:server-scan', (p) => games.scanServers(p.placeId, p.pageLimit));
 
   /* ----------------------------- Instances ----------------------------- */
 

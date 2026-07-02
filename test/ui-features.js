@@ -1,6 +1,6 @@
 'use strict';
 
-/* Isolated renderer integration test for the new theme/session/link workflow.
+/* Isolated renderer integration test for theme, sessions and server intelligence.
    It starts Fleet with a temporary user-data directory, drives only renderer
    state through Chromium's debugging protocol, never clicks a launch action,
    and verifies no Roblox process was created. */
@@ -125,6 +125,43 @@ async function main() {
         surface: getComputedStyle(document.querySelector('.card')).backgroundColor,
       };
 
+      state.servers = {
+        placeId: '4924922222', name: 'Server test',
+        list: [
+          { id: 'quiet', playing: 1, maxPlayers: 28, ping: 8, fps: 60 },
+          { id: 'busy', playing: 27, maxPlayers: 28, ping: 65, fps: 58 },
+          { id: 'middle', playing: 14, maxPlayers: 28, ping: 45, fps: 50 },
+        ],
+        nextPageCursor: null, loading: false, scanning: false, deepScanned: true,
+        scan: { pagesScanned: 4, examined: 210 }, error: null, sort: 'players',
+        filters: { occupancy: 50, maxPing: 100, minFps: 45, freeSlots: 1 },
+        autoRefresh: false, refreshTimer: null, requestId: 0,
+      };
+      renderServersModal();
+      const serverRows = [...document.querySelectorAll('.server-row')];
+      const serverIntel = {
+        modalClass: document.querySelector('#modal').className,
+        firstRow: serverRows[0] ? serverRows[0].innerText : '',
+        visibleRows: serverRows.length,
+        analytics: (document.querySelector('.server-intel') || {}).innerText || '',
+        hasFilters: document.querySelectorAll('[data-server-filter]').length,
+        hasDeepScan: !!document.querySelector('[data-action="servers-scan"]'),
+        hasLiveRefresh: !!document.querySelector('[data-action="servers-auto-refresh"]'),
+      };
+      closeModal();
+      state.servers = null;
+
+      state.updater = { state: 'error', error: 'Update feed unavailable (HTTP 404). The GitHub release source is private or cannot be reached.' };
+      state.view = 'settings';
+      views.settings();
+      const updateDescription = [...document.querySelectorAll('.s-desc')].find(el => /Update feed unavailable/.test(el.textContent));
+      const updaterUi = {
+        text: updateDescription ? updateDescription.textContent : '',
+        overflowWrap: updateDescription ? getComputedStyle(updateDescription).overflowWrap : '',
+      };
+      state.view = 'instances';
+      views.instances();
+
       const serverId = '12345678-abcd-4abc-8abc-1234567890ab';
       const placeInput = document.querySelector('#lp-place');
       placeInput.value = 'https://www.roblox.com/games/987654/Test?gameInstanceId=' + serverId;
@@ -150,7 +187,7 @@ async function main() {
       const corruptSafe = document.querySelectorAll('#sessions-list .setting').length === 0
         && /No sessions yet/.test(document.querySelector('#sessions-list').textContent);
 
-      return { dark, light, draft, saved, rowText, invalidRejected, corruptSafe };
+      return { dark, light, serverIntel, updaterUi, draft, saved, rowText, invalidRejected, corruptSafe };
     })()`);
 
     if (facts.dark.theme !== 'dark' || facts.dark.body === facts.light.body || facts.dark.surface === facts.light.surface
@@ -167,6 +204,18 @@ async function main() {
     }
     if (!/Night crew/.test(facts.rowText) || !facts.invalidRejected || !facts.corruptSafe) {
       throw new Error('Session UI validation failed: ' + JSON.stringify(facts));
+    }
+    if (!facts.serverIntel.modalClass.includes('server-modal')
+      || !/^27\/28/.test(facts.serverIntel.firstRow)
+      || facts.serverIntel.visibleRows !== 2
+      || facts.serverIntel.hasFilters !== 4
+      || !facts.serverIntel.hasDeepScan
+      || !facts.serverIntel.hasLiveRefresh
+      || !/2\s+VISIBLE/i.test(facts.serverIntel.analytics)) {
+      throw new Error('Server Intelligence UI failed: ' + JSON.stringify(facts.serverIntel));
+    }
+    if (!/HTTP 404/.test(facts.updaterUi.text) || facts.updaterUi.overflowWrap !== 'anywhere') {
+      throw new Error('Updater error UI is not concise and wrap-safe: ' + JSON.stringify(facts.updaterUi));
     }
     if (exceptions.length) throw new Error('Renderer exceptions: ' + exceptions.join('; '));
 

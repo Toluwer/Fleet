@@ -106,7 +106,7 @@
     GetDlgItem $R9 $HWNDPARENT 1018
     System::Call `user32::MoveWindow(i $R9, i 0, i 0, i r1, i r2, i 1)`
 
-    CreateFont $FleetHeadFont "Segoe UI Semibold" "20" "600"
+    CreateFont $FleetHeadFont "Segoe UI Semibold" "18" "600"
     CreateFont $FleetSubFont  "Segoe UI"          "10" "400"
     CreateFont $FleetBtnFont  "Segoe UI Semibold" "11" "600"
   FunctionEnd
@@ -118,7 +118,8 @@
 
   Function FleetCancelClick
     Pop $0
-    SendMessage $HWNDPARENT ${WM_COMMAND} 2 0   ; wizard "Cancel"
+    ; Exit directly. Never surface the stock wizard confirmation dialog.
+    Quit
   FunctionEnd
 
   Function FleetWelcomeShow
@@ -143,13 +144,14 @@
     ${EndIf}
     SetCtlColors $FleetDlg ${FLEET_INK} ${FLEET_WHITE}
 
-    ${NSD_CreateLabel} 0 27% 100% 14% ""
+    ; Generous vertical bounds keep Segoe UI from clipping at 125-200% DPI.
+    ${NSD_CreateLabel} 4% 25% 92% 20% ""
     Pop $FleetHeading
     ${NSD_AddStyle} $FleetHeading 0x00000001 ; SS_CENTER
     SetCtlColors $FleetHeading ${FLEET_INK} ${FLEET_WHITE}
     SendMessage $FleetHeading ${WM_SETFONT} $FleetHeadFont 1
 
-    ${NSD_CreateLabel} 0 43% 100% 9% ""
+    ${NSD_CreateLabel} 8% 46% 84% 12% ""
     Pop $FleetSub
     ${NSD_AddStyle} $FleetSub 0x00000001
     SetCtlColors $FleetSub ${FLEET_MUTED} ${FLEET_WHITE}
@@ -157,14 +159,14 @@
 
     ; Flat black action "button" (clickable centered static — no native
     ; button chrome anywhere in this installer).
-    ${NSD_CreateLabel} 34% 61% 32% 12% ""
+    ${NSD_CreateLabel} 34% 62% 32% 13% ""
     Pop $FleetGo
     ${NSD_AddStyle} $FleetGo 0x00000301 ; SS_CENTER|SS_NOTIFY|SS_CENTERIMAGE
     SetCtlColors $FleetGo ${FLEET_WHITE} ${FLEET_INK}
     SendMessage $FleetGo ${WM_SETFONT} $FleetBtnFont 1
     ${NSD_OnClick} $FleetGo FleetGoClick
 
-    ${NSD_CreateLabel} 34% 78% 32% 8% "Cancel"
+    ${NSD_CreateLabel} 34% 80% 32% 9% "Cancel"
     Pop $FleetCancel
     ${NSD_AddStyle} $FleetCancel 0x00000301
     SetCtlColors $FleetCancel ${FLEET_MUTED} ${FLEET_WHITE}
@@ -178,7 +180,7 @@
     ${ElseIf} $FleetState == "update"
       ${NSD_SetText} $FleetHeading "Update detected"
       ${If} $FleetOldVer != ""
-        ${NSD_SetText} $FleetSub "Fleet $FleetOldVer  →  ${VERSION}"
+        ${NSD_SetText} $FleetSub "Fleet $FleetOldVer to ${VERSION}"
       ${Else}
         ${NSD_SetText} $FleetSub "Updating Fleet to ${VERSION}"
       ${EndIf}
@@ -205,6 +207,15 @@
     !insertmacro FleetHideChrome 1
     !insertmacro FleetHideChrome 2
     !insertmacro FleetHideChrome 3
+    !insertmacro FleetHideChrome 1034
+    !insertmacro FleetHideChrome 1035
+    !insertmacro FleetHideChrome 1036
+    !insertmacro FleetHideChrome 1037
+    !insertmacro FleetHideChrome 1038
+    !insertmacro FleetHideChrome 1039
+    !insertmacro FleetHideChrome 1028
+    !insertmacro FleetHideChrome 1256
+    !insertmacro FleetHideChrome 1045
 
     ; Inner install page dialog.
     FindWindow $0 "#32770" "" $HWNDPARENT
@@ -227,7 +238,7 @@
     System::Free $R0
 
     ; Heading + version, centered above the bar.
-    IntOp $4 $3 * 30
+    IntOp $4 $3 * 27
     IntOp $4 $4 / 100
     ${If} $FleetState == "update"
     ${OrIf} $FleetState == "same"
@@ -235,16 +246,16 @@
     ${Else}
       StrCpy $7 "Installing Fleet"
     ${EndIf}
-    System::Call `user32::CreateWindowEx(i 0, t "STATIC", t "$7", i 0x50000001, i 0, i r4, i r2, i 34, i r0, i 0, i 0, i 0) i .r5`
+    System::Call `user32::CreateWindowEx(i 0, t "STATIC", t "$7", i 0x50000201, i 0, i r4, i r2, i 48, i r0, i 0, i 0, i 0) i .r5`
     SendMessage $5 ${WM_SETFONT} $FleetHeadFont 1
     SetCtlColors $5 ${FLEET_INK} ${FLEET_WHITE}
-    IntOp $4 $4 + 38
-    System::Call `user32::CreateWindowEx(i 0, t "STATIC", t "Version ${VERSION}", i 0x50000001, i 0, i r4, i r2, i 20, i r0, i 0, i 0, i 0) i .r5`
+    IntOp $4 $4 + 50
+    System::Call `user32::CreateWindowEx(i 0, t "STATIC", t "Version ${VERSION}", i 0x50000201, i 0, i r4, i r2, i 28, i r0, i 0, i 0, i 0) i .r5`
     SendMessage $5 ${WM_SETFONT} $FleetSubFont 1
     SetCtlColors $5 ${FLEET_MUTED} ${FLEET_WHITE}
     ; Anchor the bar below the version line instead of using an unrelated
     ; percentage that can overlap the text on shorter/scaled installer cards.
-    IntOp $8 $4 + 44
+    IntOp $8 $4 + 52
 
     ; The bar: strip WS_BORDER + client/static edges, unskin the theme so the
     ; monochrome colors apply, then center it as a clean 8px line.

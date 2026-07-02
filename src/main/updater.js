@@ -11,6 +11,27 @@ let checkTimer = null;
 let promptShown = false;
 let current = { state: 'idle', version: null, percent: 0, error: null };
 
+function updaterErrorMessage(value) {
+  const raw = String(value && value.message != null ? value.message : value || '').trim();
+  const lower = raw.toLowerCase();
+  if (/\b404\b/.test(raw) && (lower.includes('github') || lower.includes('releases.atom'))) {
+    return 'Update feed unavailable (HTTP 404). The GitHub release source is private or cannot be reached.';
+  }
+  if (/\b(401|403)\b/.test(raw)) return 'Update feed access was denied. Fleet needs a publicly readable release source.';
+  if (/\b429\b/.test(raw)) return 'GitHub is rate-limiting update checks. Try again later.';
+  if (lower.includes('timed out') || lower.includes('timeout') || lower.includes('abort')) return 'The update check timed out. Try again.';
+  if (lower.includes('enotfound') || lower.includes('econn') || lower.includes('network')) return 'Could not reach the update service. Check your connection.';
+
+  const safe = raw
+    .replace(/headers\s*:\s*\{[\s\S]*/i, '')
+    .replace(/set-cookie[^\n\r]*/gi, '')
+    .replace(/https?:\/\/\S+/gi, '[release source]')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!safe) return 'Update check failed. Try again later.';
+  return safe.length > 220 ? safe.slice(0, 217) + '...' : safe;
+}
+
 function emit(patch) {
   current = Object.assign({}, current, patch || {});
   try { send('updater:status', current); } catch (_) {}
@@ -36,10 +57,10 @@ function configure(opts) {
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
     autoUpdater.logger = {
-      info: message => logger.info('Updater', String(message)),
-      warn: message => logger.warn('Updater', String(message)),
-      error: message => logger.error('Updater', String(message)),
-      debug: message => logger.info('Updater debug', String(message)),
+      info: message => logger.info('Updater', updaterErrorMessage(message)),
+      warn: message => logger.warn('Updater', updaterErrorMessage(message)),
+      error: message => logger.error('Updater', updaterErrorMessage(message)),
+      debug: message => logger.info('Updater debug', updaterErrorMessage(message)),
     };
 
     autoUpdater.on('checking-for-update', () => emit({ state: 'checking', error: null }));
@@ -48,7 +69,7 @@ function configure(opts) {
     autoUpdater.on('download-progress', progress => emit({
       state: 'downloading', percent: Math.max(0, Math.min(100, Number(progress.percent) || 0)), error: null,
     }));
-    autoUpdater.on('error', err => emit({ state: 'error', error: (err && err.message) || String(err) }));
+    autoUpdater.on('error', err => emit({ state: 'error', error: updaterErrorMessage(err) }));
     autoUpdater.on('update-downloaded', info => {
       emit({ state: 'ready', availableVersion: info.version, percent: 100, error: null });
       promptRestart(info.version);
@@ -89,7 +110,7 @@ async function check(manual) {
     const result = await autoUpdater.checkForUpdates();
     return { ok: true, updateInfo: result && result.updateInfo || null, status: current };
   } catch (err) {
-    const message = (err && err.message) || String(err);
+    const message = updaterErrorMessage(err);
     if (manual) emit({ state: 'error', error: message });
     return { ok: false, error: message };
   }
@@ -104,4 +125,4 @@ function install() {
 function status() { return Object.assign({ ok: true }, current); }
 function stop() { if (checkTimer) { clearInterval(checkTimer); checkTimer = null; } }
 
-module.exports = { configure, check, install, status, stop };
+module.exports = { configure, check, install, status, stop, updaterErrorMessage };

@@ -13,6 +13,7 @@
  */
 
 const crypto = require('crypto');
+const SERVER_FETCH_TIMEOUT_MS = 12000;
 
 let logger = { info() {}, warn() {}, error() {} };
 function configure(opts) { if (opts && opts.logger) logger = opts.logger; }
@@ -131,14 +132,97 @@ async function search(query, pageToken) {
   }
 }
 
-async function serversPage(pid, sortOrder, cursor) {
+async function serversPage(pid, sortOrder, cursor, excludeFullGames) {
   const u = new URL(`https://games.roblox.com/v1/games/${pid}/servers/Public`);
-  u.searchParams.set('sortOrder', sortOrder);
-  u.searchParams.set('excludeFullGames', 'false'); // excludeFullGames=true is unreliable (often returns 0)
+  u.searchParams.set('sortOrder', sortOrder === 'Desc' ? 'Desc' : 'Asc');
+  u.searchParams.set('excludeFullGames', excludeFullGames ? 'true' : 'false');
   u.searchParams.set('limit', '100');
   if (cursor) u.searchParams.set('cursor', cursor);
-  const r = await fetch(u.toString(), { headers: { Accept: 'application/json' } });
-  return { status: r.status, data: r.ok ? ((await r.json()).data || []) : [], nextPageCursor: null, json: r.ok };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SERVER_FETCH_TIMEOUT_MS);
+  try {
+    const r = await fetch(u.toString(), { headers: { Accept: 'application/json' }, signal: controller.signal });
+    const j = r.ok ? await r.json() : null;
+    return {
+      status: r.status,
+      rateLimited: r.status === 429,
+      data: (j && j.data) || [],
+      nextPageCursor: (j && j.nextPageCursor) || null,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function normalizedServer(s) {
+  if (!s || !s.id) return null;
+  const playing = Math.max(0, Number(s.playing) || 0);
+  const maxPlayers = Math.max(0, Number(s.maxPlayers) || 0);
+  if (maxPlayers <= playing) return null;
+  return {
+    id: String(s.id), playing, maxPlayers,
+    fps: s.fps != null && Number.isFinite(Number(s.fps)) ? Math.round(Number(s.fps)) : null,
+    ping: s.ping != null && Number.isFinite(Number(s.ping)) ? Math.round(Number(s.ping)) : null,
+  };
+}
+
+function mergeServers(target, rows) {
+  for (const row of (rows || [])) {
+    const server = normalizedServer(row);
+    if (server && !target.has(server.id)) target.set(server.id, server);
+  }
+}
+
+async function scanServers(placeId, pageLimit) {
+  const pid = String(placeId == null ? '' : placeId).trim();
+  if (!/^\d+$/.test(pid)) return { ok: false, error: 'Invalid place id.' };
+  const limit = Math.max(1, Math.min(12, Number(pageLimit) || 6));
+  const byId = new Map();
+  let cursor = null;
+  let pagesScanned = 0;
+  let examined = 0;
+  let rateLimited = false;
+  let complete = false;
+  let strategy = 'joinable-first';
+
+  try {
+    for (let page = 0; page < limit; page += 1) {
+      const result = await serversPage(pid, 'Desc', cursor, true);
+      pagesScanned += 1;
+      examined += result.data.length;
+      rateLimited = rateLimited || result.rateLimited;
+      mergeServers(byId, result.data);
+      cursor = result.nextPageCursor;
+      if (!cursor || result.rateLimited || result.status >= 400) { complete = !cursor; break; }
+    }
+
+    // Roblox sometimes returns no data for excludeFullGames. Walk past full
+    // descending pages so busy-but-open servers still surface.
+    if (!byId.size && !rateLimited) {
+      strategy = 'full-page-fallback';
+      cursor = null;
+      complete = false;
+      for (let page = 0; page < limit; page += 1) {
+        const result = await serversPage(pid, 'Desc', cursor, false);
+        pagesScanned += 1;
+        examined += result.data.length;
+        rateLimited = rateLimited || result.rateLimited;
+        mergeServers(byId, result.data);
+        cursor = result.nextPageCursor;
+        if (!cursor || result.rateLimited || result.status >= 400) { complete = !cursor; break; }
+      }
+    }
+
+    return {
+      ok: true,
+      servers: Array.from(byId.values()).slice(0, 300),
+      scan: { pagesScanned, examined, rateLimited, complete, strategy },
+    };
+  } catch (err) {
+    const timedOut = err && err.name === 'AbortError';
+    logger.warn('Deep server scan failed', timedOut ? 'timeout' : err && err.message);
+    return { ok: false, error: timedOut ? 'Server scan timed out. Try again.' : ((err && err.message) || 'Network error.') };
+  }
 }
 
 /**
@@ -153,43 +237,26 @@ async function servers(placeId, cursor) {
   const pid = String(placeId == null ? '' : placeId).trim();
   if (!/^\d+$/.test(pid)) return { ok: false, error: 'Invalid place id.' };
   try {
-    const asc = await (async () => {
-      const u = new URL(`https://games.roblox.com/v1/games/${pid}/servers/Public`);
-      u.searchParams.set('sortOrder', 'Asc');
-      u.searchParams.set('excludeFullGames', 'false');
-      u.searchParams.set('limit', '100');
-      if (cursor) u.searchParams.set('cursor', cursor);
-      const r = await fetch(u.toString(), { headers: { Accept: 'application/json' } });
-      if (r.status === 429) return { rate: true };
-      const j = r.ok ? await r.json() : null;
-      return { status: r.status, data: (j && j.data) || [], nextPageCursor: (j && j.nextPageCursor) || null };
-    })();
-    if (asc.rate) return { ok: false, error: 'Roblox is rate-limiting — try again shortly.' };
-    // Only merge in the fullest-first page on the initial load (keeps "load more" duplicate-free).
-    let descData = [];
-    if (!cursor) {
-      try { descData = (await serversPage(pid, 'Desc', null)).data; } catch (_) { /* best effort */ }
-    }
+    const [asc, busy] = await Promise.all([
+      serversPage(pid, 'Asc', cursor, false),
+      cursor ? Promise.resolve(null) : scanServers(pid, 2),
+    ]);
+    if (asc.rateLimited) return { ok: false, error: 'Roblox is rate-limiting — try again shortly.' };
     const byId = new Map();
-    for (const s of [...asc.data, ...descData]) {
-      if (!s || !s.id || byId.has(s.id)) continue;
-      const slots = Number(s.maxPlayers || 0) - Number(s.playing || 0);
-      if (slots <= 0) continue; // joinable servers only
-      byId.set(s.id, {
-        id: s.id,
-        playing: s.playing || 0,
-        maxPlayers: s.maxPlayers || 0,
-        fps: s.fps != null ? Math.round(s.fps) : null,
-        ping: s.ping != null ? s.ping : null,
-      });
+    mergeServers(byId, asc.data);
+    let scan = null;
+    if (busy && busy.ok) {
+      mergeServers(byId, busy.servers);
+      scan = busy.scan;
     }
     const list = Array.from(byId.values());
     if (!list.length && asc.status && asc.status >= 400) return { ok: false, error: 'Servers unavailable (HTTP ' + asc.status + ').' };
-    return { ok: true, servers: list, nextPageCursor: asc.nextPageCursor };
+    return { ok: true, servers: list, nextPageCursor: asc.nextPageCursor, scan };
   } catch (err) {
+    if (err && err.name === 'AbortError') return { ok: false, error: 'Server list timed out. Try again.' };
     logger.warn('Server list failed', err && err.message);
     return { ok: false, error: (err && err.message) || 'Network error.' };
   }
 }
 
-module.exports = { configure, browse, search, servers };
+module.exports = { configure, browse, search, servers, scanServers, normalizedServer };
