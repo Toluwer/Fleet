@@ -321,6 +321,32 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     accountsSrcEarly.includes('LOGIN_UA')
     && accountsSrcEarly.includes('setUserAgent(LOGIN_UA)')
     && accountsSrcEarly.includes("did-fail-load"));
+
+  // ---- Playtime analytics (module-level behavioural test) ----
+  const playtimeMod = require(path.join(__dirname, '..', 'src', 'main', 'playtime.js'));
+  const ptFile = {};
+  playtimeMod.configure({ store: { readJson: (n, f) => ptFile[n] || f, writeJson: (n, d) => { ptFile[n] = d; } } });
+  playtimeMod.clear();
+  playtimeMod.observe(111, 'alt1', 'In game', { name: 'Farm Sim', placeId: 42 });
+  // simulate 2 minutes passing by rewinding the active session's clock
+  const nowStats = playtimeMod.stats();
+  check('playtime tracks a live session immediately', nowStats.ok && nowStats.tracking === 1 && nowStats.perGame[0] && nowStats.perGame[0].label === 'Farm Sim' && nowStats.perGame[0].live === true);
+  playtimeMod.observe(111, 'alt1', 'Offline', null); // <30s => blip, discarded
+  const afterBlip = playtimeMod.stats();
+  check('sub-30s presence blips are not recorded as sessions', afterBlip.tracking === 0 && afterBlip.totals.sessions === 0);
+  check('playtime is wired into the poller, IPC and UI',
+    accountsSrcEarly.includes('onObserve(a.userId, a.username, pres.status, game)')
+    && fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc.js'), 'utf8').includes("safe('playtime:stats'")
+    && rendererSource.includes('views.stats')
+    && rendererSource.includes('function fmtDur('));
+  check('accounts carry Robux + Premium data',
+    accountsSrcEarly.includes('economy.roblox.com/v1/user/currency')
+    && accountsSrcEarly.includes('validate-membership')
+    && accountsSrcEarly.includes('ECONOMY_TTL_MS')
+    && rendererSource.includes('data-acct-robux')
+    && rendererSource.includes('robux-total'));
+  check('game card actions wrap instead of clipping',
+    cssSource.includes('.game-actions { display: flex; flex-wrap: wrap;'));
   const normalizedSessions = rendererModel.normalizeSessions([
     { id: 'good', name: '  Night run  ', accountIds: ['a', 'a', 2], placeId: '123', gameId: exactServerId, arrange: true },
     { id: 'broken', accountIds: 'not-an-array', placeId: 'bad' },

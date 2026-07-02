@@ -21,6 +21,7 @@ const roblox = require('./roblox');
 const clones = require('./clones');
 const guard = require('./guard');
 const accounts = require('./accounts');
+const playtime = require('./playtime');
 const games = require('./games');
 const people = require('./people');
 const updater = require('./updater');
@@ -79,6 +80,7 @@ async function onReady() {
   }
   clones.configure(path.join(userData, 'clones'), logger);
   accounts.configure({ baseDir: userData, safeStorage, BrowserWindow, session, logger });
+  playtime.configure({ store, logger });
   games.configure({ logger });
   people.configure({ logger });
   const loc = roblox.locate(settings);
@@ -104,6 +106,7 @@ async function onReady() {
     intervalMs: 12000,
     onUpdate: (acc) => sendToRenderer('account:update', acc),
     onExpired: (acc) => handleExpiredAccount(acc),
+    onObserve: (userId, username, status, game) => playtime.observe(userId, username, status, game),
   });
 
   // 5. IPC
@@ -253,6 +256,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   try { if (monitor) monitor.stop(); } catch (_) {}
   try { accounts.stopPolling(); } catch (_) {}
+  try { playtime.flush(); } catch (_) {}
   try { guard.stop(); } catch (_) {}
   try { clones.cleanup(); } catch (_) {}
   try { updater.stop(); } catch (_) {}

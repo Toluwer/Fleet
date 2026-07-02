@@ -598,7 +598,7 @@ views.accounts = function () {
       </div>
       <div class="row-split">
         <span class="presence ${presClass}"${presTip} data-acct-presence="${a.id}"><span class="pd"></span>${esc(presRaw)}</span>
-        <span class="hint" style="font-size:11.5px">Added ${esc(relTime(a.addedAt))} ago</span>
+        <span class="robux-chip" data-acct-robux="${a.id}"${a.robux == null ? ' hidden' : ''} data-tip="Robux balance${a.premium ? ' · Premium member' : ''}">${a.premium ? '<b class="prem">P</b>' : ''}${icon('box')} ${a.robux == null ? '' : fmtNum(a.robux)}</span>
       </div>
       <div class="acct-game" data-acct-game="${a.id}"${a.game ? '' : ' hidden'}>${a.game ? icon('compass') + ' ' + esc(a.game.name) : ''}</div>
       <div class="acct-actions">
@@ -620,7 +620,7 @@ views.accounts = function () {
       <p>Sign in to your Roblox accounts once, then launch any of them — alone or several at a time. Sessions are stored encrypted on this PC and never leave it.</p>
     </div>
     <div class="row-split" style="margin-bottom:16px">
-      <div class="section-title" style="margin:0">Your accounts</div>
+      <div class="section-title" style="margin:0">Your accounts${(() => { const t = list.reduce((n, x) => n + (x.robux || 0), 0); return list.some(x => x.robux != null) ? ` <span class="robux-total" data-tip="Total Robux across all accounts">${icon('box')} ${fmtNum(t)}</span>` : ''; })()}</div>
       <div class="inline">
         ${list.length ? `<button class="btn sm" data-action="refresh-accounts" data-tip="Refresh all">${icon('refresh')} Refresh all</button>` : ''}
         ${selectedCount ? `<button class="btn primary sm" data-action="launch-selected">${icon('play')} Launch ${selectedCount} selected</button>` : ''}
@@ -662,6 +662,12 @@ function applyAccountUpdate(acc) {
   if (gameEl) {
     if (acc.game && acc.game.name) { gameEl.hidden = false; gameEl.innerHTML = icon('compass') + ' ' + esc(acc.game.name); }
     else { gameEl.hidden = true; gameEl.innerHTML = ''; }
+  }
+  const robuxEl = document.querySelector(`[data-acct-robux="${acc.id}"]`);
+  if (robuxEl && acc.robux != null) {
+    robuxEl.hidden = false;
+    robuxEl.innerHTML = `${acc.premium ? '<b class="prem">P</b>' : ''}${icon('box')} ${fmtNum(acc.robux)}`;
+    robuxEl.setAttribute('data-tip', 'Robux balance' + (acc.premium ? ' · Premium member' : ''));
   }
   maybeKeepAlive(state.accounts[i >= 0 ? i : -1] || acc);
 }
@@ -1572,6 +1578,51 @@ async function openPerson(userId) {
 }
 
 /* ----------------------------- History view ----------------------------- */
+/* ----------------------------- Stats view ----------------------------- */
+function fmtDur(ms) {
+  if (!ms || ms < 1000) return '0m';
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return '<1m';
+  const h = Math.floor(m / 60);
+  if (!h) return `${m}m`;
+  const d = Math.floor(h / 24);
+  if (!d) return `${h}h ${m % 60}m`;
+  return `${d}d ${h % 24}h`;
+}
+
+views.stats = async function () {
+  mount(`
+    <div class="page-head"><h1>Stats</h1><p>Playtime tracked from your accounts' live presence — per game and per account, kept on this PC only.</p></div>
+    <div id="stats-body"><div class="games-end"><span class="spinner dark"></span> Crunching playtime…</div></div>
+  `);
+  const r = await call(() => api.playtime.stats(), { ok: false });
+  const root = $('#stats-body');
+  if (!root || state.view !== 'stats') return;
+  if (!r || !r.ok) { root.innerHTML = `<div class="games-end">Could not load stats.</div>`; return; }
+  const t = r.totals || {};
+  const statCard = (label, value, sub) => `<div class="card pad stat-card"><div class="stat-value">${value}</div><div class="stat-label">${esc(label)}</div>${sub ? `<div class="stat-sub">${esc(sub)}</div>` : ''}</div>`;
+  const row = (cells, live) => `<div class="setting stat-row"><div><div class="s-label">${live ? '<span class="pd live-dot"></span>' : ''}${esc(cells.name)}</div><div class="s-desc">${esc(cells.desc)}</div></div>
+    <div class="s-control stat-cells"><span data-tip="Today">${fmtDur(cells.today)}</span><span data-tip="Last 7 days">${fmtDur(cells.week)}</span><b data-tip="All time">${fmtDur(cells.total)}</b></div></div>`;
+  const games = (r.perGame || []).slice(0, 15).map(g => row({ name: g.label, desc: `${g.sessions} session${g.sessions === 1 ? '' : 's'}`, today: g.todayMs, week: g.weekMs, total: g.totalMs }, g.live)).join('');
+  const accountsRows = (r.perAccount || []).map(a => row({ name: a.label, desc: `${a.sessions} session${a.sessions === 1 ? '' : 's'}`, today: a.todayMs, week: a.weekMs, total: a.totalMs }, a.live)).join('');
+  const recent = (r.recent || []).map(s => `<div class="setting stat-row"><div><div class="s-label">${s.live ? '<span class="pd live-dot"></span>' : ''}${esc(s.game)}</div>
+    <div class="s-desc">${esc(s.username)} · ${new Date(s.start).toLocaleString()}</div></div><div class="s-control"><b>${fmtDur(s.ms)}</b></div></div>`).join('');
+  root.innerHTML = `
+    <div class="stat-grid">
+      ${statCard('Today', fmtDur(t.todayMs))}
+      ${statCard('Last 7 days', fmtDur(t.weekMs))}
+      ${statCard('All time', fmtDur(t.totalMs), `${t.sessions || 0} sessions`)}
+      ${statCard('Tracking now', String(r.tracking || 0), r.tracking ? 'accounts in game' : 'no one in game')}
+    </div>
+    ${games ? `<div class="section-title">By game <span class="stat-cols">today · 7 days · all time</span></div><div class="card pad">${games}</div>` : ''}
+    ${accountsRows ? `<div class="section-title">By account <span class="stat-cols">today · 7 days · all time</span></div><div class="card pad">${accountsRows}</div>` : ''}
+    ${recent ? `<div class="section-title">Recent sessions</div><div class="card pad">${recent}</div>` : ''}
+    ${!games && !recent ? `<div class="games-end">No playtime yet. Stats build up automatically while your accounts play — launch a game and check back.</div>` : ''}
+    <div class="inline" style="margin-top:16px"><div class="spacer" style="flex:1"></div>
+      <button class="btn sm" data-action="stats-refresh">${icon('refresh')} Refresh</button>
+      <button class="btn sm danger" data-action="stats-clear">${icon('trash')} Clear playtime data</button></div>`;
+};
+
 views.history = async function () {
   const r = await call(() => api.history.get(), { history: [] });
   state.history = (r && r.history) || [];
@@ -2007,6 +2058,15 @@ document.addEventListener('click', async (e) => {
       disarmKeepAlive();
       toast('Keep-alive stopped', 'good');
       break;
+    case 'stats-refresh': views.stats(); break;
+    case 'stats-clear': {
+      const ok = await confirmDialog({ title: 'Clear playtime data?', body: 'All recorded sessions are deleted from this PC. This cannot be undone.', confirmText: 'Clear', danger: true });
+      if (!ok) break;
+      await call(() => api.playtime.clear());
+      toast('Playtime data cleared', 'good');
+      views.stats();
+      break;
+    }
     case 'set-theme':
       setThemePref(elAction.dataset.theme || 'system');
       if (state.view === 'settings') views.settings();

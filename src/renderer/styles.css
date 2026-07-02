@@ -307,6 +307,27 @@ svg.ico, svg.b-ico, svg.t-ico {
 .games-tools, .people-tools { display: flex; align-items: center; justify-content: space-between; gap: 10px;
   flex-wrap: wrap; margin: -6px 0 16px; }
 .btn.active-filter { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+/* Stats page */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.stat-card { text-align: center; padding: 18px 14px; }
+.stat-value { font-size: 24px; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.stat-label { font-size: 12px; color: var(--ink-3); margin-top: 3px; text-transform: uppercase; letter-spacing: .05em; }
+.stat-sub { font-size: 11.5px; color: var(--ink-3); margin-top: 4px; }
+.stat-cells { display: flex; gap: 18px; font-variant-numeric: tabular-nums; font-size: 12.5px; color: var(--ink-2); }
+.stat-cells b { color: var(--ink); }
+.stat-cols { font-size: 11px; color: var(--ink-4); font-weight: 400; margin-left: 8px; text-transform: none; letter-spacing: 0; }
+.live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--green); margin-right: 7px; }
+
+/* Robux chips */
+.robux-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--ink-2);
+  font-variant-numeric: tabular-nums; }
+.robux-chip .ico { width: 13px; height: 13px; color: var(--ink-3); }
+.robux-chip .prem, .robux-total .prem { display: inline-grid; place-items: center; width: 14px; height: 14px; border-radius: 4px;
+  background: var(--ink); color: var(--on-ink); font-size: 9.5px; font-weight: 700; }
+.robux-total { display: inline-flex; align-items: center; gap: 5px; margin-left: 10px; font-size: 12.5px; font-weight: 600;
+  color: var(--ink-2); font-variant-numeric: tabular-nums; vertical-align: 1px; }
+.robux-total .ico { width: 13px; height: 13px; color: var(--ink-3); }
+
 .keepalive-chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 6px 4px 12px; border-radius: var(--r-pill);
   border: 1px solid var(--green-ring); background: var(--green-bg); color: var(--green); font-size: 12px; font-weight: 600; }
 .keepalive-chip[hidden] { display: none; }
@@ -346,8 +367,9 @@ svg.ico, svg.b-ico, svg.t-ico {
 .game-meta > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .game-meta .likes { display: inline-flex; align-items: center; gap: 4px; flex: none; }
 .game-meta svg { width: 13px; height: 13px; flex: none; }
-.game-actions { display: flex; gap: 8px; margin-top: auto; }
-.game-actions .btn.primary { flex: 1; }
+.game-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; min-width: 0; }
+.game-actions .btn.primary { flex: 1 1 auto; min-width: 88px; }
+.game-actions .btn { flex-shrink: 0; }
 .games-end { grid-column: 1 / -1; text-align: center; color: var(--ink-3); font-size: 12.5px; padding: 18px; }
 
 /* Server browser */

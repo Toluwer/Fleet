@@ -97,6 +97,8 @@ function sanitize(a) {
     presenceError: a.presenceError || null,
     sessionExpired: !!a.sessionExpired,
     game: a.game || null,            // { name, placeId, rootPlaceId, gameId } when in a game
+    robux: typeof a.robux === 'number' ? a.robux : null,
+    premium: !!a.premium,
     addedAt: a.addedAt,
   };
 }
@@ -530,11 +532,28 @@ async function refresh(id, full) {
 let pollTimer = null;
 let pollBusy = false;
 
+// Robux + Premium per account — refreshed lazily inside the poll loop, at
+// most every ECONOMY_TTL_MS per account (economy endpoints are rate-limited).
+const ECONOMY_TTL_MS = 5 * 60 * 1000;
+async function fetchEconomy(a, cookie) {
+  try {
+    const r = await fetch('https://economy.roblox.com/v1/user/currency', { headers: authHeaders(cookie) });
+    if (r.ok) {
+      const j = await r.json();
+      if (j && typeof j.robux === 'number') a.robux = j.robux;
+    }
+    const p = await fetch(`https://premiumfeatures.roblox.com/v1/users/${a.userId}/validate-membership`, { headers: authHeaders(cookie) });
+    if (p.ok) a.premium = (await p.json()) === true;
+    a.economyAt = Date.now();
+  } catch (_) { /* best-effort — retried next TTL window */ }
+}
+
 function startPolling(opts) {
   opts = opts || {};
   const interval = opts.intervalMs || 12000;
   const onUpdate = opts.onUpdate || function () {};
   const onExpired = opts.onExpired || function () {};
+  const onObserve = opts.onObserve || function () {};
   stopPolling();
   const tick = async () => {
     if (pollBusy) return;
@@ -545,11 +564,18 @@ function startPolling(opts) {
       for (const a of raw) {
         const cookie = decryptCookie(a.cookie);
         if (!cookie) {
+          onObserve(a.userId, a.username, 'Unknown', null);
           if (a.presence !== 'Unknown') { a.presence = 'Unknown'; a.presenceError = 'No stored session'; changed = true; onUpdate(sanitize(a)); }
           continue;
         }
+        if (!a.economyAt || Date.now() - a.economyAt > ECONOMY_TTL_MS) {
+          const beforeRobux = a.robux, beforePremium = a.premium;
+          await fetchEconomy(a, cookie);
+          if (a.robux !== beforeRobux || a.premium !== beforePremium) { changed = true; onUpdate(sanitize(a)); }
+        }
         const pres = await getPresence(a.userId, cookie);
         if (pres.expired) {
+          onObserve(a.userId, a.username, 'Offline', null);
           const firstNotice = !a.sessionExpired;
           if (firstNotice || a.presence !== 'Offline' || a.presenceError !== 'Session expired' || a.game) {
             a.presence = 'Offline';
@@ -566,6 +592,7 @@ function startPolling(opts) {
         }
         if (pres.error) continue; // transient (rate-limit/network) — keep last good value
         const game = gameFromPresence(pres);
+        onObserve(a.userId, a.username, pres.status, game);
         if (a.presence !== pres.status || !sameGame(a.game, game) || a.presenceError || a.sessionExpired) {
           a.presence = pres.status;
           a.presenceError = null;

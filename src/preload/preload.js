@@ -69,6 +69,11 @@ contextBridge.exposeInMainWorld('fleet', {
     arrange: () => invoke('instances:arrange'),
   },
 
+  playtime: {
+    stats: () => invoke('playtime:stats'),
+    clear: () => invoke('playtime:clear'),
+  },
+
   history: {
     get: () => invoke('history:get'),
     clear: () => invoke('history:clear'),

@@ -24,6 +24,7 @@ const accounts = require('./accounts');
 const people = require('./people');
 const games = require('./games');
 const updater = require('./updater');
+const playtime = require('./playtime');
 
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -306,6 +307,8 @@ function register(ctx) {
   /* ----------------------------- History ----------------------------- */
 
   safe('history:get', () => ({ ok: true, history: store.getHistory() }));
+  safe('playtime:stats', () => playtime.stats());
+  safe('playtime:clear', () => playtime.clear());
   safe('history:clear', () => ({ ok: true, history: store.clearHistory() }));
 
   /* ----------------------------- Settings ----------------------------- */
