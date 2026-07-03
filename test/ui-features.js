@@ -11,8 +11,9 @@ const { spawn } = require('child_process');
 const processes = require('../src/main/processes');
 
 const root = path.join(__dirname, '..');
-const devElectron = path.join(root, 'node_modules', 'electron', 'dist', 'electron.exe');
-const executable = process.env.FLEET_TEST_EXE ? path.resolve(process.env.FLEET_TEST_EXE) : devElectron;
+const devElectronCli = path.join(root, 'node_modules', 'electron', 'cli.js');
+const executable = process.env.FLEET_TEST_EXE ? path.resolve(process.env.FLEET_TEST_EXE) : null;
+const devElectronExe = path.join(root, 'node_modules', 'electron', 'dist', 'electron.exe');
 const packaged = !!process.env.FLEET_TEST_EXE;
 const profile = path.join(os.tmpdir(), 'fleet-ui-features-' + Date.now());
 const port = 9337;
@@ -49,14 +50,22 @@ async function waitForPage() {
 }
 
 async function main() {
-  if (!fs.existsSync(executable)) throw new Error(`Fleet test executable was not found: ${executable}`);
+  if (packaged && !fs.existsSync(executable)) throw new Error(`Fleet test executable was not found: ${executable}`);
+  if (!packaged && !fs.existsSync(devElectronExe) && !fs.existsSync(devElectronCli)) throw new Error(`Electron executable was not found: ${devElectronExe}`);
   const before = new Set((await processes.list()).map(item => item.pid));
-  const args = [
-    `--remote-debugging-port=${port}`,
-    `--user-data-dir=${profile}`,
-  ];
-  if (!packaged) args.push(root);
-  const child = spawn(executable, args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  const args = packaged
+    ? [
+      `--remote-debugging-port=${port}`,
+      `--user-data-dir=${profile}`,
+    ]
+    : [
+      root,
+      `--remote-debugging-port=${port}`,
+      `--user-data-dir=${profile}`,
+    ];
+  const env = Object.assign({}, process.env);
+  delete env.ELECTRON_RUN_AS_NODE;
+  const child = spawn(packaged ? executable : devElectronExe, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   let stderr = '';
   child.stderr.on('data', chunk => { stderr += chunk.toString(); });
 

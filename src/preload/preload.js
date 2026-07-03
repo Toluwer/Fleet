@@ -54,6 +54,7 @@ contextBridge.exposeInMainWorld('fleet', {
 
   people: {
     list: (page, pageSize, force) => invoke('people:list', { page, pageSize, force }),
+    serverList: (force) => invoke('people:server-list', { force }),
     search: (query, cursor) => invoke('people:search', { query, cursor }),
     profile: (userId) => invoke('people:profile', { userId }),
     presence: (userIds) => invoke('people:presence', { userIds }),

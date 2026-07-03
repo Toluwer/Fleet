@@ -56,8 +56,9 @@ let typeIndices = null; // { event, mutant }
 
 let NtQuerySystemInformation, NtQueryObject;
 let OpenProcess, DuplicateHandle, CloseHandle, GetCurrentProcess, CreateEventW, CreateMutexW, OpenEventW, OpenMutexW;
-let CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, K32GetProcessMemoryInfo;
+let CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, Module32FirstW, Module32NextW, K32GetProcessMemoryInfo, ReadProcessMemory;
 let PE32 = null, PE32_SIZE = 0;
+let ME32 = null, ME32_SIZE = 0;
 let EnumWindows, GetWindowThreadProcessId, IsWindowVisible, ShowWindow, SetForegroundWindow, BringWindowToTop, AllowSetForegroundWindow, EnumWindowsProto;
 let GetWindowTextW, GetWindowTextLengthW, IsHungAppWindow, SetWindowPos, SystemParametersInfoW;
 
@@ -94,6 +95,17 @@ function init() {
     Process32FirstW = kernel32.func('bool __stdcall Process32FirstW(uintptr hSnapshot, _Inout_ PROCESSENTRY32W *lppe)');
     Process32NextW = kernel32.func('bool __stdcall Process32NextW(uintptr hSnapshot, _Inout_ PROCESSENTRY32W *lppe)');
     K32GetProcessMemoryInfo = kernel32.func('bool __stdcall K32GetProcessMemoryInfo(uintptr Process, void *counters, uint32 cb)');
+    ReadProcessMemory = kernel32.func('bool __stdcall ReadProcessMemory(uintptr hProcess, uintptr lpBaseAddress, void* lpBuffer, uintptr nSize, _Out_ uintptr* lpNumberOfBytesRead)');
+
+    ME32 = koffi.struct('MODULEENTRY32W', {
+      dwSize: 'uint32', th32ModuleID: 'uint32', th32ProcessID: 'uint32',
+      GlblcntUsage: 'uint32', ProccntUsage: 'uint32', modBaseAddr: 'uintptr',
+      modBaseSize: 'uint32', hModule: 'uintptr', szModule: koffi.array('char16', 256, 'string'),
+      szExePath: koffi.array('char16', 260, 'string'),
+    });
+    ME32_SIZE = koffi.sizeof(ME32);
+    Module32FirstW = kernel32.func('bool __stdcall Module32FirstW(uintptr hSnapshot, _Inout_ MODULEENTRY32W *lpme)');
+    Module32NextW = kernel32.func('bool __stdcall Module32NextW(uintptr hSnapshot, _Inout_ MODULEENTRY32W *lpme)');
 
     EnumWindowsProto = koffi.proto('bool __stdcall FleetEnumProc(void* hwnd, intptr lparam)');
     EnumWindows = user32.func('bool __stdcall EnumWindows(void* lpEnumFunc, intptr lParam)');
@@ -259,7 +271,10 @@ function closeRobloxSingletonHandles(pids, scope) {
 }
 
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const PROCESS_VM_READ = 0x0010;
 const TH32CS_SNAPPROCESS = 0x2;
+const TH32CS_SNAPMODULE = 0x8;
+const TH32CS_SNAPMODULE32 = 0x10;
 
 function workingSetOf(pid) {
   let h = 0;
@@ -273,6 +288,52 @@ function workingSetOf(pid) {
     if (h) { try { CloseHandle(h); } catch (_) {} }
   }
   return 0;
+}
+
+/** Return the base address of the first module matching `moduleName`. */
+function moduleBaseOf(pid, moduleName) {
+  if (!init()) return 0;
+  let snap = 0;
+  try {
+    snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+    if (!snap) return 0;
+    const me = { dwSize: ME32_SIZE };
+    const wanted = String(moduleName || '').toLowerCase();
+    let ok = Module32FirstW(snap, me);
+    while (ok) {
+      const mod = String(me.szModule || '').toLowerCase();
+      const path = String(me.szExePath || '').toLowerCase();
+      if (!wanted || mod === wanted || path.endsWith('\\' + wanted) || path.endsWith('/' + wanted)) {
+        return Number(me.modBaseAddr) || 0;
+      }
+      ok = Module32NextW(snap, me);
+    }
+  } catch (_) {
+    return 0;
+  } finally {
+    if (snap) { try { CloseHandle(snap); } catch (_) {} }
+  }
+  return 0;
+}
+
+/** Read raw process memory. Returns a Buffer slice or null on failure. */
+function readMemory(pid, address, size) {
+  if (!init()) return null;
+  if (!pid || !address || !size) return null;
+  let h = 0;
+  try {
+    h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid);
+    if (!h) return null;
+    const buf = Buffer.alloc(size);
+    const read = [0];
+    const ok = ReadProcessMemory(h, Number(address), buf, size, read);
+    if (!ok || !read[0]) return null;
+    return buf.subarray(0, Number(read[0]));
+  } catch (_) {
+    return null;
+  } finally {
+    if (h) { try { CloseHandle(h); } catch (_) {} }
+  }
 }
 
 /**
@@ -453,4 +514,6 @@ module.exports = {
   windowInfoForPids,
   focusByPid,
   tileWindows,
+  moduleBaseOf,
+  readMemory,
 };

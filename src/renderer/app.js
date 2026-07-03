@@ -5,6 +5,7 @@
 
 const api = window.fleet;
 const { parseRobloxTarget, normalizeThemePreference, normalizeSessions } = window.FleetModel;
+const SERVER_PEOPLE_REFRESH_MS = 2000;
 
 /* ----------------------------- Theme ----------------------------- */
 const THEME_KEY = 'fleet-theme';
@@ -51,12 +52,19 @@ const state = {
     sort: 'players', hideEmpty: false, categories: [], category: 'All',
   },
   people: {
+    tab: 'people',
     route: 'home', returnRoute: 'home',
     filter: 'all', sort: 'status',
     list: [], page: 0, pageSize: 9, total: 0, hasNext: false, hasPrev: false, loading: false, error: null, loaded: false,
     search: {
       query: '', list: [], nextPageCursor: null, loading: false, error: null,
       searched: false, requestId: 0, notice: null, source: null, cached: false, retryable: false,
+    },
+    server: {
+      list: [], total: 0, loading: false, error: null, loaded: false, updatedAt: null, note: null,
+      search: {
+        query: '', list: [], loading: false, error: null, searched: false, requestId: 0,
+      },
     },
     detail: { userId: null, profile: null, loading: false, error: null },
   },
@@ -328,7 +336,7 @@ function setView(name) {
 $('#nav').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-view]');
   if (b) {
-    if (b.dataset.view === 'people') state.people.route = 'home';
+    if (b.dataset.view === 'people') state.people.route = state.people.tab === 'server' ? 'server' : 'home';
     setView(b.dataset.view);
   }
 });
@@ -1123,8 +1131,17 @@ async function joinPlace(placeId, name) {
 views.people = function () {
   if (state.people.route === 'friends') return renderFriendsPage();
   if (state.people.route === 'profile') return renderPeopleProfile();
+  if (state.people.route === 'server') return renderServerPage();
   return renderPeopleHome();
 };
+
+function peopleSectionTabs() {
+  const tab = state.people.tab || 'people';
+  return `<div class="segmented compact" aria-label="People section" style="margin:0 0 16px">
+    <button data-action="people-tab" data-tab="people" class="${tab === 'people' ? 'on' : ''}">People</button>
+    <button data-action="people-tab" data-tab="server" class="${tab === 'server' ? 'on' : ''}">Server</button>
+  </div>`;
+}
 
 function renderPeopleHome() {
   const pp = state.people;
@@ -1139,6 +1156,7 @@ function renderPeopleHome() {
       <h1>People</h1>
       <p>Find Roblox users or browse friends shared across your saved accounts.</p>
     </div>
+    ${peopleSectionTabs()}
     ${onboarding}
     <div class="toolbar people-searchbar">
       <div class="search">${icon('search')}<input id="people-search" type="text" maxlength="50" placeholder="Username, display name, or user ID" value="${esc(search.query)}"></div>
@@ -1242,6 +1260,87 @@ function personCard(u) {
   </div>`;
 }
 
+function serverStatNumber(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.abs(n - Math.round(n)) < 0.05 ? String(Math.round(n)) : n.toFixed(1).replace(/\.0$/, '');
+}
+
+function serverHealthText(u) {
+  const stats = u && u.stats || {};
+  const health = serverStatNumber(stats.health != null ? stats.health : u && u.health);
+  const maxHealth = serverStatNumber(stats.maxHealth != null ? stats.maxHealth : u && u.maxHealth);
+  if (health && maxHealth) return `${health} / ${maxHealth}`;
+  if (health) return health;
+  return 'Unknown';
+}
+
+function serverTeamText(u) {
+  const stats = u && u.stats || {};
+  return String((stats.team || u && u.team || '')).trim() || 'No team';
+}
+
+function serverPersonCard(u) {
+  const avatar = u.avatar ? `<img class="avatar" loading="lazy" src="${esc(u.avatar)}" alt="">` : `<div class="avatar"></div>`;
+  return `<div class="person server-person" data-person-card="${esc(u.userId)}">
+    <div class="top">
+      <span class="server-avatar-slot" data-server-avatar="${esc(u.userId)}">${avatar}</span>
+      <div class="who">
+        <div class="dname" data-server-dname="${esc(u.userId)}">${esc(u.displayName)}</div>
+        <div class="uname" data-server-uname="${esc(u.userId)}">@${esc(u.username)}</div>
+      </div>
+    </div>
+    <div class="server-person-stats">
+      <div><span>Health</span><strong data-server-health="${esc(u.userId)}">${esc(serverHealthText(u))}</strong></div>
+      <div><span>Team</span><strong data-server-team="${esc(u.userId)}">${esc(serverTeamText(u))}</strong></div>
+    </div>
+    <div class="row-split" style="margin-top:auto">
+      <span class="server-person-id">ID ${esc(u.userId || '')}</span>
+      <span class="inline">
+        <button class="btn sm icon" data-action="copy-user-id" data-user="${esc(u.userId)}" data-tip="Copy user ID">${icon('copy')}</button>
+        <button class="btn sm" data-action="open-person" data-user="${esc(u.userId)}">View</button>
+      </span>
+    </div>
+  </div>`;
+}
+
+function sortServerPeople(list) {
+  return (list || []).slice().sort((a, b) => String(a.displayName || a.username).localeCompare(String(b.displayName || b.username)));
+}
+
+function serverRosterSignature(list, search) {
+  const mode = search && search.searched ? `search:${search.query || ''}` : 'all';
+  return `${mode}|${(list || []).map(u => Number(u && u.userId) || 0).join(',')}`;
+}
+
+function patchServerRosterCards(list) {
+  for (const u of (list || [])) {
+    const id = String(u && u.userId || '');
+    if (!id) continue;
+    const dname = document.querySelector(`[data-server-dname="${id}"]`);
+    if (dname) dname.textContent = u.displayName || u.username || 'Unknown';
+    const uname = document.querySelector(`[data-server-uname="${id}"]`);
+    if (uname) uname.textContent = '@' + (u.username || u.displayName || 'Unknown');
+    const health = document.querySelector(`[data-server-health="${id}"]`);
+    if (health) health.textContent = serverHealthText(u);
+    const team = document.querySelector(`[data-server-team="${id}"]`);
+    if (team) team.textContent = serverTeamText(u);
+    const avatar = document.querySelector(`[data-server-avatar="${id}"]`);
+    if (avatar) {
+      const img = avatar.querySelector('img.avatar');
+      if (u.avatar) {
+        if (img) {
+          if (img.getAttribute('src') !== u.avatar) img.setAttribute('src', u.avatar);
+        } else {
+          avatar.innerHTML = `<img class="avatar" loading="lazy" src="${esc(u.avatar)}" alt="">`;
+        }
+      } else if (img) {
+        avatar.innerHTML = '<div class="avatar"></div>';
+      }
+    }
+  }
+}
+
 function renderFriendsPage() {
   const pp = state.people;
   const start = pp.total ? pp.page * pp.pageSize + 1 : 0;
@@ -1265,6 +1364,58 @@ function renderFriendsPage() {
   `);
   if (!pp.loaded && !pp.loading) loadPeople(0);
   else renderPeopleGrid();
+}
+
+function renderServerPage() {
+  const server = state.people.server;
+  const search = server.search;
+  const summary = server.total
+    ? `${fmtNum(server.total)} player${server.total === 1 ? '' : 's'}`
+    : 'Scanning';
+  const updated = server.updatedAt ? `Updated ${relTime(server.updatedAt)}` : 'Waiting for roster';
+  mount(`
+    <button class="back-link" data-action="people-home">${icon('chevron-left')} Back to People</button>
+    <div class="page-head compact">
+      <h1>Server</h1>
+      <p>Inspect the active server roster with memory-read health and team when available.</p>
+    </div>
+    ${peopleSectionTabs()}
+    <div class="server-roster-meta">
+      <div class="row-split" style="align-items:flex-start;gap:14px">
+        <div>
+          <div id="server-roster-count" class="section-title" style="margin:0">${summary}</div>
+          <div class="hint">${updated}${server.note ? ` · ${esc(server.note)}` : ''}</div>
+        </div>
+        <span class="server-roster-refresh">2s refresh</span>
+        <button class="btn sm icon" data-action="server-refresh" data-tip="Refresh now">${icon('refresh')}</button>
+      </div>
+    </div>
+    <div class="toolbar people-searchbar">
+      <div class="search">${icon('search')}<input id="server-search" type="text" maxlength="50" placeholder="Search only the players in this server" value="${esc(search.query)}"></div>
+      <button class="btn" data-action="server-search-clear" ${search.searched || search.query ? '' : 'disabled'}>Clear</button>
+      <button class="btn primary" data-action="server-search" ${server.loading ? 'disabled' : ''}>${server.loading ? '<span class="spinner"></span>' : icon('search')} Search</button>
+    </div>
+    <div id="server-search-results" class="people-results"></div>
+  `);
+  const input = $('#server-search');
+  if (input) {
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') runServerSearch(input.value); });
+    input.focus();
+  }
+  if (!server.loaded && !server.loading) {
+    // Kick the load after paint so the tab opens immediately and the backend
+    // work cannot block the initial render path.
+    setTimeout(() => { if (state.view === 'people' && state.people.route === 'server') loadServerPeople(false); }, 0);
+  }
+  else renderServerSearchResults();
+}
+
+function renderServerMeta() {
+  const server = state.people.server;
+  const count = $('#server-roster-count');
+  if (count) count.textContent = server.total ? `${fmtNum(server.total)} player${server.total === 1 ? '' : 's'}` : 'Scanning';
+  const updated = $('.server-roster-meta .hint');
+  if (updated) updated.textContent = `${server.updatedAt ? `Updated ${relTime(server.updatedAt)}` : 'Waiting for roster'}${server.note ? ` · ${server.note}` : ''}`;
 }
 
 function renderPeopleGrid() {
@@ -1385,6 +1536,141 @@ async function runPeopleSearch(query, append) {
     search.needsAccount = !!(r && r.needsAccount);
   }
   if (state.view === 'people' && state.people.route === 'home') renderPeopleSearchResults();
+}
+
+function renderServerSearchResults() {
+  const root = $('#server-search-results');
+  if (!root) return;
+  const server = state.people.server;
+  const search = server.search;
+  if (server.loading) {
+    root.dataset.serverRosterSignature = '';
+    root.innerHTML = `<div class="people-search-state"><span class="spinner dark"></span><div><strong>Checking the server</strong><small>Loading the people currently detected in the server...</small></div></div>`;
+    return;
+  }
+  if (server.error) {
+    root.dataset.serverRosterSignature = '';
+    root.innerHTML = `<div class="people-search-state error">${icon('alert-circle')}<div><strong>Server list unavailable</strong><small>${esc(server.error)}</small></div>
+      <button class="btn sm" data-action="server-refresh">${icon('refresh')} Retry</button></div>`;
+    return;
+  }
+  if (search.error) {
+    root.dataset.serverRosterSignature = '';
+    root.innerHTML = `<div class="people-search-state error">${icon('alert-circle')}<div><strong>Search paused</strong><small>${esc(search.error)}</small></div></div>`;
+    return;
+  }
+  if (!server.loaded) { root.dataset.serverRosterSignature = ''; root.innerHTML = ''; return; }
+  const sourceList = Array.isArray(search.searched ? search.list : server.list) ? (search.searched ? search.list : server.list) : [];
+  const visible = sortServerPeople(sourceList);
+  const total = sourceList.length;
+  const empty = search.searched
+    ? 'No one in the current server matches that search.'
+    : 'No players are available for this server yet.';
+  const signature = serverRosterSignature(visible, search);
+  if (root.dataset.serverRosterSignature === signature) {
+    patchServerRosterCards(visible);
+    return;
+  }
+  root.innerHTML = `
+    ${search.searched ? `<div class="people-result-head"><div class="section-title">Results for "${esc(search.query)}"</div><span>${search.list.length} shown</span></div>` : ''}
+    <div class="people-grid">${total && visible.length ? visible.map(serverPersonCard).join('') : `<div class="games-end">${empty}</div>`}</div>`;
+  root.dataset.serverRosterSignature = signature;
+}
+
+async function loadServerPeople(force, options) {
+  const silent = !!(options && options.silent);
+  const server = state.people.server;
+  if (server.refreshing) return;
+  server.refreshing = true;
+  if (!silent) server.loading = true;
+  server.error = null;
+  if (!silent && state.view === 'people' && state.people.route === 'server') renderServerSearchResults();
+  try {
+    const r = await call(() => api.people.serverList(!!force));
+    server.loaded = true;
+    if (r && r.ok) {
+      const rows = Array.isArray(r.people) ? r.people : [];
+      server.list = rows.map(p => ({
+        userId: p && p.userId != null ? Number(p.userId) || null : null,
+        username: String((p && p.username) || (p && p.displayName) || 'Unknown'),
+        displayName: String((p && p.displayName) || (p && p.username) || 'Unknown'),
+        presence: String((p && p.presence) || 'In game'),
+        lastOnline: p && p.lastOnline || null,
+        game: p && p.game ? p.game : null,
+        canJoin: !!(p && p.canJoin),
+        avatar: p && p.avatar || null,
+        stats: p && p.stats || {},
+        team: p && p.team || p && p.stats && p.stats.team || null,
+        health: p && p.health != null ? Number(p.health) : p && p.stats && p.stats.health != null ? Number(p.stats.health) : null,
+        maxHealth: p && p.maxHealth != null ? Number(p.maxHealth) : p && p.stats && p.stats.maxHealth != null ? Number(p.stats.maxHealth) : null,
+        connectedAccounts: Array.isArray(p && p.connectedAccounts) ? p.connectedAccounts : [],
+        bio: p && p.bio || '',
+        hasVerifiedBadge: !!(p && p.hasVerifiedBadge),
+      }));
+      if (server.search.searched && server.search.query) applyServerSearchFilter();
+      server.total = Number(r.total) || server.list.length;
+      server.updatedAt = r.updatedAt || null;
+      server.note = r.note || null;
+      server.error = null;
+    } else {
+      server.list = [];
+      server.total = 0;
+      server.error = (r && r.error) || 'Could not load the current server players.';
+    }
+  } catch (err) {
+    server.loaded = true;
+    server.list = [];
+    server.total = 0;
+    server.error = (err && err.message) || 'Could not load the current server players.';
+  } finally {
+    server.refreshing = false;
+    server.loading = false;
+  }
+  if (state.view === 'people' && state.people.route === 'server') {
+    if (silent) {
+      renderServerMeta();
+      renderServerSearchResults();
+    } else {
+      views.people();
+    }
+  }
+}
+
+function clearServerSearch() {
+  state.people.server.search = {
+    query: '', list: [], loading: false, error: null, searched: false, requestId: state.people.server.search.requestId + 1,
+  };
+  if (state.view === 'people' && state.people.route === 'server') renderServerSearchResults();
+}
+
+function applyServerSearchFilter() {
+  const server = state.people.server;
+  const search = server.search;
+  const needle = String(search.query || '').trim().toLowerCase();
+  search.list = needle ? server.list.filter(user => {
+    const username = String(user && user.username || '').toLowerCase();
+    const displayName = String(user && user.displayName || '').toLowerCase();
+    const userId = String(user && user.userId || '');
+    const team = String(serverTeamText(user)).toLowerCase();
+    return username.includes(needle) || displayName.includes(needle) || userId.includes(needle) || team.includes(needle);
+  }) : [];
+}
+
+async function runServerSearch(query) {
+  const server = state.people.server;
+  const search = server.search;
+  if (server.loading) return;
+  const q = String(query == null ? search.query : query).trim();
+  if (!q) { clearServerSearch(); return; }
+  if (q.length < 2) { search.error = 'Type at least 2 characters.'; search.searched = true; renderServerSearchResults(); return; }
+  search.query = q;
+  search.loading = true;
+  search.error = null;
+  search.searched = true;
+  renderServerSearchResults();
+  applyServerSearchFilter();
+  search.loading = false;
+  renderServerSearchResults();
 }
 
 let peoplePresenceBusy = false;
@@ -1514,7 +1800,9 @@ function accountAge(iso) {
 
 function renderPeopleProfile() {
   const detail = state.people.detail;
-  const backLabel = state.people.returnRoute === 'friends' ? 'Back to Friends' : 'Back to People';
+  const backLabel = state.people.returnRoute === 'friends'
+    ? 'Back to Friends'
+    : (state.people.returnRoute === 'server' ? 'Back to Server' : 'Back to People');
   if (detail.loading) {
     mount(`<button class="back-link" data-action="people-back">${icon('chevron-left')} ${backLabel}</button><div class="profile-loading"><span class="spinner dark"></span> Loading public profile data…</div>`);
     return;
@@ -1565,7 +1853,9 @@ function renderPeopleProfile() {
 async function openPerson(userId) {
   const id = Number(userId);
   if (!id) return;
-  state.people.returnRoute = state.people.route === 'friends' ? 'friends' : 'home';
+  state.people.returnRoute = state.people.route === 'friends'
+    ? 'friends'
+    : (state.people.route === 'server' || state.people.tab === 'server' ? 'server' : 'home');
   state.people.route = 'profile';
   state.people.detail = { userId: id, profile: null, loading: true, error: null };
   views.people();
@@ -2191,22 +2481,40 @@ document.addEventListener('click', async (e) => {
       break;
     }
 
-    case 'open-friends': state.people.route = 'friends'; views.people(); break;
-    case 'people-home': state.people.route = 'home'; views.people(); break;
+    case 'open-friends':
+      state.people.tab = 'people';
+      state.people.route = 'friends';
+      views.people();
+      break;
+    case 'people-home':
+      state.people.tab = 'people';
+      state.people.route = 'home';
+      views.people();
+      break;
+    case 'people-tab':
+      state.people.tab = elAction.dataset.tab === 'server' ? 'server' : 'people';
+      state.people.route = state.people.tab === 'server' ? 'server' : 'home';
+      views.people();
+      break;
     case 'people-back': state.people.route = state.people.returnRoute || 'home'; views.people(); break;
     case 'people-search': runPeopleSearch(($('#people-search') || {}).value || ''); break;
     case 'people-search-retry': runPeopleSearch(state.people.search.query); break;
     case 'people-search-clear': clearPeopleSearch(); break;
     case 'people-search-more': runPeopleSearch(state.people.search.query, true); break;
+    case 'server-search': runServerSearch(($('#server-search') || {}).value || ''); break;
+    case 'server-search-clear': clearServerSearch(); break;
+    case 'server-refresh': await loadServerPeople(true); break;
     case 'people-filter':
       state.people.filter = elAction.dataset.filter || 'all';
       if (state.people.route === 'friends') views.people();
       else if (state.people.route === 'home') renderPeopleSearchResults();
+      else if (state.people.route === 'server') renderServerSearchResults();
       break;
     case 'people-sort':
       state.people.sort = elAction.dataset.sort || 'status';
       if (state.people.route === 'friends') views.people();
       else if (state.people.route === 'home') renderPeopleSearchResults();
+      else if (state.people.route === 'server') renderServerSearchResults();
       break;
     case 'copy-user-id':
       try {
@@ -2432,6 +2740,11 @@ if (api) {
 }
 setInterval(() => { if (state.view === 'instances') renderInstanceList(); }, 5000);
 setInterval(refreshVisiblePeoplePresence, 10000);
+setInterval(() => {
+  if (state.view === 'people' && state.people.route === 'server' && !state.people.server.loading && !state.people.server.refreshing) {
+    loadServerPeople(true, { silent: true });
+  }
+}, SERVER_PEOPLE_REFRESH_MS);
 
 // Infinite scroll for the Games search results
 (() => {

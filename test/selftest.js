@@ -190,6 +190,107 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && hiddenPlacePresence.game.placeId === null);
   const normalizedGroups = people.normalizeGroups({ data: [{ group: { id: 7, name: 'Fleet', memberCount: 10 }, role: { name: 'Member', rank: 1 } }] });
   check('group roles are normalized', normalizedGroups.length === 1 && normalizedGroups[0].name === 'Fleet' && normalizedGroups[0].role === 'Member');
+  const listServerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'people.js'), 'utf8');
+  check('server player reader uses Roblox memory offsets',
+    listServerSource.includes('FakeDataModel: 0x7c3d2e8')
+    && listServerSource.includes('readServerPlayersFromPid')
+    && listServerSource.includes('locatePlayersService')
+    && listServerSource.includes('locatePlayersServiceDeep')
+    && /looksLikePlayer\(pid, child(?:, ctx)?\)/.test(listServerSource));
+
+  const nativeState = {
+    isAvailable: native.isAvailable,
+    moduleBaseOf: native.moduleBaseOf,
+    readMemory: native.readMemory,
+  };
+  const pid = 4242;
+  const base = 0x10000000;
+  const addrs = new Map();
+  const write = (addr, buf) => {
+    for (let i = 0; i < buf.length; i++) addrs.set(addr + i, buf[i]);
+  };
+  const writePtr = (addr, value) => {
+    const buf = Buffer.alloc(8);
+    buf.writeBigUInt64LE(BigInt(value), 0);
+    write(addr, buf);
+  };
+  const writeU32 = (addr, value) => {
+    const buf = Buffer.alloc(4);
+    buf.writeUInt32LE(value >>> 0, 0);
+    write(addr, buf);
+  };
+  const writeStr = (addr, text) => {
+    const buf = Buffer.from(String(text), 'utf16le');
+    write(addr, buf);
+  };
+  const readMemory = (readPid, address, size) => {
+    if (readPid !== pid) return null;
+    const out = Buffer.alloc(size);
+    for (let i = 0; i < size; i++) {
+      const byte = addrs.get(address + i);
+      if (byte == null) return null;
+      out[i] = byte;
+    }
+    return out;
+  };
+  try {
+    native.isAvailable = () => true;
+    native.moduleBaseOf = (readPid) => (readPid === pid ? base : 0);
+    native.readMemory = readMemory;
+
+    const offsets = people.__test.OFFSETS;
+    const fakeDmPtr = 0x20000000;
+    const dataModelPtr = 0x20001000;
+    const playersServicePtr = 0x20002000;
+    const playerPtr = 0x20003000;
+    const childrenVecDm = 0x20004000;
+    const childrenVecPlayers = 0x20005000;
+    const dmChildrenArr = 0x20006000;
+    const playersChildrenArr = 0x20007000;
+    const nameObj = 0x20008000;
+    const nameValue = 0x20009000;
+    const playersNameObj = 0x20009500;
+    const playersNameValue = 0x20009600;
+    const displayObj = 0x2000a000;
+    const displayValue = 0x2000b000;
+
+    writePtr(base + offsets.FakeDataModel, fakeDmPtr);
+    writePtr(fakeDmPtr + 0x1d0, dataModelPtr);
+    writePtr(dataModelPtr + offsets.Instance.ChildrenStart, childrenVecDm);
+    writePtr(childrenVecDm, dmChildrenArr);
+    writePtr(childrenVecDm + offsets.Instance.ChildrenEnd, dmChildrenArr + 8);
+    writePtr(dmChildrenArr, playersServicePtr);
+    writePtr(playersServicePtr + offsets.Instance.Name, playersNameObj);
+    writeU32(playersNameObj + offsets.String.Length, 14);
+    writePtr(playersNameObj + offsets.String.Value, playersNameValue);
+    writeStr(playersNameValue, 'Players');
+    writePtr(playersServicePtr + offsets.Instance.ChildrenStart, childrenVecPlayers);
+    writePtr(childrenVecPlayers, playersChildrenArr);
+    writePtr(childrenVecPlayers + offsets.Instance.ChildrenEnd, playersChildrenArr + 8);
+    writePtr(playersChildrenArr, playerPtr);
+
+    writePtr(playerPtr + offsets.Instance.Name, nameObj);
+    writeU32(nameObj + offsets.String.Length, 8);
+    writePtr(nameObj + offsets.String.Value, nameValue);
+    writeStr(nameValue, 'Alex');
+    writePtr(playerPtr + offsets.Player.DisplayName, displayObj);
+    writeU32(displayObj + offsets.String.Length, 16);
+    writePtr(displayObj + offsets.String.Value, displayValue);
+    writeStr(displayValue, 'Player A');
+    writeU32(playerPtr + offsets.Player.UserId, 1234567);
+
+    const mocked = people.__test.readServerPlayersFromPid(pid);
+    check('mocked server walk returns detected player',
+      mocked.ok
+      && mocked.people.length === 1
+      && mocked.people[0].username === 'Alex'
+      && mocked.people[0].displayName === 'Player A'
+      && mocked.people[0].userId === 1234567);
+  } finally {
+    native.isAvailable = nativeState.isAvailable;
+    native.moduleBaseOf = nativeState.moduleBaseOf;
+    native.readMemory = nativeState.readMemory;
+  }
 
   const rendererSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8');
   const gamesSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'games.js'), 'utf8');
@@ -220,6 +321,16 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     rendererSource.includes("case 'people-filter':")
     && rendererSource.includes("case 'people-sort':")
     && rendererSource.includes("case 'copy-user-id':"));
+  check('People includes a Server subtab with its own search and refresh flow',
+    rendererSource.includes("data-action=\"people-tab\" data-tab=\"server\"")
+    && rendererSource.includes('function renderServerPage()')
+    && rendererSource.includes('function runServerSearch(query)')
+    && rendererSource.includes("case 'server-search':")
+    && rendererSource.includes("case 'server-refresh':"));
+  check('Server subtab uses a dedicated backend list path',
+    fs.readFileSync(path.join(__dirname, '..', 'src', 'preload', 'preload.js'), 'utf8').includes('serverList: (force) => invoke(\'people:server-list\'')
+    && fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc.js'), 'utf8').includes("safe('people:server-list'")
+    && fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'people.js'), 'utf8').includes('async function listServerPeople(force)'));
   check('Games has advanced sorting, filtering and server ranking',
     rendererSource.includes("case 'games-sort':")
     && rendererSource.includes("case 'games-hide-empty':")

@@ -56,8 +56,13 @@ if ($rcedit) {
     '--set-version-string', 'LegalCopyright', 'MIT License',
     '--set-file-version', "$version.0", '--set-product-version', "$version.0"
   )
-  & $rcedit.FullName @rcArgs 2>&1 | Out-Null
-  Write-Host "Applied icon + metadata via rcedit"
+  $rcOutput = & $rcedit.FullName @rcArgs 2>&1
+  if ($LASTEXITCODE -eq 0) {
+    Write-Host "Applied icon + metadata via rcedit"
+  } else {
+    Write-Host "rcedit failed - exe built without updated metadata (still named Fleet.exe)"
+    if ($rcOutput) { Write-Host ($rcOutput -join "`n") }
+  }
 } else {
   Write-Host "rcedit not found - exe built without custom icon (still named Fleet.exe)"
 }

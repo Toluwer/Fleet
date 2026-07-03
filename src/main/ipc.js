@@ -194,6 +194,7 @@ function register(ctx) {
   /* ----------------------------- People ----------------------------- */
 
   safe('people:list', (p) => people.listFriends(asInt(p.page) || 0, asInt(p.pageSize) || 9, !!p.force));
+  safe('people:server-list', (p) => people.listServerPeople(!!p.force));
   safe('people:search', (p) => people.search(p.query, p.cursor));
   safe('people:profile', (p) => people.profile(p.userId));
   safe('people:presence', (p) => people.presence(p.userIds));
