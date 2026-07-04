@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:;" />
+  <style>
+    :root { --ink: #0e0f12; --ink-2: #6b7178; --hair: #ececee; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; }
+    .stage {
+      width: 100vw; height: 100vh; display: grid; place-items: center;
+      background: #ffffff; border-radius: 16px; border: 1px solid var(--hair);
+      box-shadow: 0 24px 70px rgba(14,15,18,.22);
+      font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+      opacity: 0; animation: stageIn .5s cubic-bezier(.2,.8,.2,1) forwards;
+    }
+    body.out .stage { opacity: 0; transform: scale(.985); transition: opacity .42s ease, transform .42s ease; }
+    @keyframes stageIn { from { opacity: 0; transform: scale(.985); } to { opacity: 1; transform: none; } }
+
+    .center { text-align: center; }
+
+    /* Animated mark: three bars sliding up into a stack, then a sweep */
+    .mark { width: 64px; height: 64px; margin: 0 auto 22px; position: relative; }
+    .mark .bar { position: absolute; left: 50%; border-radius: 6px; background: var(--ink);
+      transform: translateX(-50%) translateY(14px); opacity: 0; }
+    .mark .b1 { bottom: 6px; width: 46px; height: 12px; background: #d7d9dd; animation: rise .55s .15s cubic-bezier(.2,.8,.2,1) forwards; }
+    .mark .b2 { bottom: 24px; width: 38px; height: 12px; background: #aeb2b9; animation: rise .55s .27s cubic-bezier(.2,.8,.2,1) forwards; }
+    .mark .b3 { bottom: 42px; width: 30px; height: 12px; background: var(--ink); animation: rise .55s .39s cubic-bezier(.2,.8,.2,1) forwards; }
+    @keyframes rise { to { transform: translateX(-50%) translateY(0); opacity: 1; } }
+
+    .word { font-size: 30px; font-weight: 600; letter-spacing: -.02em; color: var(--ink);
+      display: inline-flex; overflow: hidden; }
+    .word span { display: inline-block; transform: translateY(105%); opacity: 0;
+      animation: letter .6s cubic-bezier(.2,.8,.2,1) forwards; }
+    .word span:nth-child(1) { animation-delay: .42s; }
+    .word span:nth-child(2) { animation-delay: .48s; }
+    .word span:nth-child(3) { animation-delay: .54s; }
+    .word span:nth-child(4) { animation-delay: .60s; }
+    .word span:nth-child(5) { animation-delay: .66s; }
+    @keyframes letter { to { transform: none; opacity: 1; } }
+
+    .tag { margin-top: 8px; font-size: 12.5px; color: var(--ink-2); letter-spacing: .04em;
+      opacity: 0; animation: fadeUp .5s .8s ease forwards; }
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: .9; transform: none; } }
+
+    .track { margin: 26px auto 0; width: 150px; height: 2px; border-radius: 2px; background: #eef0f2; overflow: hidden; }
+    .track::after { content: ""; display: block; height: 100%; width: 40%; background: var(--ink);
+      border-radius: 2px; transform: translateX(-110%); animation: sweep 1.5s .7s cubic-bezier(.45,.05,.35,1) infinite; }
+    @keyframes sweep { to { transform: translateX(320%); } }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <div class="center">
+      <div class="mark"><span class="bar b1"></span><span class="bar b2"></span><span class="bar b3"></span></div>
+      <div class="word"><span>F</span><span>l</span><span>e</span><span>e</span><span>t</span></div>
+      <div class="tag">Roblox multi-launcher</div>
+      <div class="track"></div>
+    </div>
+  </div>
+</body>
+</html>
