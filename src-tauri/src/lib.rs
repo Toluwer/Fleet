@@ -51,9 +51,11 @@ impl NodeBackend {
         let mut candidates = Vec::new();
         if let Some(dir) = exe_dir.as_ref() {
             candidates.push(dir.join("src").join("main").join("tauri-node-host.js"));
+            candidates.push(dir.join("_up_").join("src").join("main").join("tauri-node-host.js"));
         }
         if let Some(dir) = resource_dir {
             candidates.push(dir.join("src").join("main").join("tauri-node-host.js"));
+            candidates.push(dir.join("_up_").join("src").join("main").join("tauri-node-host.js"));
         }
         candidates.push(cwd.join("src").join("main").join("tauri-node-host.js"));
         let script = candidates
@@ -65,10 +67,23 @@ impl NodeBackend {
             .map(|dir| dir.join("node.exe"))
             .filter(|path| path.exists())
             .or_else(|| {
+                exe_dir
+                    .as_ref()
+                    .map(|dir| dir.join("resources").join("node.exe"))
+                    .filter(|path| path.exists())
+            })
+            .or_else(|| {
                 app.path()
                     .resource_dir()
                     .ok()
                     .map(|dir| dir.join("node.exe"))
+                    .filter(|path| path.exists())
+            })
+            .or_else(|| {
+                app.path()
+                    .resource_dir()
+                    .ok()
+                    .map(|dir| dir.join("resources").join("node.exe"))
                     .filter(|path| path.exists())
             })
             .unwrap_or_else(|| PathBuf::from("node"));
