@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+backups/
+src-tauri/target/
+
+# Local backup archives and snapshots
+backup folder, ai do not touch/
+*.rar
+*.zip
+
+# Logs / scratch
+*.log
+test/*.png
+
+# OS
+Thumbs.db
+Desktop.ini
