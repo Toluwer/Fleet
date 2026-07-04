@@ -6,7 +6,7 @@
     "build":  {
                   "frontendDist":  "../src/renderer",
                   "beforeDevCommand":  "echo dev",
-                  "beforeBuildCommand":  "echo build"
+                  "beforeBuildCommand":  "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-tauri-resources.ps1"
               },
     "app":  {
                 "withGlobalTauri":  true,
@@ -28,10 +28,11 @@
             },
     "bundle":  {
                    "active":  true,
-                   "targets":  "all",
+                   "targets":  "nsis",
                    "resources":  [
                                      "../src/main",
-                                     "../node_modules/koffi"
+                                     "../node_modules/koffi",
+                                     "resources/node.exe"
                                  ],
                    "icon":  [
                                 "icons/32x32.png",
@@ -39,6 +40,15 @@
                                 "icons/128x128@2x.png",
                                 "icons/icon.icns",
                                 "icons/icon.ico"
-                            ]
+                            ],
+                   "windows":  {
+                                   "webviewInstallMode":  {
+                                                              "type":  "downloadBootstrapper",
+                                                              "silent":  true
+                                                          },
+                                   "nsis":  {
+                                                "installerHooks":  "windows-node-bootstrap.nsh"
+                                            }
+                               }
                }
 }

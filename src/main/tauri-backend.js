@@ -1,7 +1,9 @@
 'use strict';
 
 const os = require('os');
+const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 
 const logger = require('./logger');
 const store = require('./store');
@@ -144,11 +146,109 @@ function makeBackend(ctx) {
     return { ok: launched > 0, launched, failed, multiInstance: native.isAvailable(), results };
   }
 
+  const updateState = {
+    state: 'idle',
+    currentVersion: appVersion,
+    latestVersion: null,
+    url: null,
+    path: null,
+    sha512: null,
+    size: null,
+    downloadedPath: null,
+    error: null,
+    checkedAt: null,
+  };
+
+  function parseVersion(v) {
+    return String(v || '').split('.').map(n => parseInt(n, 10) || 0).slice(0, 3);
+  }
+
+  function newerThan(a, b) {
+    const av = parseVersion(a), bv = parseVersion(b);
+    for (let i = 0; i < 3; i++) {
+      if ((av[i] || 0) > (bv[i] || 0)) return true;
+      if ((av[i] || 0) < (bv[i] || 0)) return false;
+    }
+    return false;
+  }
+
+  function readLatestYml(text) {
+    const out = {};
+    for (const line of String(text || '').split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Za-z0-9_-]+):\s*['\"]?(.+?)['\"]?\s*$/);
+      if (m) out[m[1]] = m[2];
+    }
+    const fileUrl = (String(text || '').match(/url:\s*['\"]?(.+?)['\"]?\s*$/m) || [])[1];
+    if (fileUrl) out.url = fileUrl;
+    const fileSize = (String(text || '').match(/size:\s*(\d+)/m) || [])[1];
+    if (fileSize) out.size = Number(fileSize);
+    return out;
+  }
+
+  function emitUpdate() {
+    emit('updater:status', Object.assign({ ok: true }, updateState));
+  }
+
+  async function downloadUpdate(latest) {
+    const asset = latest.url || latest.path || 'FleetInstaller.exe';
+    const url = /^https?:\/\//i.test(asset)
+      ? asset
+      : `https://github.com/Toluwer/Fleet/releases/latest/download/${asset}`;
+    const target = path.join(userData, 'updates', 'FleetInstaller.exe');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const res = await fetch(url, { headers: { 'User-Agent': 'Fleet-Updater' } });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const buf = Buffer.from(await res.arrayBuffer());
+    fs.writeFileSync(target, buf);
+    if (latest.size && buf.length !== Number(latest.size)) throw new Error('Downloaded installer size did not match latest.yml.');
+    return target;
+  }
+
+  async function checkForUpdate() {
+    updateState.state = 'checking';
+    updateState.error = null;
+    emitUpdate();
+    const res = await fetch('https://github.com/Toluwer/Fleet/releases/latest/download/latest.yml', { headers: { 'User-Agent': 'Fleet-Updater' } });
+    if (!res.ok) throw new Error('Update feed unavailable (HTTP ' + res.status + ').');
+    const latest = readLatestYml(await res.text());
+    updateState.checkedAt = new Date().toISOString();
+    updateState.latestVersion = latest.version || null;
+    updateState.url = latest.url || latest.path || 'FleetInstaller.exe';
+    updateState.path = latest.path || 'FleetInstaller.exe';
+    updateState.sha512 = latest.sha512 || null;
+    updateState.size = latest.size || null;
+    if (!updateState.latestVersion || !newerThan(updateState.latestVersion, appVersion)) {
+      updateState.state = 'current';
+      updateState.downloadedPath = null;
+      emitUpdate();
+      return Object.assign({ ok: true }, updateState);
+    }
+    updateState.state = 'available';
+    emitUpdate();
+    return Object.assign({ ok: true }, updateState);
+  }
+
   const handlers = {
     async app_status() { return buildStatus(); },
-    async updater_status() { return { ok: true, state: 'disabled' }; },
-    async updater_check() { const status = { state: 'disabled' }; emit('updater:status', status); return { ok: true, ...status }; },
-    async updater_install() { return { ok: false, error: 'Updater not ported yet.' }; },
+    async updater_status() { return Object.assign({ ok: true }, updateState); },
+    async updater_check() {
+      try { return await checkForUpdate(); }
+      catch (err) { updateState.state = 'error'; updateState.error = (err && err.message) || String(err); emitUpdate(); return Object.assign({ ok: false }, updateState); }
+    },
+    async updater_install() {
+      try {
+        if (updateState.state !== 'available' && updateState.state !== 'downloaded') await checkForUpdate();
+        if (updateState.state === 'current') return Object.assign({ ok: false, error: 'Fleet is already up to date.' }, updateState);
+        updateState.state = 'downloading'; updateState.error = null; emitUpdate();
+        updateState.downloadedPath = await downloadUpdate(updateState);
+        updateState.state = 'installing'; emitUpdate();
+        const child = spawn(updateState.downloadedPath, [], { detached: true, stdio: 'ignore', windowsHide: true });
+        child.unref();
+        return Object.assign({ ok: true }, updateState);
+      } catch (err) {
+        updateState.state = 'error'; updateState.error = (err && err.message) || String(err); emitUpdate(); return Object.assign({ ok: false }, updateState);
+      }
+    },
     async roblox_detect() {
       const settings = store.getSettings();
       const loc = roblox.locate(settings);

@@ -588,9 +588,16 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     global.fetch = originalFetch;
   }
 
-  check('Updater is explicitly disabled during Tauri migration',
-    ipcSource.includes("async updater_status() { return { ok: true, state: 'disabled' }; }")
-    && ipcSource.includes("async updater_install() { return { ok: false, error: 'Updater not ported yet.' }; }"));
+  check('Updater checks GitHub latest.yml and installs FleetInstaller.exe',
+    ipcSource.includes('https://github.com/Toluwer/Fleet/releases/latest/download/latest.yml')
+    && ipcSource.includes('FleetInstaller.exe')
+    && ipcSource.includes("state = 'available'")
+    && ipcSource.includes("state = 'installing'"));
+  check('Installer is NSIS-only and bootstraps Node plus WebView2',
+    tauriConfig.bundle.targets === 'nsis'
+    && tauriConfig.bundle.windows.webviewInstallMode.type === 'downloadBootstrapper'
+    && tauriConfig.bundle.windows.nsis.installerHooks === 'windows-node-bootstrap.nsh'
+    && fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'windows-node-bootstrap.nsh'), 'utf8').includes('node --version'));
 
   await section('Resilient people search');
   const response = (status, data, headers) => ({
