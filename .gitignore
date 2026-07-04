@@ -6,6 +6,7 @@ dist/
 build/
 backups/
 src-tauri/target/
+src-tauri/resources/node.exe
 
 # Local backup archives and snapshots
 backup folder, ai do not touch/

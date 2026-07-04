@@ -64,6 +64,13 @@ impl NodeBackend {
             .as_ref()
             .map(|dir| dir.join("node.exe"))
             .filter(|path| path.exists())
+            .or_else(|| {
+                app.path()
+                    .resource_dir()
+                    .ok()
+                    .map(|dir| dir.join("node.exe"))
+                    .filter(|path| path.exists())
+            })
             .unwrap_or_else(|| PathBuf::from("node"));
         let mut command = Command::new(node);
         command
