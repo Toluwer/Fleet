@@ -1,23 +1,23 @@
 {
-  "name": "fleet",
-  "version": "1.5.0",
-  "description": "Fleet — a clean, minimalist multi-instance launcher for Roblox",
-  "author": "Toluwa",
-  "license": "MIT",
-  "scripts": {
-    "start": "tauri dev",
-    "tauri": "tauri",
-    "selftest": "node test/selftest.js",
-    "test:ui": "node test/ui-features.js",
-    "make-icon": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make-icon.ps1",
-    "build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1",
-    "dist": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-installer.ps1"
-  },
-  "dependencies": {
-    "@tauri-apps/api": "^2.11.1",
-    "koffi": "^2.9.0"
-  },
-  "devDependencies": {
-    "@tauri-apps/cli": "^2.11.4"
-  }
+    "name":  "fleet",
+    "version":  "1.5.2",
+    "description":  "Fleet - a clean, minimalist multi-instance launcher for Roblox",
+    "author":  "Toluwa",
+    "license":  "MIT",
+    "scripts":  {
+                    "start":  "tauri dev",
+                    "tauri":  "tauri",
+                    "selftest":  "node test/selftest.js",
+                    "test:ui":  "node test/ui-features.js",
+                    "make-icon":  "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make-icon.ps1",
+                    "build":  "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1",
+                    "dist":  "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-installer.ps1"
+                },
+    "dependencies":  {
+                         "@tauri-apps/api":  "^2.11.1",
+                         "koffi":  "^2.9.0"
+                     },
+    "devDependencies":  {
+                            "@tauri-apps/cli":  "^2.11.4"
+                        }
 }
