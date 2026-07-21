@@ -18,6 +18,11 @@
                                     "minWidth":  900,
                                     "minHeight":  600,
                                     "resizable":  true,
+                                    "decorations":  false,
+                                    "transparent":  true,
+                                    "backgroundColor":  "#00000000",
+                                    "shadow":  false,
+                                    "theme":  "Dark",
                                     "fullscreen":  false,
                                     "center":  true
                                 }
@@ -47,7 +52,14 @@
                                                               "silent":  true
                                                           },
                                    "nsis":  {
-                                                "installerHooks":  "windows-node-bootstrap.nsh"
+                                                "template":  "fleet-installer.nsi",
+                                                "installerIcon":  "icons/icon.ico",
+                                                "uninstallerIcon":  "icons/icon.ico",
+                                                "installMode":  "currentUser",
+                                                "languages":  [
+                                                                  "English"
+                                                              ],
+                                                "displayLanguageSelector":  false
                                             }
                                }
                }

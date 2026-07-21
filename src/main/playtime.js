@@ -1,106 +1,209 @@
 'use strict';
 
 /**
- * playtime.js — playtime analytics from the presence stream.
+ * Crash-safe playtime analytics from the account presence stream.
  *
- * The account poller already learns, every ~12s, whether each account is in a
- * game and which one. observe() turns those observations into sessions
- * (start/end/duration per account per game) persisted in playtime.json, and
- * stats() aggregates them per game / per account for today, the last 7 days
- * and all time. Live (still-running) sessions are included in stats.
- *
- * Sessions shorter than 30s are discarded as presence blips. The file is
- * capped at the most recent 5000 sessions.
+ * Completed sessions and live checkpoints share one atomic JSON document.
+ * A restart finalizes each checkpoint through its last confirmed observation,
+ * then removes it in the same write. This preserves force-quit data without
+ * counting offline time or duplicating a recovered session.
  */
 
 const FILE = 'playtime.json';
+const VERSION = 2;
+const MIN_SESSION_MS = 30000;
+const MAX_SESSIONS = 5000;
+const CHECKPOINT_DELAY_MS = 75;
+const FRESH_OBSERVATION_MS = 45000;
+
 let store = null;
 let logger = { info() {}, warn() {}, error() {} };
+let now = () => Date.now();
+let checkpointTimer = null;
 
-// userId -> { placeId, name, username, start, lastSeen }
+// String(userId) -> { userId, placeId, name, username, start, lastSeen }
 const active = new Map();
 
+function emptyDocument() { return { version: VERSION, sessions: [], active: {} }; }
+
+function normalizeDocument(value) {
+  const input = value && typeof value === 'object' ? value : {};
+  return {
+    version: VERSION,
+    sessions: Array.isArray(input.sessions) ? input.sessions.filter(validSession).slice(-MAX_SESSIONS) : [],
+    active: input.active && typeof input.active === 'object' && !Array.isArray(input.active) ? input.active : {},
+  };
+}
+
+function validSession(session) {
+  return !!session && Number.isFinite(Number(session.start)) && Number.isFinite(Number(session.end))
+    && Number(session.end) >= Number(session.start) && Number(session.ms) >= 0;
+}
+
 function configure(opts) {
+  if (checkpointTimer) clearTimeout(checkpointTimer);
+  checkpointTimer = null;
+  active.clear();
   store = opts.store;
   if (opts.logger) logger = opts.logger;
+  now = typeof opts.now === 'function' ? opts.now : () => Date.now();
+  recoverCheckpoints();
 }
 
 function load() {
-  try { const d = store.readJson(FILE, { sessions: [] }); return d && Array.isArray(d.sessions) ? d : { sessions: [] }; }
-  catch (_) { return { sessions: [] }; }
+  try { return normalizeDocument(store.readJson(FILE, emptyDocument())); }
+  catch (_) { return emptyDocument(); }
 }
-function save(data) { try { store.writeJson(FILE, data); } catch (err) { logger.warn('Playtime save failed', err && err.message); } }
 
-function endSession(userId, cur) {
-  active.delete(userId);
-  const ms = Math.max(0, (cur.lastSeen || Date.now()) - cur.start);
-  if (ms < 30000) return; // presence blip, not a play session
-  const data = load();
+function save(data) {
+  try {
+    if (store.writeJson(FILE, normalizeDocument(data)) === false) throw new Error('Atomic write was not completed.');
+    return true;
+  } catch (err) {
+    logger.warn('Playtime save failed', err && err.message);
+    return false;
+  }
+}
+
+function activeObject() {
+  const out = {};
+  for (const [id, session] of active) out[id] = Object.assign({}, session);
+  return out;
+}
+
+function appendCompleted(data, cur, end, recovered) {
+  const start = Number(cur.start) || 0;
+  const safeEnd = Math.max(start, Number(end) || start);
+  const ms = safeEnd - start;
+  if (ms < MIN_SESSION_MS) return false;
   data.sessions.push({
-    userId, username: cur.username || String(userId),
-    placeId: cur.placeId || null, game: cur.name,
-    start: cur.start, end: cur.start + ms, ms,
+    userId: cur.userId,
+    username: cur.username || String(cur.userId),
+    placeId: cur.placeId || null,
+    game: cur.name,
+    start,
+    end: safeEnd,
+    ms,
+    ...(recovered ? { recovered: true } : {}),
   });
-  if (data.sessions.length > 5000) data.sessions = data.sessions.slice(-5000);
+  if (data.sessions.length > MAX_SESSIONS) data.sessions = data.sessions.slice(-MAX_SESSIONS);
+  return true;
+}
+
+function recoverCheckpoints() {
+  const data = load();
+  const checkpoints = Object.values(data.active || {});
+  if (!checkpoints.length) return;
+  let recovered = 0;
+  for (const cur of checkpoints) {
+    if (!cur || !cur.name) continue;
+    const end = Math.min(now(), Number(cur.lastSeen) || Number(cur.start) || 0);
+    if (appendCompleted(data, cur, end, true)) recovered++;
+  }
+  data.active = {};
+  save(data);
+  if (recovered) logger.info(`Recovered ${recovered} playtime session${recovered === 1 ? '' : 's'} after an interrupted exit.`);
+}
+
+function checkpointNow() {
+  if (checkpointTimer) clearTimeout(checkpointTimer);
+  checkpointTimer = null;
+  const data = load();
+  data.active = activeObject();
+  save(data);
+}
+
+function scheduleCheckpoint() {
+  if (checkpointTimer) return;
+  checkpointTimer = setTimeout(checkpointNow, CHECKPOINT_DELAY_MS);
+  if (checkpointTimer.unref) checkpointTimer.unref();
+}
+
+function endSession(userId, cur, endAt) {
+  active.delete(String(userId));
+  const data = load();
+  appendCompleted(data, cur, Number(endAt) || now(), false);
+  data.active = activeObject();
   save(data);
 }
 
 /** Feed one poller observation. status is the presence label ('In game' etc). */
 function observe(userId, username, status, game) {
   if (!userId) return;
-  const now = Date.now();
+  const id = String(userId);
+  const at = now();
   const inGame = status === 'In game' && game && game.name;
-  const cur = active.get(userId);
+  const cur = active.get(id);
   if (inGame) {
-    if (cur && cur.name === game.name) { cur.lastSeen = now; return; }
-    if (cur) endSession(userId, cur);
-    active.set(userId, {
-      placeId: game.placeId || game.rootPlaceId || null,
-      name: game.name, username, start: now, lastSeen: now,
-    });
+    const placeId = game.placeId || game.rootPlaceId || null;
+    if (cur && cur.name === game.name && String(cur.placeId || '') === String(placeId || '')) {
+      cur.lastSeen = at;
+      cur.username = username || cur.username;
+      scheduleCheckpoint();
+      return;
+    }
+    if (cur) endSession(id, cur, at);
+    active.set(id, { userId, placeId, name: game.name, username, start: at, lastSeen: at });
+    scheduleCheckpoint();
   } else if (cur) {
-    endSession(userId, cur);
+    endSession(id, cur, at);
   }
 }
 
-/** Close all open sessions (app quit). */
+/** Close every open session in one atomic transaction during a normal quit. */
 function flush() {
-  for (const [id, cur] of Array.from(active.entries())) endSession(id, cur);
+  if (checkpointTimer) clearTimeout(checkpointTimer);
+  checkpointTimer = null;
+  const data = load();
+  const at = now();
+  for (const cur of active.values()) {
+    const lastSeen = Number(cur.lastSeen) || Number(cur.start) || at;
+    const end = at - lastSeen <= FRESH_OBSERVATION_MS ? at : lastSeen;
+    appendCompleted(data, cur, end, false);
+  }
+  active.clear();
+  data.active = {};
+  save(data);
 }
 
 function fmtWindowSum(sessions, from) {
-  let n = 0;
-  for (const s of sessions) n += Math.max(0, s.end - Math.max(s.start, from));
-  return n;
+  let total = 0;
+  for (const session of sessions) total += Math.max(0, session.end - Math.max(session.start, from));
+  return total;
 }
 
 function stats() {
-  const now = Date.now();
-  const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+  const at = now();
+  const dayStart = new Date(at); dayStart.setHours(0, 0, 0, 0);
   const day = dayStart.getTime();
-  const week = now - 7 * 86400000;
-
-  const live = Array.from(active.entries()).map(([userId, c]) => ({
-    userId, username: c.username || String(userId), placeId: c.placeId,
-    game: c.name, start: c.start, end: now, ms: now - c.start, live: true,
+  const week = at - 7 * 86400000;
+  const live = Array.from(active.values()).map(cur => ({
+    userId: cur.userId,
+    username: cur.username || String(cur.userId),
+    placeId: cur.placeId,
+    game: cur.name,
+    start: cur.start,
+    end: at,
+    ms: Math.max(0, at - cur.start),
+    live: true,
   }));
   const all = load().sessions.concat(live);
 
   const aggregate = (keyOf, labelOf) => {
-    const m = new Map();
-    for (const s of all) {
-      const k = keyOf(s);
-      if (!k) continue;
-      const e = m.get(k) || { key: k, label: labelOf(s), todayMs: 0, weekMs: 0, totalMs: 0, sessions: 0, live: false, placeId: s.placeId || null };
-      e.todayMs += Math.max(0, s.end - Math.max(s.start, day));
-      e.weekMs += Math.max(0, s.end - Math.max(s.start, week));
-      e.totalMs += s.ms;
-      e.sessions += 1;
-      if (s.live) e.live = true;
-      if (s.placeId) e.placeId = s.placeId;
-      m.set(k, e);
+    const rows = new Map();
+    for (const session of all) {
+      const key = keyOf(session);
+      if (!key) continue;
+      const row = rows.get(key) || { key, label: labelOf(session), todayMs: 0, weekMs: 0, totalMs: 0, sessions: 0, live: false, placeId: session.placeId || null };
+      row.todayMs += Math.max(0, session.end - Math.max(session.start, day));
+      row.weekMs += Math.max(0, session.end - Math.max(session.start, week));
+      row.totalMs += session.ms;
+      row.sessions += 1;
+      if (session.live) row.live = true;
+      if (session.placeId) row.placeId = session.placeId;
+      rows.set(key, row);
     }
-    return Array.from(m.values()).sort((a, b) => b.totalMs - a.totalMs);
+    return Array.from(rows.values()).sort((a, b) => b.totalMs - a.totalMs);
   };
 
   return {
@@ -109,15 +212,21 @@ function stats() {
     totals: {
       todayMs: fmtWindowSum(all, day),
       weekMs: fmtWindowSum(all, week),
-      totalMs: all.reduce((n, s) => n + s.ms, 0),
+      totalMs: all.reduce((sum, session) => sum + session.ms, 0),
       sessions: all.length,
     },
-    perGame: aggregate(s => s.game, s => s.game).slice(0, 40),
-    perAccount: aggregate(s => s.userId, s => s.username),
+    perGame: aggregate(session => session.game, session => session.game).slice(0, 40),
+    perAccount: aggregate(session => session.userId, session => session.username),
     recent: all.slice(-12).reverse(),
   };
 }
 
-function clear() { save({ sessions: [] }); active.clear(); return { ok: true }; }
+function clear() {
+  if (checkpointTimer) clearTimeout(checkpointTimer);
+  checkpointTimer = null;
+  active.clear();
+  save(emptyDocument());
+  return { ok: true };
+}
 
-module.exports = { configure, observe, flush, stats, clear };
+module.exports = { configure, observe, flush, stats, clear, checkpointNow };

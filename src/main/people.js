@@ -9,6 +9,7 @@ const accounts = require('./accounts');
 const native = require('./native');
 const processes = require('./processes');
 const path = require('path');
+const { randomUUID } = require('crypto');
 const { Worker } = require('worker_threads');
 
 const OFFSETS = Object.freeze({
@@ -90,7 +91,7 @@ const SERVER_OFFSET_PROFILES = Object.freeze([
 const CACHE_TTL = 2 * 60 * 1000;
 const FRIENDS_TTL = 5 * 60 * 1000;
 const SEARCH_TTL = 5 * 60 * 1000;
-const SEARCH_MIN_INTERVAL_MS = 350;
+const SEARCH_MIN_INTERVAL_MS = 750;
 const SERVER_SCAN_TIMEOUT_MS = 3000;
 const SERVER_SCAN_PID_LIMIT = 4;
 const SERVER_SCAN_READ_LIMIT = 12000;
@@ -101,6 +102,7 @@ const searchInFlight = new Map();
 let friendsCache = { at: 0, list: [] };
 let searchQueue = Promise.resolve();
 let lastKeywordSearchAt = 0;
+const searchSessionId = randomUUID();
 let logger = { info() {}, warn() {}, error() {} };
 
 function configure(opts) {
@@ -604,21 +606,74 @@ async function keywordSearch(query, cursor) {
   return queueKeywordSearch(async () => {
     const wait = SEARCH_MIN_INTERVAL_MS - (Date.now() - lastKeywordSearchAt);
     if (wait > 0) await delay(wait);
-    const params = new URLSearchParams({ keyword: query, limit: '10' });
-    if (cursor) params.set('cursor', cleanText(cursor, 500));
-    const url = `https://users.roblox.com/v1/users/search?${params}`;
-    lastKeywordSearchAt = Date.now();
-    // Authenticated: Roblox rate-limits anonymous user-search hard (and returns
-    // empty results), but a signed-in session gets full results + high limits.
-    let result = await accounts.authedGet(url);
-    if (result.status === 429) {
-      const retryMs = Math.min(3000, Math.max(700, result.retryAfterMs || 1000));
-      logger.warn('People search rate-limited; retrying once', `${query} in ${retryMs}ms`);
-      await delay(retryMs);
+    const cleanCursor = cleanText(cursor, 500);
+    const tagged = /^(omni|legacy):(.*)$/.exec(cleanCursor);
+    const source = tagged ? tagged[1] : cleanCursor ? 'omni' : null;
+    const pageToken = tagged ? tagged[2] : cleanCursor;
+    const publicOptions = {
+      headers: {
+        Accept: 'application/json',
+        Origin: 'https://www.roblox.com',
+        Referer: 'https://www.roblox.com/',
+        'User-Agent': 'Fleet/1.5.2',
+      },
+    };
+
+    const request = async (kind) => {
+      const params = kind === 'omni'
+        ? new URLSearchParams({
+          verticalType: 'user', searchQuery: query, pageToken,
+          globalSessionId: searchSessionId, sessionId: searchSessionId,
+        })
+        : new URLSearchParams({ keyword: query, limit: '10', ...(pageToken ? { cursor: pageToken } : {}) });
+      const url = kind === 'omni'
+        ? `https://apis.roblox.com/search-api/omni-search?${params}`
+        : `https://users.roblox.com/v1/users/search?${params}`;
       lastKeywordSearchAt = Date.now();
-      result = await accounts.authedGet(url);
-    }
-    return result;
+      let result = await getJsonResult(url, publicOptions);
+      if (result.status === 429) {
+        const retryMs = Math.min(3000, Math.max(700, result.retryAfterMs || 1000));
+        logger.warn('People search rate-limited; retrying once', `${query} in ${retryMs}ms`);
+        await delay(retryMs);
+        lastKeywordSearchAt = Date.now();
+        result = await getJsonResult(url, publicOptions);
+      }
+      if (!result.ok) return result;
+      if (kind === 'legacy') {
+        const data = result.data || {};
+        return Object.assign({}, result, {
+          data: {
+            data: Array.isArray(data.data) ? data.data : [],
+            nextPageCursor: data.nextPageCursor ? `legacy:${data.nextPageCursor}` : null,
+          },
+        });
+      }
+      const data = result.data || {};
+      const rows = [];
+      for (const group of (Array.isArray(data.searchResults) ? data.searchResults : [])) {
+        for (const item of (Array.isArray(group && group.contents) ? group.contents : [])) {
+          rows.push({
+            id: item.contentId,
+            name: item.username,
+            displayName: item.displayName,
+            previousUsernames: item.previousUsernames || [],
+            hasVerifiedBadge: !!item.hasVerifiedBadge,
+          });
+        }
+      }
+      return Object.assign({}, result, {
+        data: {
+          data: rows,
+          nextPageCursor: data.nextPageToken ? `omni:${data.nextPageToken}` : null,
+        },
+      });
+    };
+
+    if (source === 'legacy') return request('legacy');
+    const omni = await request('omni');
+    if (omni.ok || source === 'omni') return omni;
+    logger.warn('Current Roblox People search failed; trying legacy broad search', `${query}: ${omni.error}`);
+    return request('legacy');
   });
 }
 
@@ -870,37 +925,12 @@ function rankSearchUsers(users, query) {
   });
 }
 
-async function localFriendMatches(query) {
-  if (!accounts.list().length) return [];
-  try {
-    const q = query.toLowerCase();
-    const all = await allFriends(false);
-    return all.filter(user =>
-      String(user.username || '').toLowerCase().includes(q)
-      || String(user.displayName || '').toLowerCase().includes(q)).slice(0, 10);
-  } catch (_) {
-    return [];
-  }
-}
-
 async function performSearch(query, cursor) {
   // A numeric Roblox user ID is unambiguous and avoids the rate-limited search endpoint.
   if (!cursor && /^\d+$/.test(query)) {
     const user = await numericUserLookup(query);
     if (!user) return { ok: true, people: [], nextPageCursor: null, query, source: 'id', notice: 'No user exists with that ID.' };
     return { ok: true, people: await enrichUsers([user]), nextPageCursor: null, query, source: 'id', notice: 'Matched by Roblox user ID.' };
-  }
-
-  // Text search REQUIRES a signed-in session: anonymous callers get empty
-  // results plus an instant 429 from Roblox, which reads as "search is
-  // broken" on machines without an added account. Say so instead of burning
-  // the shared IP quota.
-  if (!accounts.hasSession()) {
-    return {
-      ok: false,
-      needsAccount: true,
-      error: 'Add a Roblox account to search people. Roblox only answers user search for signed-in sessions — open Accounts and sign in once, then search works.',
-    };
   }
 
   // Text searches should stay broad: a full username can still have many
@@ -919,22 +949,10 @@ async function performSearch(query, cursor) {
     };
   }
 
-  if (!cursor && result.status === 429) {
-    const friends = rankSearchUsers(await localFriendMatches(query), query);
-    if (friends.length) {
-      return {
-        ok: true,
-        people: await enrichUsers(friends),
-        nextPageCursor: null,
-        query,
-        source: 'friends',
-        partial: true,
-        notice: 'Roblox is limiting wider searches, so Fleet is showing matching friends for now.',
-      };
-    }
+  if (result.status === 429) {
     return {
       ok: false,
-      error: 'Roblox is temporarily limiting user searches. Wait a few seconds, then retry.',
+      error: 'Roblox is temporarily limiting People search. Wait a moment, then retry.',
       retryable: true,
       retryAfterMs: result.retryAfterMs || 3000,
     };

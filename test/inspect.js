@@ -72,7 +72,7 @@ async function main() {
       title: document.title,
       h1: (q('.page-head h1') || {}).textContent || null,
       activeView: q('#nav button.active') ? q('#nav button.active').getAttribute('data-view') : null,
-      lock: (q('#lock-text') || {}).textContent,
+      statusCardPresent: !!q('#lockchip'),
       navCount: (q('#nav-count') || {}).textContent,
       instanceRows: document.querySelectorAll('.irow').length,
       firstRow: row ? row.innerText.replace(/\\s+/g,' ').trim().slice(0,120) : null,
