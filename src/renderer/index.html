@@ -47,8 +47,22 @@
     <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
   </svg>
 
-  <!-- Custom draggable top bar (native title bar is hidden; window controls overlay sits at the right) -->
-  <div class="titlebar"><span class="tb-brand">Fleet</span></div>
+  <div class="window-shell">
+  <header class="titlebar" id="titlebar">
+    <div class="titlebar-drag" id="titlebar-drag" aria-label="Drag window"></div>
+    <div class="window-controls" aria-label="Window controls">
+      <button type="button" data-window-action="minimize" aria-label="Minimize" title="Minimize">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5h10"/></svg>
+      </button>
+      <button type="button" class="window-maximize" data-window-action="maximize" aria-label="Maximize" title="Maximize">
+        <svg class="maximize-glyph" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx=".5"/></svg>
+        <svg class="restore-glyph" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 5.5v-2h7v7h-2"/><rect x="3.5" y="5.5" width="7" height="7" rx=".5"/></svg>
+      </button>
+      <button type="button" class="window-close" data-window-action="close" aria-label="Close" title="Close">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg>
+      </button>
+    </div>
+  </header>
 
   <div class="app">
     <!-- Navigation rail -->
@@ -66,9 +80,6 @@
       </nav>
 
       <div class="spacer"></div>
-      <div class="lockchip" id="lockchip" data-tip-wide data-tip="Fleet runs each Roblox client in isolation so multiple can run at once.">
-        <span class="dot"></span><span class="lk-text" id="lock-text">Multi-instance: …</span>
-      </div>
     </aside>
 
     <!-- Content -->
@@ -83,6 +94,7 @@
 
   <!-- Toasts -->
   <div class="toasts" id="toasts"></div>
+  </div>
 
   <script src="model.js"></script>
   <script src="tauri-bridge.js"></script>

@@ -6,7 +6,7 @@ Last verified locally:
 
 ```text
 npm run selftest
-RESULT: 111 passed, 0 failed, 111 total
+RESULT: 123 passed, 0 failed, 123 total
 ```
 
 The suite covers the backend service layer, renderer-facing API shape, installer invariants, account/session logic, game and people search behavior, playtime tracking, and Tauri packaging expectations.
@@ -41,7 +41,7 @@ The live harnesses launch real Roblox clients. Run them only when it is acceptab
 | Games | Browse/search, category filtering, advanced server sorting, deep scan behavior. |
 | Instances | Process listing, focus/kill/restart API shape, keep-alive behavior. |
 | UI contract | Tauri bridge loading, theme behavior, saved sessions, text/markup checks. |
-| Packaging | Electron packages removed, Tauri bundle configured, NSIS installer bootstrap configured. |
+| Packaging | Electron packages removed, custom frameless NSIS template configured, bundled Node and WebView2 bootstrap verified. |
 
 ## Multi-Instance Recipe
 
@@ -73,3 +73,7 @@ _up_/src/main/...
 ```
 
 Both layouts must start the Node backend successfully.
+
+The installer contract also verifies that Fleet uses its custom full-window
+surface, omits the stock wizard pages, bundles `node.exe`, and emits the updater
+asset name `dist/FleetInstaller.exe`.

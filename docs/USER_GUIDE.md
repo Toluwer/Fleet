@@ -10,10 +10,7 @@ A friendly walkthrough. You don't need any technical knowledge to use Fleet, and
 
 Start Fleet from the desktop/Start-menu shortcut (or `npm start` if running from source). You'll land on the **Instances** page.
 
-Check two things at a glance:
-
-- The green **Roblox detected** banner near the top.
-- The status at the bottom-left reads **Multi-instance: ready**.
+Check the **Roblox detected** banner near the top. Multi-instance readiness and native-helper details are available on the **Diagnostics** page instead of occupying the navigation rail.
 
 If Roblox wasn't found, see [Troubleshooting](#troubleshooting).
 
@@ -118,7 +115,7 @@ Environment details and a **live log**. Filter by level (Info / Warn / Error), o
 Install Roblox from roblox.com, or open **Settings → Roblox location**, switch to **Manual path**, and point Fleet at `RobloxPlayerBeta.exe` (usually under `%LOCALAPPDATA%\Roblox\Versions\version-…\`).
 
 **A newly opened client closes after a few seconds**
-Give each launch a little more time — increase **Settings → Delay between launches**. Make sure the status reads **Multi-instance: ready**; if it says **off**, the native helper didn't load (reinstall Fleet; details on the Diagnostics page).
+Give each launch a little more time — increase **Settings → Delay between launches**. Open **Diagnostics** and check the Multi-instance value; if the native helper did not load, reinstall Fleet.
 
 **"Multi-instance is unavailable"**
 The native helper (koffi) couldn't load. Reinstall Fleet. You can still launch a single client in the meantime.

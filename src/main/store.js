@@ -53,13 +53,30 @@ function readJson(name, fallback) {
 
 function writeJson(name, data) {
   const p = fileFor(name);
-  const tmp = p + '.tmp';
+  const tmp = `${p}.${process.pid}.${Date.now()}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  let fd = null;
   try {
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fd = fs.openSync(tmp, 'wx');
+    fs.writeFileSync(fd, JSON.stringify(data, null, 2), 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
     fs.renameSync(tmp, p);
+    // Flush the directory entry when the platform permits it. Windows may
+    // reject directory handles; the file itself is already safely fsynced.
+    let dirFd = null;
+    try {
+      dirFd = fs.openSync(path.dirname(p), 'r');
+      fs.fsyncSync(dirFd);
+    } catch (_) {
+    } finally {
+      if (dirFd !== null) try { fs.closeSync(dirFd); } catch (_) {}
+    }
     return true;
   } catch (err) {
     logger.error('Failed to write ' + name, err.message);
+    if (fd !== null) try { fs.closeSync(fd); } catch (_) {}
     try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (_) {}
     return false;
   }
