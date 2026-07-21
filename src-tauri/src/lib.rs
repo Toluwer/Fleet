@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 
@@ -35,10 +38,11 @@ struct RpcEnvelope {
 }
 
 struct NodeBackend {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<std::process::ChildStdout>,
-    next_id: u64,
+    child: Mutex<Child>,
+    stdin: Mutex<ChildStdin>,
+    pending: Arc<Mutex<HashMap<u64, mpsc::Sender<Result<Value, String>>>>>,
+    next_id: AtomicU64,
+    alive: Arc<AtomicBool>,
 }
 
 impl NodeBackend {
@@ -51,11 +55,21 @@ impl NodeBackend {
         let mut candidates = Vec::new();
         if let Some(dir) = exe_dir.as_ref() {
             candidates.push(dir.join("src").join("main").join("tauri-node-host.js"));
-            candidates.push(dir.join("_up_").join("src").join("main").join("tauri-node-host.js"));
+            candidates.push(
+                dir.join("_up_")
+                    .join("src")
+                    .join("main")
+                    .join("tauri-node-host.js"),
+            );
         }
         if let Some(dir) = resource_dir {
             candidates.push(dir.join("src").join("main").join("tauri-node-host.js"));
-            candidates.push(dir.join("_up_").join("src").join("main").join("tauri-node-host.js"));
+            candidates.push(
+                dir.join("_up_")
+                    .join("src")
+                    .join("main")
+                    .join("tauri-node-host.js"),
+            );
         }
         candidates.push(cwd.join("src").join("main").join("tauri-node-host.js"));
         let script = candidates
@@ -91,108 +105,224 @@ impl NodeBackend {
         command
             .arg(script)
             .arg(app.package_info().version.to_string())
-            .arg(app.path().app_data_dir().map_err(|e| e.to_string())?.display().to_string())
+            .arg(
+                app.path()
+                    .app_data_dir()
+                    .map_err(|e| e.to_string())?
+                    .display()
+                    .to_string(),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
         #[cfg(target_os = "windows")]
         command.creation_flags(CREATE_NO_WINDOW);
-        let mut child = command.spawn().map_err(|e| format!("Failed to spawn node backend: {e}"))?;
-        let stdin = child.stdin.take().ok_or_else(|| "Node backend stdin unavailable".to_string())?;
-        let stdout = child.stdout.take().ok_or_else(|| "Node backend stdout unavailable".to_string())?;
-        Ok(Self { child, stdin, stdout: BufReader::new(stdout), next_id: 1 })
+        let mut child = command
+            .spawn()
+            .map_err(|e| format!("Failed to spawn node backend: {e}"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "Node backend stdin unavailable".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "Node backend stdout unavailable".to_string())?;
+        let pending = Arc::new(Mutex::new(HashMap::<
+            u64,
+            mpsc::Sender<Result<Value, String>>,
+        >::new()));
+        let alive = Arc::new(AtomicBool::new(true));
+        let reader_pending = Arc::clone(&pending);
+        let reader_alive = Arc::clone(&alive);
+        let reader_app = app.clone();
+        thread::Builder::new()
+            .name("fleet-backend-reader".to_string())
+            .spawn(move || {
+                let mut reader = BufReader::new(stdout);
+                loop {
+                    let mut buf = String::new();
+                    match reader.read_line(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    let envelope: RpcEnvelope = match serde_json::from_str(buf.trim()) {
+                        Ok(envelope) => envelope,
+                        Err(_) => continue,
+                    };
+                    if let Some(event) = envelope.event {
+                        let _ = reader_app.emit(&event, envelope.payload.unwrap_or(Value::Null));
+                        continue;
+                    }
+                    let Some(id) = envelope.id else { continue };
+                    let sender = reader_pending
+                        .lock()
+                        .ok()
+                        .and_then(|mut map| map.remove(&id));
+                    if let Some(sender) = sender {
+                        let result = if envelope.ok == Some(true) {
+                            Ok(envelope.result.unwrap_or(Value::Null))
+                        } else {
+                            Err(envelope
+                                .error
+                                .unwrap_or_else(|| "Unknown backend error".to_string()))
+                        };
+                        let _ = sender.send(result);
+                    }
+                }
+                reader_alive.store(false, Ordering::Release);
+                if let Ok(mut map) = reader_pending.lock() {
+                    for (_, sender) in map.drain() {
+                        let _ = sender.send(Err("Node backend closed unexpectedly".to_string()));
+                    }
+                }
+            })
+            .map_err(|e| format!("Failed to start backend reader: {e}"))?;
+
+        Ok(Self {
+            child: Mutex::new(child),
+            stdin: Mutex::new(stdin),
+            pending,
+            next_id: AtomicU64::new(1),
+            alive,
+        })
     }
 
-    fn invoke(&mut self, command: &str, payload: Value, app: &AppHandle) -> Result<Value, String> {
-        let id = self.next_id;
-        self.next_id += 1;
-        let request = RpcRequest { id, command: command.to_string(), payload };
+    fn invoke_with_timeout(
+        &self,
+        command: &str,
+        payload: Value,
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        if !self.alive.load(Ordering::Acquire) {
+            return Err("Node backend is not running".to_string());
+        }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let request = RpcRequest {
+            id,
+            command: command.to_string(),
+            payload,
+        };
         let mut line = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
         line.push(b'\n');
-        self.stdin.write_all(&line).map_err(|e| e.to_string())?;
-        self.stdin.flush().map_err(|e| e.to_string())?;
-
-        loop {
-            let mut buf = String::new();
-            let read = self.stdout.read_line(&mut buf).map_err(|e| e.to_string())?;
-            if read == 0 {
-                return Err("Node backend closed unexpectedly".to_string());
+        let (sender, receiver) = mpsc::channel();
+        self.pending
+            .lock()
+            .map_err(|_| "Backend response map poisoned".to_string())?
+            .insert(id, sender);
+        let write_result = self
+            .stdin
+            .lock()
+            .map_err(|_| "Backend input lock poisoned".to_string())
+            .and_then(|mut stdin| {
+                stdin.write_all(&line).map_err(|e| e.to_string())?;
+                stdin.flush().map_err(|e| e.to_string())
+            });
+        if let Err(err) = write_result {
+            if let Ok(mut map) = self.pending.lock() {
+                map.remove(&id);
             }
-            let envelope: RpcEnvelope = serde_json::from_str(buf.trim()).map_err(|e| e.to_string())?;
-            if let Some(event) = envelope.event {
-                let payload = envelope.payload.unwrap_or(Value::Null);
-                let _ = app.emit(&event, payload);
-                continue;
-            }
-            if envelope.id == Some(id) {
-                if envelope.ok == Some(true) {
-                    return Ok(envelope.result.unwrap_or(Value::Null));
+            return Err(err);
+        }
+        match receiver.recv_timeout(timeout) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if let Ok(mut map) = self.pending.lock() {
+                    map.remove(&id);
                 }
-                return Err(envelope.error.unwrap_or_else(|| "Unknown backend error".to_string()));
+                Err(format!("Backend command '{command}' timed out"))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err("Backend response channel closed".to_string())
             }
         }
     }
 
-    fn shutdown(&mut self) {
-        let request = RpcRequest { id: 0, command: "shutdown".to_string(), payload: Value::Null };
-        if let Ok(mut line) = serde_json::to_vec(&request) {
-            line.push(b'\n');
-            let _ = self.stdin.write_all(&line);
-            let _ = self.stdin.flush();
+    fn invoke(&self, command: &str, payload: Value) -> Result<Value, String> {
+        self.invoke_with_timeout(command, payload, Duration::from_secs(60))
+    }
+
+    fn shutdown(&self) {
+        if self.alive.load(Ordering::Acquire) {
+            let _ = self.invoke_with_timeout("shutdown", Value::Null, Duration::from_secs(4));
         }
-        let _ = self.child.kill();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            let exited = self
+                .child
+                .lock()
+                .ok()
+                .and_then(|mut child| child.try_wait().ok().flatten())
+                .is_some();
+            if exited {
+                return;
+            }
+            thread::sleep(Duration::from_millis(40));
+        }
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
 struct FleetState {
-    backend: Mutex<Option<NodeBackend>>,
+    backend: Mutex<Option<Arc<NodeBackend>>>,
 }
 
 impl FleetState {
-    fn invoke(&self, app: &AppHandle, command: &str, payload: Value) -> Value {
-        let mut guard = match self.backend.lock() {
+    fn invoke(&self, command: &str, payload: Value) -> Value {
+        let guard = match self.backend.lock() {
             Ok(guard) => guard,
             Err(_) => return json!({ "ok": false, "error": "Backend state lock poisoned" }),
         };
-        let backend = match guard.as_mut() {
+        let backend = match guard.as_ref().cloned() {
             Some(backend) => backend,
             None => return json!({ "ok": false, "error": "Backend not started" }),
         };
-        match backend.invoke(command, payload, app) {
+        drop(guard);
+        match backend.invoke(command, payload) {
             Ok(value) => value,
             Err(err) => json!({ "ok": false, "error": err }),
         }
     }
 }
 
+async fn invoke_backend(app: AppHandle, command: &'static str, payload: Value) -> Value {
+    let task_app = app.clone();
+    match tauri::async_runtime::spawn_blocking(move || {
+        let state = task_app.state::<FleetState>();
+        state.invoke(command, payload)
+    })
+    .await
+    {
+        Ok(value) => value,
+        Err(err) => json!({ "ok": false, "error": format!("Backend task failed: {err}") }),
+    }
+}
+
+macro_rules! backend_command {
+    ($name:ident, $command:literal, ($($arg:ident: $ty:ty),*), $payload:expr) => {
+        #[tauri::command]
+        async fn $name(app: AppHandle, $($arg: $ty),*) -> Value {
+            invoke_backend(app, $command, $payload).await
+        }
+    };
+}
+
+backend_command!(app_status, "app_status", (), Value::Null);
+backend_command!(roblox_detect, "roblox_detect", (), Value::Null);
+backend_command!(updater_status, "updater_status", (), Value::Null);
+backend_command!(updater_check, "updater_check", (), Value::Null);
+backend_command!(updater_install, "updater_install", (), Value::Null);
+backend_command!(launch_quick, "launch_quick", (count: Option<i64>), json!({ "count": count }));
+backend_command!(launch_accounts, "launch_accounts", (account_ids: Vec<String>, place_id: Option<String>), json!({ "accountIds": account_ids, "placeId": place_id }));
+backend_command!(launch_join, "launch_join", (account_ids: Vec<String>, place_id: Option<String>, game_id: Option<String>), json!({ "accountIds": account_ids, "placeId": place_id, "gameId": game_id }));
+backend_command!(launch_join_person, "launch_join_person", (account_id: Option<String>, target_user_id: Option<i64>), json!({ "accountId": account_id, "targetUserId": target_user_id }));
+backend_command!(launch_join_person_multi, "launch_join_person_multi", (account_ids: Vec<String>, target_user_id: Option<i64>), json!({ "accountIds": account_ids, "targetUserId": target_user_id }));
+backend_command!(accounts_list, "accounts_list", (), Value::Null);
 #[tauri::command]
-fn app_status(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "app_status", Value::Null) }
-#[tauri::command]
-fn roblox_detect(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "roblox_detect", Value::Null) }
-#[tauri::command]
-fn ui_titlebar(app: AppHandle, state: tauri::State<FleetState>, dark: Option<bool>) -> Value { state.invoke(&app, "ui_titlebar", json!({ "dark": dark })) }
-#[tauri::command]
-fn ui_clipboard(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "ui_clipboard", Value::Null) }
-#[tauri::command]
-fn updater_status(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "updater_status", Value::Null) }
-#[tauri::command]
-fn updater_check(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "updater_check", Value::Null) }
-#[tauri::command]
-fn updater_install(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "updater_install", Value::Null) }
-#[tauri::command]
-fn launch_quick(app: AppHandle, state: tauri::State<FleetState>, count: Option<i64>) -> Value { state.invoke(&app, "launch_quick", json!({ "count": count })) }
-#[tauri::command]
-fn launch_accounts(app: AppHandle, state: tauri::State<FleetState>, account_ids: Vec<String>, place_id: Option<String>) -> Value { state.invoke(&app, "launch_accounts", json!({ "accountIds": account_ids, "placeId": place_id })) }
-#[tauri::command]
-fn launch_join(app: AppHandle, state: tauri::State<FleetState>, account_ids: Vec<String>, place_id: Option<String>, game_id: Option<String>) -> Value { state.invoke(&app, "launch_join", json!({ "accountIds": account_ids, "placeId": place_id, "gameId": game_id })) }
-#[tauri::command]
-fn launch_join_person(app: AppHandle, state: tauri::State<FleetState>, account_id: Option<String>, target_user_id: Option<i64>) -> Value { state.invoke(&app, "launch_join_person", json!({ "accountId": account_id, "targetUserId": target_user_id })) }
-#[tauri::command]
-fn launch_join_person_multi(app: AppHandle, state: tauri::State<FleetState>, account_ids: Vec<String>, target_user_id: Option<i64>) -> Value { state.invoke(&app, "launch_join_person_multi", json!({ "accountIds": account_ids, "targetUserId": target_user_id })) }
-#[tauri::command]
-fn accounts_list(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "accounts_list", Value::Null) }
-#[tauri::command]
-async fn accounts_add(app: AppHandle, state: tauri::State<'_, FleetState>) -> Result<Value, String> {
+async fn accounts_add(app: AppHandle) -> Result<Value, String> {
     let label = format!(
         "roblox-login-{}",
         SystemTime::now()
@@ -220,7 +350,11 @@ async fn accounts_add(app: AppHandle, state: tauri::State<'_, FleetState>) -> Re
         .build()
     {
         Ok(window) => window,
-        Err(err) => return Ok(json!({ "ok": false, "error": format!("Could not open Roblox sign-in window: {err}") })),
+        Err(err) => {
+            return Ok(
+                json!({ "ok": false, "error": format!("Could not open Roblox sign-in window: {err}") }),
+            )
+        }
     };
 
     let started = Instant::now();
@@ -228,7 +362,9 @@ async fn accounts_add(app: AppHandle, state: tauri::State<'_, FleetState>) -> Re
     let cookie = loop {
         if started.elapsed() > timeout {
             let _ = window.close();
-            return Ok(json!({ "ok": false, "canceled": true, "error": "Roblox sign-in timed out." }));
+            return Ok(
+                json!({ "ok": false, "canceled": true, "error": "Roblox sign-in timed out." }),
+            );
         }
         if app.get_webview_window(&label).is_none() {
             return Ok(json!({ "ok": false, "canceled": true }));
@@ -244,86 +380,72 @@ async fn accounts_add(app: AppHandle, state: tauri::State<'_, FleetState>) -> Re
             }
             Err(_) => {}
         }
-        std::thread::sleep(Duration::from_millis(900));
+        tokio::time::sleep(Duration::from_millis(900)).await;
     };
 
     let _ = window.close();
-    let result = state.invoke(&app, "accounts_add_cookie", json!({ "cookie": cookie }));
+    let result = invoke_backend(
+        app.clone(),
+        "accounts_add_cookie",
+        json!({ "cookie": cookie }),
+    )
+    .await;
     let _ = std::fs::remove_dir_all(data_dir);
     Ok(result)
 }
-#[tauri::command]
-fn accounts_remove(app: AppHandle, state: tauri::State<FleetState>, id: Option<String>) -> Value { state.invoke(&app, "accounts_remove", json!({ "id": id })) }
-#[tauri::command]
-fn accounts_refresh(app: AppHandle, state: tauri::State<FleetState>, id: Option<String>, full: Option<bool>) -> Value { state.invoke(&app, "accounts_refresh", json!({ "id": id, "full": full })) }
-#[tauri::command]
-fn accounts_follow(app: AppHandle, state: tauri::State<FleetState>, target_account_id: Option<String>, follower_account_ids: Vec<String>) -> Value { state.invoke(&app, "accounts_follow", json!({ "targetAccountId": target_account_id, "followerAccountIds": follower_account_ids })) }
-#[tauri::command]
-fn games_browse(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "games_browse", Value::Null) }
-#[tauri::command]
-fn games_search(app: AppHandle, state: tauri::State<FleetState>, query: Option<String>, page_token: Option<String>) -> Value { state.invoke(&app, "games_search", json!({ "query": query, "pageToken": page_token })) }
-#[tauri::command]
-fn games_servers(app: AppHandle, state: tauri::State<FleetState>, place_id: Option<String>, cursor: Option<String>) -> Value { state.invoke(&app, "games_servers", json!({ "placeId": place_id, "cursor": cursor })) }
-#[tauri::command]
-fn games_server_scan(app: AppHandle, state: tauri::State<FleetState>, place_id: Option<String>, page_limit: Option<usize>) -> Value { state.invoke(&app, "games_server_scan", json!({ "placeId": place_id, "pageLimit": page_limit })) }
-#[tauri::command]
-fn people_list(app: AppHandle, state: tauri::State<FleetState>, page: Option<usize>, page_size: Option<usize>, force: Option<bool>) -> Value { state.invoke(&app, "people_list", json!({ "page": page, "pageSize": page_size, "force": force })) }
-#[tauri::command]
-fn people_server_list(app: AppHandle, state: tauri::State<FleetState>, force: Option<bool>) -> Value { state.invoke(&app, "people_server_list", json!({ "force": force })) }
-#[tauri::command]
-fn people_search(app: AppHandle, state: tauri::State<FleetState>, query: Option<String>, cursor: Option<String>) -> Value { state.invoke(&app, "people_search", json!({ "query": query, "cursor": cursor })) }
-#[tauri::command]
-fn people_profile(app: AppHandle, state: tauri::State<FleetState>, user_id: Option<i64>) -> Value { state.invoke(&app, "people_profile", json!({ "userId": user_id })) }
-#[tauri::command]
-fn people_presence(app: AppHandle, state: tauri::State<FleetState>, user_ids: Vec<i64>) -> Value { state.invoke(&app, "people_presence", json!({ "userIds": user_ids })) }
-#[tauri::command]
-fn instances_get(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "instances_get", Value::Null) }
-#[tauri::command]
-fn instance_focus(app: AppHandle, state: tauri::State<FleetState>, pid: Option<u32>) -> Value { state.invoke(&app, "instance_focus", json!({ "pid": pid })) }
-#[tauri::command]
-fn instance_kill(app: AppHandle, state: tauri::State<FleetState>, pid: Option<u32>) -> Value { state.invoke(&app, "instance_kill", json!({ "pid": pid })) }
-#[tauri::command]
-fn instance_restart(app: AppHandle, state: tauri::State<FleetState>, pid: Option<u32>) -> Value { state.invoke(&app, "instance_restart", json!({ "pid": pid })) }
-#[tauri::command]
-fn instances_kill_all(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "instances_kill_all", Value::Null) }
-#[tauri::command]
-fn instances_cleanup(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "instances_cleanup", Value::Null) }
-#[tauri::command]
-fn instances_arrange(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "instances_arrange", Value::Null) }
-#[tauri::command]
-fn playtime_stats(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "playtime_stats", Value::Null) }
-#[tauri::command]
-fn playtime_clear(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "playtime_clear", Value::Null) }
-#[tauri::command]
-fn history_get(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "history_get", Value::Null) }
-#[tauri::command]
-fn history_clear(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "history_clear", Value::Null) }
-#[tauri::command]
-fn settings_get(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "settings_get", Value::Null) }
-#[tauri::command]
-fn settings_save(app: AppHandle, state: tauri::State<FleetState>, partial: Value) -> Value { state.invoke(&app, "settings_save", json!({ "partial": partial })) }
-#[tauri::command]
-fn settings_reset(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "settings_reset", Value::Null) }
-#[tauri::command]
-fn settings_browse(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "settings_browse", Value::Null) }
-#[tauri::command]
-fn logs_get(app: AppHandle, state: tauri::State<FleetState>, limit: Option<usize>) -> Value { state.invoke(&app, "logs_get", json!({ "limit": limit })) }
-#[tauri::command]
-fn logs_clear(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "logs_clear", Value::Null) }
-#[tauri::command]
-fn logs_open_folder(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "logs_open_folder", Value::Null) }
-#[tauri::command]
-fn diag_get(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "diag_get", Value::Null) }
-#[tauri::command]
-fn app_open_external(app: AppHandle, state: tauri::State<FleetState>, url: Option<String>) -> Value { state.invoke(&app, "app_open_external", json!({ "url": url })) }
-#[tauri::command]
-fn app_open_user_data(app: AppHandle, state: tauri::State<FleetState>) -> Value { state.invoke(&app, "app_open_user_data", Value::Null) }
+backend_command!(accounts_remove, "accounts_remove", (id: Option<String>), json!({ "id": id }));
+backend_command!(accounts_refresh, "accounts_refresh", (id: Option<String>, full: Option<bool>), json!({ "id": id, "full": full }));
+backend_command!(accounts_follow, "accounts_follow", (target_account_id: Option<String>, follower_account_ids: Vec<String>), json!({ "targetAccountId": target_account_id, "followerAccountIds": follower_account_ids }));
+backend_command!(games_browse, "games_browse", (), Value::Null);
+backend_command!(games_search, "games_search", (query: Option<String>, page_token: Option<String>), json!({ "query": query, "pageToken": page_token }));
+backend_command!(games_servers, "games_servers", (place_id: Option<String>, cursor: Option<String>), json!({ "placeId": place_id, "cursor": cursor }));
+backend_command!(games_server_scan, "games_server_scan", (place_id: Option<String>, page_limit: Option<usize>), json!({ "placeId": place_id, "pageLimit": page_limit }));
+backend_command!(people_list, "people_list", (page: Option<usize>, page_size: Option<usize>, force: Option<bool>), json!({ "page": page, "pageSize": page_size, "force": force }));
+backend_command!(people_server_list, "people_server_list", (force: Option<bool>), json!({ "force": force }));
+backend_command!(people_search, "people_search", (query: Option<String>, cursor: Option<String>), json!({ "query": query, "cursor": cursor }));
+backend_command!(people_profile, "people_profile", (user_id: Option<i64>), json!({ "userId": user_id }));
+backend_command!(people_presence, "people_presence", (user_ids: Vec<i64>), json!({ "userIds": user_ids }));
+backend_command!(instances_get, "instances_get", (), Value::Null);
+backend_command!(instance_focus, "instance_focus", (pid: Option<u32>), json!({ "pid": pid }));
+backend_command!(instance_kill, "instance_kill", (pid: Option<u32>), json!({ "pid": pid }));
+backend_command!(instance_restart, "instance_restart", (pid: Option<u32>), json!({ "pid": pid }));
+backend_command!(instances_kill_all, "instances_kill_all", (), Value::Null);
+backend_command!(instances_cleanup, "instances_cleanup", (), Value::Null);
+backend_command!(instances_arrange, "instances_arrange", (), Value::Null);
+backend_command!(playtime_stats, "playtime_stats", (), Value::Null);
+backend_command!(playtime_clear, "playtime_clear", (), Value::Null);
+backend_command!(history_get, "history_get", (), Value::Null);
+backend_command!(history_clear, "history_clear", (), Value::Null);
+backend_command!(settings_get, "settings_get", (), Value::Null);
+backend_command!(settings_save, "settings_save", (partial: Value), json!({ "partial": partial }));
+backend_command!(settings_reset, "settings_reset", (), Value::Null);
+backend_command!(settings_browse, "settings_browse", (), Value::Null);
+backend_command!(logs_get, "logs_get", (limit: Option<usize>), json!({ "limit": limit }));
+backend_command!(logs_clear, "logs_clear", (), Value::Null);
+backend_command!(logs_open_folder, "logs_open_folder", (), Value::Null);
+backend_command!(diag_get, "diag_get", (), Value::Null);
+backend_command!(app_open_external, "app_open_external", (url: Option<String>), json!({ "url": url }));
+backend_command!(app_open_user_data, "app_open_user_data", (), Value::Null);
 
 pub fn run() {
+    let mut context = tauri::generate_context!();
+    #[cfg(windows)]
+    if let Ok(browser_args) = std::env::var("FLEET_UI_TEST_BROWSER_ARGS") {
+        if let Some(window) = context.config_mut().app.windows.first_mut() {
+            window.additional_browser_args = Some(browser_args);
+            window.devtools = Some(true);
+            if let Ok(data_directory) = std::env::var("FLEET_UI_TEST_DATA_DIRECTORY") {
+                window.data_directory = Some(data_directory.into());
+            }
+        }
+    }
+
     tauri::Builder::default()
         .setup(|app| {
             let backend = NodeBackend::start(app.handle())?;
-            app.manage(FleetState { backend: Mutex::new(Some(backend)) });
+            app.manage(FleetState {
+                backend: Mutex::new(Some(Arc::new(backend))),
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -331,7 +453,7 @@ pub fn run() {
                 if window.label() == "main" {
                     if let Some(state) = window.try_state::<FleetState>() {
                         if let Ok(mut guard) = state.backend.lock() {
-                            if let Some(mut backend) = guard.take() {
+                            if let Some(backend) = guard.take() {
                                 backend.shutdown();
                             }
                         }
@@ -342,8 +464,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_status,
             roblox_detect,
-            ui_titlebar,
-            ui_clipboard,
             updater_status,
             updater_check,
             updater_install,
@@ -388,6 +508,6 @@ pub fn run() {
             app_open_external,
             app_open_user_data,
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }

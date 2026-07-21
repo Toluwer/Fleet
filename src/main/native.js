@@ -55,7 +55,7 @@ let loadError = null;
 let typeIndices = null; // { event, mutant }
 
 let NtQuerySystemInformation, NtQueryObject;
-let OpenProcess, DuplicateHandle, CloseHandle, GetCurrentProcess, CreateEventW, CreateMutexW, OpenEventW, OpenMutexW;
+let OpenProcess, DuplicateHandle, CloseHandle, GetCurrentProcess, CreateEventW, CreateMutexW, OpenEventW, OpenMutexW, QueryFullProcessImageNameW, GetProcessTimes;
 let CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, Module32FirstW, Module32NextW, K32GetProcessMemoryInfo, ReadProcessMemory;
 let PE32 = null, PE32_SIZE = 0;
 let ME32 = null, ME32_SIZE = 0;
@@ -81,6 +81,8 @@ function init() {
     CreateMutexW = kernel32.func('uintptr __stdcall CreateMutexW(void* a, int b, str16 c)');
     OpenEventW = kernel32.func('uintptr __stdcall OpenEventW(uint32 a, int b, str16 c)');
     OpenMutexW = kernel32.func('uintptr __stdcall OpenMutexW(uint32 a, int b, str16 c)');
+    QueryFullProcessImageNameW = kernel32.func('bool __stdcall QueryFullProcessImageNameW(uintptr hProcess, uint32 dwFlags, void* lpExeName, _Inout_ uint32* lpdwSize)');
+    GetProcessTimes = kernel32.func('bool __stdcall GetProcessTimes(uintptr hProcess, void* lpCreationTime, void* lpExitTime, void* lpKernelTime, void* lpUserTime)');
 
     // Toolhelp + psapi for spawn-free process enumeration (immune to system load,
     // unlike `tasklist`, which stalls while several clients boot at once).
@@ -290,6 +292,44 @@ function workingSetOf(pid) {
   return 0;
 }
 
+/** Resolve the image backing a live PID. Empty means access was denied or the
+ * process exited during enumeration; callers must not treat it as verified. */
+function executablePathOf(pid) {
+  let h = 0;
+  try {
+    h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+    if (!h || !QueryFullProcessImageNameW) return '';
+    const chars = 32767;
+    const buf = Buffer.alloc(chars * 2);
+    const size = [chars];
+    if (!QueryFullProcessImageNameW(h, 0, buf, size) || !size[0]) return '';
+    return buf.subarray(0, Number(size[0]) * 2).toString('utf16le');
+  } catch (_) {
+    return '';
+  } finally {
+    if (h) { try { CloseHandle(h); } catch (_) {} }
+  }
+}
+
+/** Stable process identity derived from the kernel creation FILETIME. */
+function processIdentityOf(pid) {
+  let h = 0;
+  try {
+    h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+    if (!h || !GetProcessTimes) return '';
+    const creation = Buffer.alloc(8);
+    const exit = Buffer.alloc(8);
+    const kernel = Buffer.alloc(8);
+    const user = Buffer.alloc(8);
+    if (!GetProcessTimes(h, creation, exit, kernel, user)) return '';
+    return creation.readBigUInt64LE(0).toString(16);
+  } catch (_) {
+    return '';
+  } finally {
+    if (h) { try { CloseHandle(h); } catch (_) {} }
+  }
+}
+
 /** Return the base address of the first module matching `moduleName`. */
 function moduleBaseOf(pid, moduleName) {
   if (!init()) return 0;
@@ -352,7 +392,14 @@ function listProcesses(imageName) {
     let ok = Process32FirstW(snap, e);
     if (!ok) return null; // invalid snapshot
     while (ok) {
-      if (re.test(e.szExeFile || '')) out.push({ pid: e.th32ProcessID, memBytes: workingSetOf(e.th32ProcessID) });
+      if (re.test(e.szExeFile || '')) {
+        out.push({
+          pid: e.th32ProcessID,
+          memBytes: workingSetOf(e.th32ProcessID),
+          executablePath: executablePathOf(e.th32ProcessID),
+          processIdentity: processIdentityOf(e.th32ProcessID),
+        });
+      }
       ok = Process32NextW(snap, e);
     }
   } catch (_) {
@@ -511,6 +558,8 @@ module.exports = {
   closeRobloxSingletonHandles,
   getTypeIndices,
   listProcesses,
+  executablePathOf,
+  processIdentityOf,
   windowInfoForPids,
   focusByPid,
   tileWindows,

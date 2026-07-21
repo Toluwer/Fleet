@@ -75,7 +75,12 @@ Output:
 
 ```text
 src-tauri/target/release/bundle/nsis/Fleet_<version>_x64-setup.exe
+dist/FleetInstaller.exe
 ```
+
+Fleet uses a frameless, single-surface NSIS template with its own title bar,
+install location control, progress styling, and completion view. The stock
+welcome/directory/finish wizard pages are not shown.
 
 Tauri's NSIS bundle installs resources under this layout:
 
@@ -87,6 +92,9 @@ _up_/node_modules/koffi/...
 ```
 
 The Rust launcher supports both the portable layout and this installed layout.
+Node is bundled with Fleet, so installed users do not need a separate Node.js
+setup. WebView2 is downloaded silently only when Windows does not already have
+the required runtime.
 
 ## Clean Generated Output
 
@@ -124,7 +132,7 @@ Fleet/
     src/                    Rust Tauri shell and command bridge
     icons/                  committed Tauri app icons
     tauri.conf.json         Tauri bundle configuration
-    windows-node-bootstrap.nsh
+    fleet-installer.nsi     custom frameless NSIS installer
   docs/                     project documentation
   test/                     selftest, UI test, and live harnesses
 ```
