@@ -14,7 +14,8 @@ const root = path.join(__dirname, '..');
 const executable = process.env.FLEET_TEST_EXE ? path.resolve(process.env.FLEET_TEST_EXE) : null;
 const devTauriExe = path.join(root, 'src-tauri', 'target', 'release', 'fleet.exe');
 const packaged = !!process.env.FLEET_TEST_EXE;
-const profile = path.join(os.tmpdir(), 'fleet-ui-features-' + Date.now());
+const profileName = 'fleet-ui-features-' + Date.now();
+const profile = path.join(process.env.LOCALAPPDATA || os.tmpdir(), 'main', profileName);
 const port = 9337;
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -36,8 +37,12 @@ function cdp(ws) {
   });
 }
 
-async function waitForPage() {
+async function waitForPage(child, readStderr) {
   for (let attempt = 0; attempt < 100; attempt++) {
+    if (child.exitCode !== null) {
+      const detail = String(readStderr() || '').trim();
+      throw new Error(`Fleet exited before WebView debugging started (code ${child.exitCode})${detail ? `: ${detail}` : '.'}`);
+    }
     try {
       const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
       const page = targets.find(target => target.type === 'page' && (/index\.html/.test(target.url) || /tauri/i.test(target.url))) || targets.find(target => target.type === 'page');
@@ -54,14 +59,15 @@ async function main() {
   const before = new Set((await processes.list()).map(item => item.pid));
   const args = [];
   const env = Object.assign({}, process.env);
-  env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `--remote-debugging-port=${port} --user-data-dir="${profile}"`;
+  env.FLEET_UI_TEST_BROWSER_ARGS = `--remote-debugging-port=${port} --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection`;
+  env.FLEET_UI_TEST_DATA_DIRECTORY = profileName;
   const child = spawn(fleetExe, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   let stderr = '';
   child.stderr.on('data', chunk => { stderr += chunk.toString(); });
 
   let ws;
   try {
-    const page = await waitForPage();
+    const page = await waitForPage(child, () => stderr);
     ws = new WebSocket(page.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => {
       ws.addEventListener('open', resolve);
@@ -81,10 +87,14 @@ async function main() {
       return reply.result.result.value;
     };
 
+    let booted = false;
     for (let attempt = 0; attempt < 80; attempt++) {
-      if (await evaluate(`!!document.querySelector('[data-view="instances"]') && typeof views === 'object'`)) break;
+      booted = await evaluate(`!!document.querySelector('[data-view="instances"]') && typeof views === 'object'
+        && state.status !== null && renderedView === 'instances' && !!document.querySelector('#ilist')`);
+      if (booted) break;
       await wait(150);
     }
+    if (!booted) throw new Error('Fleet renderer did not finish booting before the test deadline.');
 
     const facts = await evaluate(`(async () => {
       localStorage.removeItem('fleet-sessions');
@@ -110,17 +120,41 @@ async function main() {
       );
       const dark = {
         theme: document.documentElement.dataset.theme,
-        body: getComputedStyle(document.body).backgroundColor,
+        body: getComputedStyle(document.querySelector('.window-shell')).backgroundColor,
+        html: getComputedStyle(document.documentElement).backgroundColor,
+        accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
         surface: getComputedStyle(document.querySelector('.card')).backgroundColor,
         primaryText: getComputedStyle(document.querySelector('.btn.primary')).color,
         unselectedChipText: getComputedStyle(document.querySelector('.chip:not(.on)')).color,
         errorToastText,
         interactiveNoTimeout: interactiveNoTimeout && interactiveNoTimeout.ok,
       };
+      const chrome = {
+        titlebar: !!document.querySelector('#titlebar-drag'),
+        titlebarMark: !!document.querySelector('.tb-mark'),
+        titlebarBrand: !!document.querySelector('.tb-brand'),
+        statusCard: !!document.querySelector('#lockchip'),
+        controls: document.querySelectorAll('[data-window-action]').length,
+        bodyRadius: getComputedStyle(document.querySelector('.window-shell')).borderRadius,
+        htmlRadius: getComputedStyle(document.documentElement).borderRadius,
+        titlebarBackground: getComputedStyle(document.querySelector('.titlebar')).backgroundColor,
+        nativeApi: !!(api.ui && api.ui.window && api.ui.window.toggleMaximize && api.ui.window.startDragging),
+      };
+      const maximizedBefore = await api.ui.window.isMaximized();
+      await api.ui.window.toggleMaximize();
+      await new Promise(resolve => setTimeout(resolve, 120));
+      const maximizedAfter = await api.ui.window.isMaximized();
+      const maximizedClassAfter = document.documentElement.classList.contains('window-maximized');
+      await api.ui.window.toggleMaximize();
+      await new Promise(resolve => setTimeout(resolve, 120));
+      const maximizedRestored = await api.ui.window.isMaximized();
+      const maximizedClassRestored = document.documentElement.classList.contains('window-maximized');
+      chrome.maximizeRoundTrip = maximizedAfter !== maximizedBefore && maximizedRestored === maximizedBefore;
+      chrome.maximizedClassSync = maximizedClassAfter === maximizedAfter && maximizedClassRestored === maximizedRestored;
       setThemePref('light');
       const light = {
         theme: document.documentElement.dataset.theme,
-        body: getComputedStyle(document.body).backgroundColor,
+        body: getComputedStyle(document.querySelector('.window-shell')).backgroundColor,
         surface: getComputedStyle(document.querySelector('.card')).backgroundColor,
       };
 
@@ -211,14 +245,42 @@ async function main() {
       const corruptSafe = document.querySelectorAll('#sessions-list .setting').length === 0
         && /No sessions yet/.test(document.querySelector('#sessions-list').textContent);
 
-      return { dark, light, serverIntel, updaterUi, draft, saved, normalizedSaved, rowText, invalidRejected, corruptSafe };
+      const rapidStart = performance.now();
+      for (let i = 0; i < 40; i++) setView(i % 2 ? 'help' : 'instances');
+      const rapidNavMs = performance.now() - rapidStart;
+      return { dark, light, chrome, rapidNavMs, serverIntel, updaterUi, draft, saved, normalizedSaved, rowText, invalidRejected, corruptSafe };
     })()`);
 
+    const scaling = [];
+    for (const factor of [1, 1.25, 1.5]) {
+      await send('Emulation.setDeviceMetricsOverride', { width: 1120, height: 740, deviceScaleFactor: factor, mobile: false });
+      await wait(80);
+      scaling.push(await evaluate(`({
+        factor: window.devicePixelRatio,
+        viewport: [innerWidth, innerHeight],
+        overflowX: document.body.scrollWidth > innerWidth,
+        overflowY: document.body.scrollHeight > innerHeight,
+        titlebarHeight: Math.round(document.querySelector('.titlebar').getBoundingClientRect().height),
+        closeWidth: Math.round(document.querySelector('[data-window-action="close"]').getBoundingClientRect().width),
+      })`));
+    }
+    await send('Emulation.clearDeviceMetricsOverride');
+
     if (facts.dark.theme !== 'dark' || facts.dark.body === facts.light.body || facts.dark.surface === facts.light.surface
-      || facts.dark.unselectedChipText !== 'rgb(242, 243, 245)'
+      || facts.dark.html !== 'rgba(0, 0, 0, 0)' || facts.dark.accent !== '#2563eb'
+      || facts.dark.unselectedChipText !== 'rgb(244, 240, 241)'
       || facts.dark.errorToastText !== 'rgb(255, 255, 255)'
       || !facts.dark.interactiveNoTimeout) {
       throw new Error('Theme switching did not change the rendered palette: ' + JSON.stringify(facts));
+    }
+    if (!facts.chrome.titlebar || facts.chrome.titlebarMark || facts.chrome.titlebarBrand || facts.chrome.statusCard || facts.chrome.controls !== 3
+      || facts.chrome.bodyRadius !== '16px' || facts.chrome.htmlRadius !== '0px'
+      || facts.chrome.titlebarBackground !== 'rgba(0, 0, 0, 0)' || !facts.chrome.nativeApi
+      || !facts.chrome.maximizeRoundTrip || !facts.chrome.maximizedClassSync || facts.rapidNavMs > 2000) {
+      throw new Error('Integrated window chrome or rapid navigation failed: ' + JSON.stringify(facts));
+    }
+    if (scaling.some(item => item.overflowX || item.overflowY || item.titlebarHeight !== 44 || item.closeWidth !== 46)) {
+      throw new Error('Window layout failed at a tested display scale: ' + JSON.stringify(scaling));
     }
     if (!facts.normalizedSaved.length || facts.normalizedSaved[0].name !== 'Night crew' || !facts.normalizedSaved[0].arrange) {
       throw new Error('Session was not saved correctly: ' + JSON.stringify(facts));
@@ -247,12 +309,15 @@ async function main() {
     const unexpectedRoblox = after.filter(item => !before.has(item.pid));
     if (unexpectedRoblox.length) throw new Error('Fleet unexpectedly launched Roblox during UI testing.');
 
-    console.log(JSON.stringify({ ok: true, packaged, facts, rendererExceptions: exceptions, newRobloxProcesses: unexpectedRoblox.length }, null, 2));
-    send('Browser.close').catch(() => {});
+    console.log(JSON.stringify({ ok: true, packaged, facts, scaling, rendererExceptions: exceptions, newRobloxProcesses: unexpectedRoblox.length }, null, 2));
+    const exited = new Promise(resolve => child.once('exit', () => resolve(true)));
+    const closeAccepted = await evaluate(`(api.ui.window.close(), true)`);
+    const closed = await Promise.race([exited, wait(5000).then(() => false)]);
+    if (!closeAccepted || !closed) throw new Error('Native close control did not terminate Fleet cleanly.');
   } finally {
     if (ws) try { ws.close(); } catch (_) {}
     await wait(500);
-    if (!child.killed) try { child.kill(); } catch (_) {}
+    if (child.exitCode === null && !child.killed) try { child.kill(); } catch (_) {}
     await wait(500);
     try { fs.rmSync(profile, { recursive: true, force: true }); } catch (_) {}
   }

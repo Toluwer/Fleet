@@ -23,6 +23,7 @@ const accounts = require('../src/main/accounts');
 const people = require('../src/main/people');
 const games = require('../src/main/games');
 const rendererModel = require('../src/renderer/model');
+const { ProcessMonitor } = require('../src/main/monitor');
 
 let pass = 0, fail = 0;
 const results = [];
@@ -117,6 +118,32 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   check('processes.list() returns array', Array.isArray(list), list.length + ' running');
   const shapeOk = list.every(r => typeof r.pid === 'number' && 'memBytes' in r && 'status' in r && 'windowTitle' in r);
   check('each row has expected shape', shapeOk);
+  let mockRows = [{ pid: 4101, memBytes: 10, status: 'running', windowTitle: 'Roblox', executablePath: 'C:\\Users\\Test\\AppData\\Local\\Roblox\\Versions\\version-a\\RobloxPlayerBeta.exe', verifiedPath: true, trustedInstall: true }];
+  const monitor = new ProcessMonitor({ processProvider: { list: async () => mockRows }, intervalMs: 1000 });
+  await monitor.poll();
+  check('external Roblox requires a stable second verified sighting', monitor.snapshot().length === 0);
+  await monitor.poll();
+  check('verified stable Roblox is reported as external', monitor.snapshot().length === 1 && monitor.snapshot()[0].source === 'external');
+  mockRows = [];
+  await monitor.poll();
+  check('exited external clients are removed on the next poll', monitor.snapshot().length === 0);
+  mockRows = [{ pid: 4102, memBytes: 10, status: 'running', windowTitle: '', executablePath: 'C:\\Temp\\RobloxPlayerBeta.exe', verifiedPath: true, trustedInstall: false }];
+  await monitor.poll();
+  await monitor.poll();
+  check('renamed or untrusted executables are not reported as Roblox', monitor.snapshot().length === 0);
+  monitor.markManaged(4103, { exePath: 'D:\\CustomRoblox\\RobloxPlayerBeta.exe', playerPath: 'D:\\CustomRoblox\\RobloxPlayerBeta.exe' });
+  mockRows = [{ pid: 4103, memBytes: 10, status: 'running', windowTitle: '', executablePath: 'D:\\CustomRoblox\\RobloxPlayerBeta.exe', verifiedPath: true, trustedInstall: false }];
+  await monitor.poll();
+  check('managed custom clients are matched by exact launch path', monitor.snapshot().length === 1 && monitor.snapshot()[0].source === 'fleet');
+  monitor.markManaged(4104, { exePath: 'C:\\Roblox\\Versions\\version-b\\RobloxPlayerBeta.exe', processIdentity: 'old' });
+  mockRows = [{ pid: 4104, memBytes: 10, status: 'running', windowTitle: 'Roblox', executablePath: 'C:\\Roblox\\Versions\\version-b\\RobloxPlayerBeta.exe', verifiedPath: true, trustedInstall: true, processIdentity: 'new' }];
+  await monitor.poll();
+  await monitor.poll();
+  check('PID reuse cannot inherit Fleet-managed ownership', monitor.snapshot().length === 1 && monitor.snapshot()[0].source === 'external');
+  mockRows = [{ pid: 4105, memBytes: 10, status: 'running', windowTitle: 'Roblox', executablePath: '', verifiedPath: false, trustedInstall: false, windowVerified: true, processIdentity: 'restricted' }];
+  await monitor.poll();
+  await monitor.poll();
+  check('permission-limited real windows use conservative stable fallback', monitor.snapshot().length === 1 && monitor.snapshot()[0].source === 'external');
 
   /* 7. Launcher guards */
   await section('Launcher');
@@ -343,7 +370,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && rendererSource.includes("case 'server-refresh':"));
   check('Server subtab uses a dedicated backend list path',
     fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'tauri-bridge.js'), 'utf8').includes("serverList: (force) => tauriInvoke('people_server_list'")
-    && fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'lib.rs'), 'utf8').includes('fn people_server_list')
+    && fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'lib.rs'), 'utf8').includes('backend_command!(people_server_list')
     && fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'people.js'), 'utf8').includes('async function listServerPeople(force)'));
   check('Games has advanced sorting, filtering and server ranking',
     rendererSource.includes("case 'games-sort':")
@@ -385,13 +412,32 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   check('Tauri bridge loads before app boot captures window.fleet',
     indexSource.includes('<script src="tauri-bridge.js"></script>')
     && indexSource.indexOf('tauri-bridge.js') < indexSource.indexOf('app.js'));
-  check('Dark and light themes exist and sync the native titlebar',
+  check('Graphite and obsidian themes use the blue integrated native window layer',
     cssSource.includes(':root[data-theme="dark"]')
+    && cssSource.includes('--accent: #2563eb')
     && cssSource.includes('--on-ink')
     && rendererSource.includes('function applyTheme()')
     && rendererSource.includes("case 'set-theme':")
-    && tauriLibSource.includes('fn ui_titlebar')
-    && tauriBridgeSource.includes("tauriInvoke('ui_titlebar'"));
+    && tauriConfig.app.windows.some(w => w.decorations === false && w.transparent === true && w.shadow === false && w.backgroundColor === '#00000000')
+    && !tauriLibSource.includes('DWMWA_WINDOW_CORNER_PREFERENCE')
+    && !tauriLibSource.includes('CreateRoundRectRgn')
+    && cssSource.includes('clip-path: inset(0 round 16px)')
+    && indexSource.includes('class="window-shell"')
+    && tauriBridgeSource.includes("toggleMaximize: () => windowCall('toggleMaximize')")
+    && indexSource.includes('data-window-action="close"')
+    && !indexSource.includes('id="lockchip"')
+    && !indexSource.includes('class="tb-mark"')
+    && !indexSource.includes('class="tb-brand"')
+    && !/gradient|red-velvet|\bgreen\b|\bamber\b/i.test(cssSource));
+  const iconPng = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'icons', 'icon.png'));
+  const iconIco = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'icons', 'icon.ico'));
+  const iconVector = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'icons', 'icon-source.svg'), 'utf8');
+  check('Blue taskbar icon has a vector master and a full-resolution Windows icon family',
+    iconVector.includes('viewBox="0 0 1024 1024"')
+    && iconVector.includes('#2563eb')
+    && iconPng.readUInt32BE(16) >= 512
+    && iconPng.readUInt32BE(20) >= 512
+    && iconIco.readUInt16LE(4) >= 6);
   check('Sessions save and relaunch full setups',
     rendererSource.includes('function loadSessions()')
     && rendererSource.includes("case 'session-launch':")
@@ -411,20 +457,21 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && rendererModel.parseRobloxTarget('not a Roblox target').invalid === true
     && rendererModel.parseRobloxTarget('').invalid === false);
   const peopleSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'people.js'), 'utf8');
-  check('Account-less installs are told what to do instead of failing',
-    peopleSource.includes('needsAccount: true')
+  check('Account-less installs can search public profiles without exposing account cookies',
+    peopleSource.includes("'User-Agent': 'Fleet/1.5.2'")
+    && peopleSource.includes('search-api/omni-search')
+    && peopleSource.includes("verticalType: 'user'")
     && peopleSource.includes("presence: 'Unknown'")
-    && rendererSource.includes('Sign in once to unlock search')
-    && rendererSource.includes('Add a Roblox account to unlock People')
-    && rendererSource.includes("case 'goto-accounts':"));
+    && !peopleSource.includes('needsAccount: true')
+    && !rendererSource.includes('Sign in once to unlock search')
+    && rendererSource.includes('Add a Roblox account to unlock People'));
   check('Games have favorites and recent-joins',
     rendererSource.includes('function toggleFav(')
     && rendererSource.includes('function recordRecentGame(')
     && rendererSource.includes("case 'toggle-fav':")
     && rendererSource.includes("'__fav'") && rendererSource.includes("'__recent'"));
   check('Clipboard quick-join offers copied game links locally',
-    tauriLibSource.includes('fn ui_clipboard')
-    && tauriBridgeSource.includes("tauriInvoke('ui_clipboard')")
+    tauriBridgeSource.includes('navigator.clipboard.readText()')
     && rendererSource.includes('function checkClipboardForGameLink(')
     && rendererSource.includes("case 'clip-use':"));
   check('Tauri installer output replaces legacy Electron installer customization',
@@ -475,6 +522,49 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   const afterBlip = playtimeMod.stats();
   check('sub-30s presence blips are not recorded as sessions', afterBlip.tracking === 0 && afterBlip.totals.sessions === 0);
 
+  let clock = 1000000;
+  let crashDoc = null;
+  const crashStore = {
+    readJson: (_name, fallback) => crashDoc ? JSON.parse(JSON.stringify(crashDoc)) : fallback,
+    writeJson: (_name, data) => { crashDoc = JSON.parse(JSON.stringify(data)); return true; },
+  };
+  playtimeMod.configure({ store: crashStore, now: () => clock });
+  playtimeMod.clear();
+  playtimeMod.observe(333, 'alt3', 'In game', { name: 'Crash Test', placeId: 126 });
+  clock += 45000;
+  playtimeMod.observe(333, 'alt3', 'In game', { name: 'Crash Test', placeId: 126 });
+  playtimeMod.checkpointNow();
+  check('live playtime is checkpointed before normal shutdown', crashDoc.active['333'].lastSeen === clock);
+  clock += 5000;
+  playtimeMod.configure({ store: crashStore, now: () => clock });
+  const recoveredOnce = playtimeMod.stats();
+  playtimeMod.configure({ store: crashStore, now: () => clock });
+  const recoveredTwice = playtimeMod.stats();
+  check('force-quit recovery stops at last observation without double counting',
+    recoveredOnce.totals.sessions === 1
+    && recoveredOnce.totals.totalMs === 45000
+    && recoveredOnce.recent[0].recovered === true
+    && recoveredTwice.totals.sessions === 1
+    && recoveredTwice.totals.totalMs === 45000);
+
+  clock = 2000000;
+  crashDoc = null;
+  playtimeMod.configure({ store: crashStore, now: () => clock });
+  playtimeMod.observe(401, 'one', 'In game', { name: 'Concurrent', placeId: 77 });
+  playtimeMod.observe(402, 'two', 'In game', { name: 'Concurrent', placeId: 77 });
+  clock += 40000;
+  playtimeMod.observe(401, 'one', 'In game', { name: 'Concurrent', placeId: 77 });
+  playtimeMod.observe(402, 'two', 'In game', { name: 'Concurrent', placeId: 77 });
+  clock += 5000;
+  playtimeMod.observe(401, 'one', 'Offline', null);
+  playtimeMod.flush();
+  const concurrentStats = playtimeMod.stats();
+  check('multiple active account sessions persist independently',
+    concurrentStats.tracking === 0
+    && concurrentStats.totals.sessions === 2
+    && concurrentStats.totals.totalMs === 90000
+    && concurrentStats.perAccount.length === 2);
+
   const realPlaytimeDir = path.join(os.tmpdir(), 'fleet-playtime-store-' + Date.now());
   store.configure(realPlaytimeDir, console);
   playtimeMod.configure({ store, logger: console });
@@ -492,7 +582,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   try { fs.rmSync(realPlaytimeDir, { recursive: true, force: true }); } catch (_) {}
   check('playtime is wired into the poller, IPC and UI',
     accountsSrcEarly.includes('onObserve(a.userId, a.username, pres.status, game)')
-    && fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'lib.rs'), 'utf8').includes('fn playtime_stats')
+    && fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'lib.rs'), 'utf8').includes('backend_command!(playtime_stats')
     && rendererSource.includes('views.stats')
     && rendererSource.includes('function fmtDur('));
   check('accounts carry Robux + Premium data',
@@ -593,11 +683,24 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && ipcSource.includes('FleetInstaller.exe')
     && ipcSource.includes("state = 'available'")
     && ipcSource.includes("state = 'installing'"));
-  check('Installer is NSIS-only and bootstraps Node plus WebView2',
+  const installerTemplate = fs.readFileSync(
+    path.join(__dirname, '..', 'src-tauri', 'fleet-installer.nsi'),
+    'utf8',
+  );
+  const nsisConfig = tauriConfig.bundle.windows.nsis;
+  check('Installer is frameless custom NSIS with bundled Node and WebView2 bootstrap',
     tauriConfig.bundle.targets === 'nsis'
+    && tauriConfig.bundle.resources.includes('resources/node.exe')
     && tauriConfig.bundle.windows.webviewInstallMode.type === 'downloadBootstrapper'
-    && tauriConfig.bundle.windows.nsis.installerHooks === 'windows-node-bootstrap.nsh'
-    && fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'windows-node-bootstrap.nsh'), 'utf8').includes('node --version'));
+    && nsisConfig.template === 'fleet-installer.nsi'
+    && nsisConfig.installMode === 'currentUser'
+    && !Object.prototype.hasOwnProperty.call(nsisConfig, 'installerHooks')
+    && installerTemplate.includes('Function FleetCreateTitleBar')
+    && installerTemplate.includes('${NSD_RemoveStyle} $HWNDPARENT')
+    && installerTemplate.includes('Function FleetPrepareFullCanvas')
+    && !installerTemplate.includes('MUI_PAGE_WELCOME')
+    && !installerTemplate.includes('MUI_PAGE_DIRECTORY')
+    && !installerTemplate.includes('MUI_PAGE_FINISH'));
 
   await section('Resilient people search');
   const response = (status, data, headers) => ({
@@ -607,22 +710,25 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     json: async () => data,
   });
   let keywordCallsForFullUsername = 0;
-  let exactEndpointTouched = false;
+  let legacyEndpointTouched = false;
+  let keywordCookieAttached = false;
   try {
     global.fetch = async (url, opts) => {
       const href = String(url);
-      if (href.includes('/v1/usernames/users')) {
-        exactEndpointTouched = true;
-        return response(200, { data: [{ id: 24680, name: 'Exact_User', displayName: 'Exact User' }] });
-      }
       if (href.includes('/v1/users/search')) {
+        legacyEndpointTouched = true;
+        return response(500, {});
+      }
+      if (href.includes('/search-api/omni-search')) {
         keywordCallsForFullUsername++;
+        const headers = opts && opts.headers || {};
+        keywordCookieAttached = !!(headers.Cookie || headers.cookie);
         return response(200, {
-          data: [
-            { id: 24680, name: 'Exact_User', displayName: 'Exact User' },
-            { id: 24681, name: 'Exact_UserFan', displayName: 'Exact User Fan' },
-          ],
-          nextPageCursor: 'more-exact-users',
+          searchResults: [{ contents: [
+            { contentId: 24680, username: 'Exact_User', displayName: 'Exact User' },
+            { contentId: 24681, username: 'Exact_UserFan', displayName: 'Exact User Fan' },
+          ] }],
+          nextPageToken: 'more-exact-users',
         });
       }
       if (href.includes('/avatar-headshot')) return response(200, { data: [] });
@@ -639,18 +745,19 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
       && fullUsernameResult.people.length === 2
       && fullUsernameResult.people[0].canJoin === true
       && fullUsernameResult.people[0].placeId === null
-      && fullUsernameResult.nextPageCursor === 'more-exact-users'
+      && fullUsernameResult.nextPageCursor === 'omni:more-exact-users'
       && keywordCallsForFullUsername === 1
-      && exactEndpointTouched === false);
+      && keywordCookieAttached === false
+      && legacyEndpointTouched === false);
     check('identical searches reuse cached results', cachedFullUsername.ok && cachedFullUsername.cached === true && keywordCallsForFullUsername === 1);
 
     let keywordCalls = 0;
     global.fetch = async (url) => {
       const href = String(url);
-      if (href.includes('/v1/users/search')) {
+      if (href.includes('/search-api/omni-search')) {
         keywordCalls++;
         if (keywordCalls === 1) return response(429, { errors: [{ code: 0, message: '' }] });
-        return response(200, { data: [{ id: 13579, name: 'DisplayUser', displayName: 'Display Name' }], nextPageCursor: null });
+        return response(200, { searchResults: [{ contents: [{ contentId: 13579, username: 'DisplayUser', displayName: 'Display Name' }] }], nextPageToken: null });
       }
       if (href.includes('/avatar-headshot')) return response(200, { data: [] });
       if (href.includes('/presence/users')) return response(200, { userPresences: [] });
@@ -659,11 +766,34 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     const retryResult = await people.search('Display Name');
     check('keyword search recovers from one HTTP 429', retryResult.ok && retryResult.people[0].userId === 13579 && keywordCalls === 2);
 
+    let legacyFallbackCalls = 0;
+    global.fetch = async (url) => {
+      const href = String(url);
+      if (href.includes('/search-api/omni-search')) return response(403, { errors: [{ code: 0, message: 'Forbidden' }] });
+      if (href.includes('/v1/users/search')) {
+        legacyFallbackCalls++;
+        return response(200, { data: [
+          { id: 86420, name: 'Blocked_User', displayName: 'Blocked User' },
+          { id: 86421, name: 'Blocked_UserFan', displayName: 'Blocked User Fan' },
+        ], nextPageCursor: 'legacy-more' });
+      }
+      if (href.includes('/avatar-headshot')) return response(200, { data: [] });
+      if (href.includes('/presence/users')) return response(200, { userPresences: [] });
+      throw new Error('Unexpected fallback URL: ' + href);
+    };
+    const forbiddenFallback = await people.search('Blocked_User');
+    check('HTTP 403 current search falls back to a full ranked legacy result list',
+      forbiddenFallback.ok
+      && forbiddenFallback.source === 'keyword'
+      && forbiddenFallback.people.length === 2
+      && forbiddenFallback.nextPageCursor === 'legacy:legacy-more'
+      && legacyFallbackCalls === 1);
+
     let keywordTouched = false;
     global.fetch = async (url) => {
       const href = String(url);
       if (href.endsWith('/v1/users/97531')) return response(200, { id: 97531, name: 'IdUser', displayName: 'ID User' });
-      if (href.includes('/v1/users/search')) { keywordTouched = true; return response(500, {}); }
+      if (href.includes('/search-api/omni-search') || href.includes('/v1/users/search')) { keywordTouched = true; return response(500, {}); }
       if (href.includes('/avatar-headshot')) return response(200, { data: [] });
       if (href.includes('/presence/users')) return response(200, { userPresences: [] });
       throw new Error('Unexpected ID URL: ' + href);

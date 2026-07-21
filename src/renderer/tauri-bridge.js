@@ -24,12 +24,47 @@ function tauriInvoke(channel, payload) {
   return invoke(channel, payload || {});
 }
 
+function currentWindow() {
+  const windowApi = tauriApi().window;
+  try { return windowApi && typeof windowApi.getCurrentWindow === 'function' ? windowApi.getCurrentWindow() : null; }
+  catch (_) { return null; }
+}
+
+async function readClipboard() {
+  try {
+    const text = await navigator.clipboard.readText();
+    return { ok: true, text: String(text || '') };
+  } catch (err) {
+    return { ok: false, text: '', error: (err && err.message) || 'Clipboard access was denied.' };
+  }
+}
+
+function windowCall(method) {
+  const appWindow = currentWindow();
+  if (!appWindow || typeof appWindow[method] !== 'function') return Promise.resolve(false);
+  return Promise.resolve(appWindow[method]()).then(() => true).catch(() => false);
+}
+
 window.fleet = {
   status: () => tauriInvoke('app_status'),
   detect: () => tauriInvoke('roblox_detect'),
   ui: {
-    titlebar: (dark) => tauriInvoke('ui_titlebar', { dark }),
-    clipboard: () => tauriInvoke('ui_clipboard'),
+    clipboard: readClipboard,
+    window: {
+      minimize: () => windowCall('minimize'),
+      toggleMaximize: () => windowCall('toggleMaximize'),
+      close: () => windowCall('close'),
+      startDragging: () => windowCall('startDragging'),
+      isMaximized: async () => {
+        const appWindow = currentWindow();
+        try { return !!(appWindow && await appWindow.isMaximized()); } catch (_) { return false; }
+      },
+      onResized: (cb) => {
+        const appWindow = currentWindow();
+        if (!appWindow || typeof appWindow.onResized !== 'function') return Promise.resolve(() => {});
+        return appWindow.onResized(cb).catch(() => () => {});
+      },
+    },
   },
   updater: {
     status: () => tauriInvoke('updater_status'),

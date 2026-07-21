@@ -17,7 +17,6 @@ function applyTheme() {
   const pref = themePref();
   const dark = pref === 'dark' || (pref === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-  try { if (api && api.ui && api.ui.titlebar) api.ui.titlebar(dark); } catch (_) { /* bridge optional */ }
 }
 function setThemePref(pref) {
   try { localStorage.setItem(THEME_KEY, normalizeThemePreference(pref)); } catch (_) { /* use current theme */ }
@@ -26,6 +25,38 @@ function setThemePref(pref) {
 const systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
 if (systemTheme.addEventListener) systemTheme.addEventListener('change', () => { if (themePref() === 'system') applyTheme(); });
 applyTheme();
+
+function initWindowChrome() {
+  const windowApi = api && api.ui && api.ui.window;
+  const drag = document.getElementById('titlebar-drag');
+  if (!windowApi || !drag) return;
+  const syncMaximized = async () => {
+    const maximized = await windowApi.isMaximized();
+    document.body.classList.toggle('window-maximized', maximized);
+    document.documentElement.classList.toggle('window-maximized', maximized);
+    const button = document.querySelector('[data-window-action="maximize"]');
+    if (button) {
+      button.setAttribute('aria-label', maximized ? 'Restore' : 'Maximize');
+      button.title = maximized ? 'Restore' : 'Maximize';
+    }
+  };
+  drag.addEventListener('mousedown', (event) => {
+    if (event.button !== 0) return;
+    if (event.detail === 2) windowApi.toggleMaximize().then(syncMaximized);
+    else windowApi.startDragging();
+  });
+  document.querySelector('.window-controls').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-window-action]');
+    if (!button) return;
+    const action = button.dataset.windowAction;
+    if (action === 'minimize') windowApi.minimize();
+    else if (action === 'maximize') windowApi.toggleMaximize().then(syncMaximized);
+    else if (action === 'close') windowApi.close();
+  });
+  windowApi.onResized(syncMaximized);
+  syncMaximized();
+}
+initWindowChrome();
 
 const state = {
   view: 'instances',
@@ -340,15 +371,18 @@ async function call(fn, fallback, timeoutMs) {
 
 /* ----------------------------- Router ----------------------------- */
 const views = {};
+let renderedView = null;
 function setView(name) {
   state.view = name;
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   (views[name] || views.instances)();
+  renderedView = name;
   if (name === 'people') setTimeout(refreshVisiblePeoplePresence, 0);
 }
 $('#nav').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-view]');
   if (b) {
+    if (b.dataset.view === state.view && renderedView === state.view && b.dataset.view !== 'people') return;
     if (b.dataset.view === 'people') state.people.route = state.people.tab === 'server' ? 'server' : 'home';
     setView(b.dataset.view);
   }
@@ -559,12 +593,15 @@ function renderInstanceSummary(items) {
   const sum = state.summary;
   if (sum && items.length) {
     sCard.style.display = '';
-    $('#summary').innerHTML = `
+    const summary = $('#summary');
+    const key = [sum.total, sum.fleet, sum.external, sum.notResponding, sum.totalMemBytes].join('|');
+    if (summary.dataset.summaryKey !== key) summary.innerHTML = `
       <div class="stat"><span class="v">${sum.total}</span><span class="k">Total</span></div>
       <div class="stat"><span class="v">${sum.fleet}</span><span class="k">Launched by Fleet</span></div>
       <div class="stat"><span class="v">${sum.external}</span><span class="k">External</span></div>
       <div class="stat"><span class="v">${sum.notResponding}</span><span class="k">Not responding</span></div>
       <div class="stat"><span class="v">${fmtBytes(sum.totalMemBytes)}</span><span class="k">Total memory</span></div>`;
+    summary.dataset.summaryKey = key;
   } else {
     sCard.style.display = 'none';
   }
@@ -577,7 +614,8 @@ function instanceRowHtml(i, isNew) {
     : `<span class="tag external">External</span>`;
   const title = i.windowTitle ? esc(i.windowTitle) : '<span style="color:var(--ink-3)">Loading-</span>';
   const started = (i.startedExact ? '' : '~') + relTime(i.startedAt);
-  return `<div class="irow${isNew ? ' row-enter' : ''}" data-pid="${pid}" data-row>
+  const signature = encodeURIComponent(JSON.stringify([i.status, i.windowTitle, i.source, i.profileName, i.memBytes, i.startedAt, !!i.startedExact]));
+  return `<div class="irow${isNew ? ' row-enter' : ''}" data-pid="${pid}" data-signature="${signature}" data-row>
     <span class="dot ${esc(i.status || 'running')}" data-tip="${i.status === 'not_responding' ? 'Not responding' : 'Running'}"></span>
     <span class="pid">${pid}</span>
     <span><div class="title">${title}</div><div style="margin-top:4px">${tag}</div></span>
@@ -615,7 +653,12 @@ function patchInstanceList(list, items) {
     live.add(key);
     const current = existing.get(key);
     if (current) {
-      current.outerHTML = instanceRowHtml(item, false);
+      const signature = encodeURIComponent(JSON.stringify([item.status, item.windowTitle, item.source, item.profileName, item.memBytes, item.startedAt, !!item.startedExact]));
+      if (current.dataset.signature !== signature) current.outerHTML = instanceRowHtml(item, false);
+      else {
+        const when = current.querySelector('.when');
+        if (when) when.textContent = (item.startedExact ? '' : '~') + relTime(item.startedAt);
+      }
     } else {
       rowsRoot.insertAdjacentHTML('beforeend', instanceRowHtml(item, true));
     }
@@ -628,6 +671,17 @@ function patchInstanceList(list, items) {
   for (const item of items) {
     const row = findByData(rowsRoot, 'pid', item.pid);
     if (row) rowsRoot.appendChild(row);
+  }
+}
+
+function refreshInstanceElapsedTimes() {
+  if (state.view !== 'instances' || document.hidden) return;
+  const root = $('#ilist');
+  if (!root) return;
+  for (const item of state.instances || []) {
+    const row = findByData(root, 'pid', item.pid);
+    const when = row && row.querySelector('.when');
+    if (when) when.textContent = (item.startedExact ? '' : '~') + relTime(item.startedAt);
   }
 }
 
@@ -1572,11 +1626,6 @@ function renderPeopleSearchResults() {
     root.innerHTML = `<div class="people-search-state"><span class="spinner dark"></span><div><strong>Searching Roblox</strong><small>Checking matching public profiles...</small></div></div>`;
     return;
   }
-  if (search.needsAccount) {
-    root.innerHTML = `<div class="people-search-state">${icon('user-plus')}<div><strong>Sign in once to unlock search</strong><small>Roblox only answers user search for signed-in sessions. Add any account and search, presence and Join buttons all start working.</small></div>
-      <button class="btn sm primary" data-action="goto-accounts">${icon('user-plus')} Add account</button></div>`;
-    return;
-  }
   if (search.error) {
     root.innerHTML = `<div class="people-search-state error">${icon('alert-circle')}<div><strong>Search paused</strong><small>${esc(search.error)}</small></div>
       ${search.retryable ? `<button class="btn sm" data-action="people-search-retry">${icon('refresh')} Retry</button>` : ''}</div>`;
@@ -1624,7 +1673,7 @@ async function runPeopleSearch(query, append) {
   if (!append) { search.query = q; search.list = []; search.nextPageCursor = null; }
   const requestId = ++search.requestId;
   search.loading = true; search.error = null; search.searched = true; search.notice = null;
-  search.source = null; search.cached = false; search.retryable = false; search.needsAccount = false;
+  search.source = null; search.cached = false; search.retryable = false;
   setPeopleSearchBusy(true);
   renderPeopleSearchResults();
   const r = await call(() => api.people.search(search.query, append ? search.nextPageCursor : null));
@@ -1640,7 +1689,6 @@ async function runPeopleSearch(query, append) {
   } else {
     search.error = (r && r.error) || 'Search failed.';
     search.retryable = !!(r && r.retryable);
-    search.needsAccount = !!(r && r.needsAccount);
   }
   if (state.view === 'people' && state.people.route === 'home') renderPeopleSearchResults();
 }
@@ -1842,7 +1890,7 @@ function patchPersonPresence(user) {
 
 /** Poll visible users, then patch only cards whose live state actually changed. */
 async function refreshVisiblePeoplePresence() {
-  if (!api || peoplePresenceBusy || state.view !== 'people') return;
+  if (!api || document.hidden || peoplePresenceBusy || state.view !== 'people') return;
   const pp = state.people;
   let users = [];
   if (pp.route === 'home' && pp.search.searched) users = pp.search.list;
@@ -2130,11 +2178,11 @@ views.settings = async function () {
     <div class="page-head"><h1>Settings</h1><p>Everything is saved to your user profile and persists between sessions.</p></div>
     <div class="section-title">Appearance</div>
     <div class="card pad">
-      ${settingRow('Theme', 'Follow Windows, or force light or dark.',
+      ${settingRow('Theme', 'Follow Windows, or choose graphite or obsidian.',
         `<div class="segmented compact" id="set-theme">
           <button type="button" data-action="set-theme" data-theme="system" class="${themePref() === 'system' ? 'on' : ''}">System</button>
-          <button type="button" data-action="set-theme" data-theme="light" class="${themePref() === 'light' ? 'on' : ''}">Light</button>
-          <button type="button" data-action="set-theme" data-theme="dark" class="${themePref() === 'dark' ? 'on' : ''}">Dark</button>
+          <button type="button" data-action="set-theme" data-theme="light" class="${themePref() === 'light' ? 'on' : ''}">Graphite</button>
+          <button type="button" data-action="set-theme" data-theme="dark" class="${themePref() === 'dark' ? 'on' : ''}">Obsidian</button>
         </div>`)}
     </div>
     <div class="section-title">Roblox location</div>
@@ -2827,13 +2875,6 @@ async function copyDiagnostics() {
 async function refreshStatus() {
   const r = await call(() => api.status(), null);
   if (r && r.ok) { state.status = r; state.settings = r.settings; }
-  updateLockChip();
-}
-function updateLockChip() {
-  const chip = $('#lockchip'); const txt = $('#lock-text'); const s = state.status || {};
-  chip.classList.remove('held', 'unavail');
-  if (s.ffiAvailable === false) { chip.classList.add('unavail'); txt.textContent = 'Multi-instance: off'; }
-  else { chip.classList.add('held'); txt.textContent = 'Multi-instance: ready'; }
 }
 async function loadInstances() {
   const r = await call(() => api.instances.get(), { instances: [] });
@@ -2850,12 +2891,18 @@ function updateNavCount() { const el = $('#nav-count'); if (el) el.textContent =
 function updateAccountsCount() { const el = $('#nav-accounts'); if (el) el.textContent = (state.accounts || []).length; }
 
 if (api) {
+  let instanceRenderFrame = 0;
   api.onInstances((payload) => {
     if (payload && payload.instances) {
       state.instances = payload.instances;
       if (payload.summary) state.summary = payload.summary;
       updateNavCount();
-      if (state.view === 'instances') renderInstanceList();
+      if (state.view === 'instances' && !instanceRenderFrame) {
+        instanceRenderFrame = requestAnimationFrame(() => {
+          instanceRenderFrame = 0;
+          if (state.view === 'instances') renderInstanceList();
+        });
+      }
     }
   });
   api.onLog((entry) => {
@@ -2879,10 +2926,10 @@ if (api) {
     if (status && status.state === 'ready') toast(`Fleet ${status.availableVersion || 'update'} is ready`, 'good');
   });
 }
-setInterval(() => { if (state.view === 'instances') renderInstanceList(); }, 5000);
+setInterval(refreshInstanceElapsedTimes, 5000);
 setInterval(refreshVisiblePeoplePresence, 10000);
 setInterval(() => {
-  if (state.view === 'people' && state.people.route === 'server' && !state.people.server.loading && !state.people.server.refreshing) {
+  if (!document.hidden && state.view === 'people' && state.people.route === 'server' && !state.people.server.loading && !state.people.server.refreshing) {
     loadServerPeople(true, { silent: true });
   }
 }, SERVER_PEOPLE_REFRESH_MS);

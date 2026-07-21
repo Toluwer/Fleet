@@ -9,6 +9,8 @@
  */
 
 const { execFile } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 const native = require('./native');
 
 const PLAYER_IMAGE = 'RobloxPlayerBeta.exe';
@@ -48,6 +50,27 @@ function memToBytes(s) {
   return parseInt(digits, 10) * 1024;
 }
 
+function normalizeExecutablePath(value) {
+  if (!value || typeof value !== 'string') return '';
+  try { return path.win32.normalize(value.trim()).replace(/[\\/]+$/, ''); }
+  catch (_) { return ''; }
+}
+
+function inspectRobloxPath(value) {
+  const executablePath = normalizeExecutablePath(value);
+  const exactName = path.win32.basename(executablePath).toLowerCase() === PLAYER_IMAGE.toLowerCase();
+  let exists = false;
+  try { exists = exactName && path.win32.isAbsolute(executablePath) && fs.statSync(executablePath).isFile(); } catch (_) {}
+  const lower = executablePath.toLowerCase();
+  const official = /\\roblox\\versions\\version-[^\\]+\\robloxplayerbeta\.exe$/i.test(lower);
+  const fleetClone = /\\clones\\instance-\d+\\robloxplayerbeta\.exe$/i.test(lower);
+  return {
+    executablePath,
+    verifiedPath: !!exists,
+    trustedInstall: !!exists && (official || fleetClone),
+  };
+}
+
 /**
  * List running Roblox clients.
  *
@@ -73,11 +96,18 @@ async function list() {
 
   return base.map(r => {
     const wi = info.get(r.pid);
+    const verified = inspectRobloxPath(r.executablePath);
+    const windowVerified = !verified.executablePath && !!(wi && /^Roblox$/i.test((wi.title || '').trim()));
     return {
       pid: r.pid,
       memBytes: r.memBytes,
       status: wi && wi.responding === false ? 'not_responding' : 'running',
       windowTitle: wi ? (wi.title || '') : '',
+      executablePath: verified.executablePath,
+      verifiedPath: verified.verifiedPath,
+      trustedInstall: verified.trustedInstall,
+      windowVerified,
+      processIdentity: String(r.processIdentity || ''),
     };
   });
 }
@@ -128,4 +158,4 @@ async function cleanupAll() {
   };
 }
 
-module.exports = { list, kill, killAllPlayers, cleanupAll, PLAYER_IMAGE, CRASH_IMAGE };
+module.exports = { list, kill, killAllPlayers, cleanupAll, inspectRobloxPath, PLAYER_IMAGE, CRASH_IMAGE };
