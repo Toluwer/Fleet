@@ -1,0 +1,191 @@
+name: Build Python Editor Frame v8 Smooth Corners
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download original verified source
+        uses: actions/download-artifact@v4
+        with:
+          name: Python-Editor-Frame-v2-Source
+          path: .chatgpt-build/source-artifact
+          github-token: ${{ github.token }}
+          repository: Toluwer/Fleet
+          run-id: 30113967176
+
+      - name: Restore source and apply verified frame patch
+        shell: pwsh
+        run: |
+          $sourceArchive = '.chatgpt-build/source-artifact/frame-v2-source.tar.gz'
+          if (-not (Test-Path $sourceArchive)) { throw 'Verified source archive was not found.' }
+          New-Item -ItemType Directory -Force '.chatgpt-build/python-editor' | Out-Null
+          tar -xzf $sourceArchive -C '.chatgpt-build/python-editor'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not extract verified source.' }
+
+          $compressed = [Convert]::FromBase64String((Get-Content -Raw '.chatgpt-build/frame-v2-to-v7-direct.patch.gz.b64'))
+          $inputStream = [IO.MemoryStream]::new($compressed)
+          $gzipStream = [IO.Compression.GZipStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
+          $patchPath = '.chatgpt-build/frame-v2-to-v7-direct.patch'
+          $outputStream = [IO.File]::Create($patchPath)
+          $gzipStream.CopyTo($outputStream)
+          $outputStream.Dispose()
+          $gzipStream.Dispose()
+          $inputStream.Dispose()
+
+          Push-Location '.chatgpt-build/python-editor'
+          try {
+            git apply --whitespace=nowarn '..\frame-v2-to-v7-direct.patch'
+            if ($LASTEXITCODE -ne 0) { throw 'Could not apply the verified frame patch.' }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Replace hard clip with smooth per-pixel mask
+        shell: pwsh
+        working-directory: .chatgpt-build/python-editor
+        run: |
+          $packagePath = 'package.json'
+          $package = Get-Content -Raw $packagePath | ConvertFrom-Json
+          $package.version = '1.0.8'
+          $package.build.win.executableName = 'PythonEditorSmoothCornersV8'
+          $package.build.portable.artifactName = 'PythonEditorSmoothCornersV8.exe'
+          $package | ConvertTo-Json -Depth 20 | Set-Content -Encoding utf8 $packagePath
+
+          $htmlPath = 'src/index.html'
+          $html = Get-Content -Raw $htmlPath
+          $html = $html.Replace('data-build="frame-v7"', 'data-build="frame-v8-smooth-corners"')
+          Set-Content -Encoding utf8 $htmlPath $html
+
+          $smoothMask = @'
+
+/* FRAME_V8_SMOOTH_MASK */
+.app-shell {
+  --corner-radius: 14px;
+  --corner-diameter: 28px;
+  border-radius: var(--corner-radius) !important;
+  overflow: hidden !important;
+  clip-path: none !important;
+  -webkit-clip-path: none !important;
+  transform: none !important;
+  backface-visibility: visible !important;
+  -webkit-mask:
+    linear-gradient(#000 0 0) center / 100% calc(100% - var(--corner-diameter)) no-repeat,
+    linear-gradient(#000 0 0) center / calc(100% - var(--corner-diameter)) 100% no-repeat,
+    radial-gradient(circle at 14px 14px, #000 0 13.25px, rgba(0, 0, 0, 0) 14px) left top / var(--corner-diameter) var(--corner-diameter) no-repeat,
+    radial-gradient(circle at 14px 14px, #000 0 13.25px, rgba(0, 0, 0, 0) 14px) right top / var(--corner-diameter) var(--corner-diameter) no-repeat,
+    radial-gradient(circle at 14px 14px, #000 0 13.25px, rgba(0, 0, 0, 0) 14px) left bottom / var(--corner-diameter) var(--corner-diameter) no-repeat,
+    radial-gradient(circle at 14px 14px, #000 0 13.25px, rgba(0, 0, 0, 0) 14px) right bottom / var(--corner-diameter) var(--corner-diameter) no-repeat !important;
+  mask:
+    linear-gradient(#000 0 0) center / 100% calc(100% - var(--corner-diameter)) no-repeat,
+    linear-gradient(#000 0 0) center / calc(100% - var(--corner-diameter)) 100% no-repeat,
+    radial-gradient(circle at 14px 14px, #000 0 13.25px, rgba(0, 0, 0, 0) 14px) left top / var(--corner-diameter) var(--corner-diameter) no-repeat,
+    radial-gradient(circle at 14px 14px, #000 0 13.25px, rgba(0, 0, 0, 0) 14px) right top / var(--corner-diameter) var(--corner-diameter) no-repeat,
+    radial-gradient(circle at 14px 14px, #000 0 13.25px, rgba(0, 0, 0, 0) 14px) left bottom / var(--corner-diameter) var(--corner-diameter) no-repeat,
+    radial-gradient(circle at 14px 14px, #000 0 13.25px, rgba(0, 0, 0, 0) 14px) right bottom / var(--corner-diameter) var(--corner-diameter) no-repeat !important;
+}
+
+body.maximized .app-shell {
+  border-radius: 0 !important;
+  -webkit-mask: none !important;
+  mask: none !important;
+}
+'@
+          Add-Content -Encoding utf8 'src/styles.css' $smoothMask
+
+          $mainPath = 'src/main.js'
+          $main = Get-Content -Raw $mainPath
+          $main = $main.Replace('hasShadow: true,', 'hasShadow: false,')
+          Set-Content -Encoding utf8 $mainPath $main
+
+      - name: Verify smooth-corner source
+        shell: pwsh
+        working-directory: .chatgpt-build/python-editor
+        run: |
+          $html = Get-Content -Raw 'src/index.html'
+          $css = Get-Content -Raw 'src/styles.css'
+          $main = Get-Content -Raw 'src/main.js'
+          $native = Get-Content -Raw 'native/window_frame.cc'
+          $package = Get-Content -Raw 'package.json'
+          if ($html -notmatch 'frame-v8-smooth-corners') { throw 'V8 build marker is missing.' }
+          if ($css -notmatch 'FRAME_V8_SMOOTH_MASK') { throw 'Smooth mask override is missing.' }
+          if ($css -notmatch 'clip-path:\s*none\s*!important') { throw 'The hard clip was not disabled.' }
+          if ($css -notmatch 'radial-gradient') { throw 'The anti-aliased corner mask is missing.' }
+          if ($css -notmatch 'body\.maximized[\s\S]*mask:\s*none') { throw 'Maximized square-corner override is missing.' }
+          if ($main -notmatch 'hasShadow:\s*false') { throw 'Square native shadow is still enabled.' }
+          if ($native -match 'SetWindowRgn|CreateRoundRectRgn') { throw 'A jagged Windows region was introduced.' }
+          if ($package -notmatch 'PythonEditorSmoothCornersV8') { throw 'V8 executable name is missing.' }
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Python for node-gyp
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Restore application icon
+        shell: pwsh
+        working-directory: .chatgpt-build/python-editor
+        run: |
+          $bytes = [Convert]::FromBase64String((Get-Content -Raw assets/icon.ico.b64))
+          [IO.File]::WriteAllBytes((Join-Path (Get-Location) 'assets/icon.ico'), $bytes)
+
+      - name: Install dependencies
+        working-directory: .chatgpt-build/python-editor
+        run: npm install --no-audit --no-fund
+
+      - name: Build portable executable
+        working-directory: .chatgpt-build/python-editor
+        run: npm run dist
+
+      - name: Verify packaged application
+        shell: pwsh
+        working-directory: .chatgpt-build/python-editor
+        run: |
+          if (-not (Test-Path 'dist/PythonEditorSmoothCornersV8.exe')) { throw 'V8 executable was not created.' }
+          if (-not (Test-Path 'dist/win-unpacked/resources/app.asar')) { throw 'Packaged ASAR was not created.' }
+          npx asar extract 'dist/win-unpacked/resources/app.asar' 'dist/verified-app'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not extract packaged ASAR.' }
+          $packedHtml = Get-Content -Raw 'dist/verified-app/src/index.html'
+          $packedCss = Get-Content -Raw 'dist/verified-app/src/styles.css'
+          $packedMain = Get-Content -Raw 'dist/verified-app/src/main.js'
+          $packedNative = Get-Content -Raw 'dist/verified-app/native/window_frame.cc'
+          if ($packedHtml -notmatch 'frame-v8-smooth-corners') { throw 'Packaged V8 marker is missing.' }
+          if ($packedCss -notmatch 'FRAME_V8_SMOOTH_MASK') { throw 'Packaged smooth mask is missing.' }
+          if ($packedCss -notmatch 'clip-path:\s*none\s*!important') { throw 'Packaged hard clip is still active.' }
+          if ($packedMain -notmatch 'hasShadow:\s*false') { throw 'Packaged native shadow is still active.' }
+          if ($packedNative -match 'SetWindowRgn|CreateRoundRectRgn') { throw 'Packaged app uses a jagged Windows region.' }
+          $hash = (Get-FileHash 'dist/PythonEditorSmoothCornersV8.exe' -Algorithm SHA256).Hash
+          @(
+            'PythonEditorSmoothCornersV8.exe',
+            "SHA256=$hash",
+            'Corners=per-pixel-alpha-mask',
+            'HardClip=disabled',
+            'SetWindowRgn=not-used',
+            'MaximizedCorners=square',
+            'NativeShadow=disabled'
+          ) | Set-Content 'dist/verification-v8.txt'
+
+      - name: Upload smooth-corner executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Python-Editor-Smooth-Corners-v8
+          path: |
+            .chatgpt-build/python-editor/dist/PythonEditorSmoothCornersV8.exe
+            .chatgpt-build/python-editor/dist/verification-v8.txt
+          if-no-files-found: error
+          compression-level: 0
