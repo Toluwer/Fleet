@@ -35,16 +35,10 @@ jobs:
           tar -xzf $sourceArchive -C '.chatgpt-build/python-editor'
           if ($LASTEXITCODE -ne 0) { throw 'Could not extract verified source.' }
 
-          $v5Base64 = (Get-ChildItem '.chatgpt-build/frame-v5/part-*.txt' |
-            Sort-Object Name |
-            ForEach-Object { Get-Content -Raw $_.FullName }) -join ''
-          $v5Patch = '.chatgpt-build/frame-v4-to-v5.patch'
-          [IO.File]::WriteAllBytes($v5Patch, [Convert]::FromBase64String($v5Base64))
-
-          $v6Compressed = [Convert]::FromBase64String((Get-Content -Raw '.chatgpt-build/frame-v5-to-v6.patch.gz.b64'))
+          $v6Compressed = [Convert]::FromBase64String((Get-Content -Raw '.chatgpt-build/frame-v4-to-v6-exact.patch.gz.b64'))
           $inputStream = [IO.MemoryStream]::new($v6Compressed)
           $gzipStream = [IO.Compression.GZipStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
-          $v6Patch = '.chatgpt-build/frame-v5-to-v6.patch'
+          $v6Patch = '.chatgpt-build/frame-v4-to-v6-exact.patch'
           $outputStream = [IO.File]::Create($v6Patch)
           $gzipStream.CopyTo($outputStream)
           $outputStream.Dispose()
@@ -55,10 +49,8 @@ jobs:
           try {
             git apply --whitespace=nowarn '..\frame-v2-to-v4.patch'
             if ($LASTEXITCODE -ne 0) { throw 'Could not apply frame v4 base changes.' }
-            git apply --whitespace=nowarn '..\frame-v4-to-v5.patch'
-            if ($LASTEXITCODE -ne 0) { throw 'Could not apply frame v5 changes.' }
-            git apply -p1 --whitespace=nowarn '..\frame-v5-to-v6.patch'
-            if ($LASTEXITCODE -ne 0) { throw 'Could not apply frame v6 corrections.' }
+            git apply --whitespace=nowarn '..\frame-v4-to-v6-exact.patch'
+            if ($LASTEXITCODE -ne 0) { throw 'Could not apply exact frame v6 changes.' }
           } finally {
             Pop-Location
           }
