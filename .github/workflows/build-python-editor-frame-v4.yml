@@ -80,18 +80,20 @@ jobs:
         working-directory: .chatgpt-build/python-editor
         run: npm run dist
 
-      - name: Verify build output
+      - name: Prepare uniquely named executable
         shell: pwsh
         working-directory: .chatgpt-build/python-editor
         run: |
           if (-not (Test-Path 'build/Release/window_frame.node')) { throw 'Native frame module was not created.' }
-          if (-not (Test-Path 'dist/PythonEditorFrameV6.exe')) { throw 'The exact v6 portable executable was not created.' }
-          Get-FileHash 'dist/PythonEditorFrameV6.exe' -Algorithm SHA256 | Format-List
+          $executables = @(Get-ChildItem 'dist' -Filter '*.exe' -File)
+          if ($executables.Count -ne 1) { throw "Expected one portable executable, found $($executables.Count)." }
+          Copy-Item $executables[0].FullName 'dist/PythonEditorFrameV6-Corrected.exe' -Force
+          Get-FileHash 'dist/PythonEditorFrameV6-Corrected.exe' -Algorithm SHA256 | Format-List
 
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
-          name: Python-Editor-Frame-v6-verified
-          path: .chatgpt-build/python-editor/dist/PythonEditorFrameV6.exe
+          name: Python-Editor-Frame-v6-corrected
+          path: .chatgpt-build/python-editor/dist/PythonEditorFrameV6-Corrected.exe
           if-no-files-found: error
           compression-level: 0
