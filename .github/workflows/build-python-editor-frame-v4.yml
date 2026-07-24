@@ -1,4 +1,4 @@
-name: Build Python Editor Frame v4
+name: Build Python Editor Frame v5
 
 on:
   pull_request:
@@ -25,7 +25,7 @@ jobs:
           repository: Toluwer/Fleet
           run-id: 30113967176
 
-      - name: Restore verified source and apply frame fixes
+      - name: Restore source and apply frame fixes
         shell: pwsh
         run: |
           $sourceArchive = '.chatgpt-build/source-artifact/frame-v2-source.tar.gz'
@@ -35,10 +35,18 @@ jobs:
           tar -xzf $sourceArchive -C '.chatgpt-build/python-editor'
           if ($LASTEXITCODE -ne 0) { throw 'Could not extract verified source.' }
 
+          $v5Base64 = (Get-ChildItem '.chatgpt-build/frame-v5/part-*.txt' |
+            Sort-Object Name |
+            ForEach-Object { Get-Content -Raw $_.FullName }) -join ''
+          $v5Patch = '.chatgpt-build/frame-v4-to-v5.patch'
+          [IO.File]::WriteAllBytes($v5Patch, [Convert]::FromBase64String($v5Base64))
+
           Push-Location '.chatgpt-build/python-editor'
           try {
             git apply --whitespace=nowarn '..\frame-v2-to-v4.patch'
-            if ($LASTEXITCODE -ne 0) { throw 'Could not apply frame v4 changes.' }
+            if ($LASTEXITCODE -ne 0) { throw 'Could not apply frame v4 base changes.' }
+            git apply --whitespace=nowarn '..\frame-v4-to-v5.patch'
+            if ($LASTEXITCODE -ne 0) { throw 'Could not apply frame v5 corrections.' }
           } finally {
             Pop-Location
           }
@@ -68,15 +76,17 @@ jobs:
         working-directory: .chatgpt-build/python-editor
         run: npm run dist
 
-      - name: List build output
+      - name: Verify build output
         shell: pwsh
         working-directory: .chatgpt-build/python-editor
-        run: Get-ChildItem dist -File | Select-Object Name, Length, LastWriteTime
+        run: |
+          if (-not (Test-Path 'build/Release/window_frame.node')) { throw 'Native frame module was not created.' }
+          if (-not (Test-Path 'dist/PythonEditorFrameV5.exe')) { throw 'Portable executable was not created.' }
 
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
-          name: Python-Editor-Frame-v4
-          path: .chatgpt-build/python-editor/dist/*.exe
+          name: Python-Editor-Frame-v5
+          path: .chatgpt-build/python-editor/dist/PythonEditorFrameV5.exe
           if-no-files-found: error
           compression-level: 0
