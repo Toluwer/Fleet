@@ -57,7 +57,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Could not apply frame v4 base changes.' }
             git apply --whitespace=nowarn '..\frame-v4-to-v5.patch'
             if ($LASTEXITCODE -ne 0) { throw 'Could not apply frame v5 changes.' }
-            git apply --whitespace=nowarn '..\frame-v5-to-v6.patch'
+            git apply -p1 --whitespace=nowarn '..\frame-v5-to-v6.patch'
             if ($LASTEXITCODE -ne 0) { throw 'Could not apply frame v6 corrections.' }
           } finally {
             Pop-Location
