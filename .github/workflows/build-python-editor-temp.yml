@@ -20,23 +20,38 @@ jobs:
       - name: Restore application source and frame patch
         shell: pwsh
         run: |
-          $archive = Join-Path $env:RUNNER_TEMP 'python-editor-source.tar.gz'
-          $base64 = (Get-ChildItem '.chatgpt-build/chunks/part-*.txt' |
-            Sort-Object Name |
-            ForEach-Object { Get-Content -Raw $_.FullName }) -join ''
-          [IO.File]::WriteAllBytes($archive, [Convert]::FromBase64String($base64))
-          New-Item -ItemType Directory -Force '.chatgpt-build/python-editor' | Out-Null
-          tar -xzf $archive -C '.chatgpt-build/python-editor'
+          $restoreLog = Join-Path (Get-Location) '.chatgpt-build/restore.log'
+          try {
+            "HEAD: $(git rev-parse HEAD)" | Set-Content $restoreLog
+            "Old frame commit reachable: $(git cat-file -t 0e5121da83ef816509400664214613980e238b68 2>&1)" | Add-Content $restoreLog
 
-          $patchArchive = Join-Path $env:RUNNER_TEMP 'python-editor-frame-v2-patch.tar.gz'
-          $patchBase64 = (git show '0e5121da83ef816509400664214613980e238b68:.chatgpt-build/python-editor-frame-patch.tar.gz.b64') -join ''
-          if ($LASTEXITCODE -ne 0) { throw 'Could not restore the verified frame v2 patch.' }
-          [IO.File]::WriteAllBytes($patchArchive, [Convert]::FromBase64String($patchBase64))
-          tar -xzf $patchArchive -C '.chatgpt-build/python-editor'
-          if ($LASTEXITCODE -ne 0) { throw 'Could not extract the verified frame v2 patch.' }
+            $archive = Join-Path $env:RUNNER_TEMP 'python-editor-source.tar.gz'
+            $base64 = (Get-ChildItem '.chatgpt-build/chunks/part-*.txt' |
+              Sort-Object Name |
+              ForEach-Object { Get-Content -Raw $_.FullName }) -join ''
+            "Source base64 length: $($base64.Length)" | Add-Content $restoreLog
+            [IO.File]::WriteAllBytes($archive, [Convert]::FromBase64String($base64))
+            New-Item -ItemType Directory -Force '.chatgpt-build/python-editor' | Out-Null
+            tar -xzf $archive -C '.chatgpt-build/python-editor' 2>&1 | Add-Content $restoreLog
+            if ($LASTEXITCODE -ne 0) { throw 'Could not extract the application source.' }
 
-          git apply --directory='.chatgpt-build/python-editor' -p1 --whitespace=nowarn '.chatgpt-build/frame-v3.patch'
-          if ($LASTEXITCODE -ne 0) { throw 'Could not apply the dark frame v3 changes.' }
+            $patchArchive = Join-Path $env:RUNNER_TEMP 'python-editor-frame-v2-patch.tar.gz'
+            $patchBase64 = (git show '0e5121da83ef816509400664214613980e238b68:.chatgpt-build/python-editor-frame-patch.tar.gz.b64' 2>> $restoreLog) -join ''
+            "V2 patch base64 length: $($patchBase64.Length)" | Add-Content $restoreLog
+            if ($LASTEXITCODE -ne 0) { throw 'Could not restore the verified frame v2 patch.' }
+            [IO.File]::WriteAllBytes($patchArchive, [Convert]::FromBase64String($patchBase64))
+            tar -xzf $patchArchive -C '.chatgpt-build/python-editor' 2>&1 | Add-Content $restoreLog
+            if ($LASTEXITCODE -ne 0) { throw 'Could not extract the verified frame v2 patch.' }
+
+            git apply --check --directory='.chatgpt-build/python-editor' -p1 --whitespace=nowarn '.chatgpt-build/frame-v3.patch' 2>&1 | Add-Content $restoreLog
+            if ($LASTEXITCODE -ne 0) { throw 'The dark frame v3 patch did not pass validation.' }
+            git apply --directory='.chatgpt-build/python-editor' -p1 --whitespace=nowarn '.chatgpt-build/frame-v3.patch' 2>&1 | Add-Content $restoreLog
+            if ($LASTEXITCODE -ne 0) { throw 'Could not apply the dark frame v3 changes.' }
+            'Restore completed.' | Add-Content $restoreLog
+          } catch {
+            $_ | Out-String | Add-Content $restoreLog
+            throw
+          }
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -76,6 +91,7 @@ jobs:
         with:
           name: Python-Editor-Dark-Frame-Build-Log
           path: |
+            .chatgpt-build/restore.log
             .chatgpt-build/python-editor/build.log
             .chatgpt-build/python-editor/build-exit-code.txt
           if-no-files-found: warn
