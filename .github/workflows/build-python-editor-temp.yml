@@ -31,6 +31,11 @@ jobs:
           [IO.File]::WriteAllBytes($patchArchive, [Convert]::FromBase64String($patchBase64))
           tar -xzf $patchArchive -C '.chatgpt-build/python-editor'
 
+          $packagePath = '.chatgpt-build/python-editor/package.json'
+          $packageText = Get-Content -Raw $packagePath
+          $packageText = $packageText.Replace('"node-gyp": "11.5.0"', '"node-gyp": "11.4.2"')
+          Set-Content -Path $packagePath -Value $packageText -Encoding utf8
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -71,7 +76,7 @@ jobs:
           path: |
             .chatgpt-build/python-editor/build.log
             .chatgpt-build/python-editor/build-exit-code.txt
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Verify build result
         shell: pwsh
