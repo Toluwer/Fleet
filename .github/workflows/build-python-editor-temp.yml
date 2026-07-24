@@ -1,0 +1,55 @@
+name: Build Python Editor
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore application source
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'python-editor-source.tar.gz'
+          $bytes = [Convert]::FromBase64String((Get-Content -Raw '.chatgpt-build/python-editor-source.tar.gz.b64'))
+          [IO.File]::WriteAllBytes($archive, $bytes)
+          New-Item -ItemType Directory -Force '.chatgpt-build/python-editor' | Out-Null
+          tar -xzf $archive -C '.chatgpt-build/python-editor'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: .chatgpt-build/python-editor/package.json
+
+      - name: Restore application icon
+        shell: pwsh
+        working-directory: .chatgpt-build/python-editor
+        run: |
+          $bytes = [Convert]::FromBase64String((Get-Content -Raw assets/icon.ico.b64))
+          [IO.File]::WriteAllBytes((Join-Path (Get-Location) 'assets/icon.ico'), $bytes)
+
+      - name: Install dependencies
+        working-directory: .chatgpt-build/python-editor
+        run: npm install --no-audit --no-fund
+
+      - name: Build portable executable
+        working-directory: .chatgpt-build/python-editor
+        run: npm run dist
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Python-Editor-Windows
+          path: .chatgpt-build/python-editor/dist/Python Editor.exe
+          if-no-files-found: error
+          compression-level: 0
