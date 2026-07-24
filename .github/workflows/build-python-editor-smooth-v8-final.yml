@@ -1,0 +1,109 @@
+name: Build Python Editor Smooth V8 Final
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download original source
+        uses: actions/download-artifact@v4
+        with:
+          name: Python-Editor-Frame-v2-Source
+          path: .chatgpt-build/source-artifact
+          github-token: ${{ github.token }}
+          repository: Toluwer/Fleet
+          run-id: 30113967176
+
+      - name: Restore and modify source
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force '.chatgpt-build/python-editor' | Out-Null
+          tar -xzf '.chatgpt-build/source-artifact/frame-v2-source.tar.gz' -C '.chatgpt-build/python-editor'
+          if ($LASTEXITCODE -ne 0) { throw 'Source extraction failed.' }
+          $compressed = [Convert]::FromBase64String((Get-Content -Raw '.chatgpt-build/frame-v2-to-v7-direct.patch.gz.b64'))
+          $inputStream = [IO.MemoryStream]::new($compressed)
+          $gzipStream = [IO.Compression.GZipStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
+          $patchPath = '.chatgpt-build/frame-v2-to-v7-direct.patch'
+          $outputStream = [IO.File]::Create($patchPath)
+          $gzipStream.CopyTo($outputStream)
+          $outputStream.Dispose()
+          $gzipStream.Dispose()
+          $inputStream.Dispose()
+          Push-Location '.chatgpt-build/python-editor'
+          git apply --whitespace=nowarn '..\frame-v2-to-v7-direct.patch'
+          if ($LASTEXITCODE -ne 0) { throw 'Frame patch failed.' }
+          Pop-Location
+
+          $root = '.chatgpt-build/python-editor'
+          $packagePath = Join-Path $root 'package.json'
+          $package = Get-Content -Raw $packagePath | ConvertFrom-Json
+          $package.version = '1.0.8'
+          $package.build.win.executableName = 'PythonEditorSmoothCornersV8'
+          $package.build.portable.artifactName = 'PythonEditorSmoothCornersV8.exe'
+          $package | ConvertTo-Json -Depth 20 | Set-Content -Encoding utf8 $packagePath
+
+          $htmlPath = Join-Path $root 'src/index.html'
+          $html = (Get-Content -Raw $htmlPath).Replace('data-build="frame-v7"', 'data-build="frame-v8-smooth-corners"')
+          Set-Content -Encoding utf8 $htmlPath $html
+
+          $smoothMaskBase64 = 'Ci8qIEZSQU1FX1Y4X1NNT09USF9NQVNLICovCi5hcHAtc2hlbGwgewogIC0tY29ybmVyLXJhZGl1czogMTRweDsKICAtLWNvcm5lci1kaWFtZXRlcjogMjhweDsKICBib3JkZXItcmFkaXVzOiB2YXIoLS1jb3JuZXItcmFkaXVzKSAhaW1wb3J0YW50OwogIG92ZXJmbG93OiBoaWRkZW4gIWltcG9ydGFudDsKICBjbGlwLXBhdGg6IG5vbmUgIWltcG9ydGFudDsKICAtd2Via2l0LWNsaXAtcGF0aDogbm9uZSAhaW1wb3J0YW50OwogIHRyYW5zZm9ybTogbm9uZSAhaW1wb3J0YW50OwogIGJhY2tmYWNlLXZpc2liaWxpdHk6IHZpc2libGUgIWltcG9ydGFudDsKICAtd2Via2l0LW1hc2s6CiAgICBsaW5lYXItZ3JhZGllbnQoIzAwMCAwIDApIGNlbnRlciAvIDEwMCUgY2FsYygxMDAlIC0gdmFyKC0tY29ybmVyLWRpYW1ldGVyKSkgbm8tcmVwZWF0LAogICAgbGluZWFyLWdyYWRpZW50KCMwMDAgMCAwKSBjZW50ZXIgLyBjYWxjKDEwMCUgLSB2YXIoLS1jb3JuZXItZGlhbWV0ZXIpKSAxMDAlIG5vLXJlcGVhdCwKICAgIHJhZGlhbC1ncmFkaWVudChjaXJjbGUgYXQgMTRweCAxNHB4LCAjMDAwIDAgMTMuMjVweCwgcmdiYSgwLCAwLCAwLCAwKSAxNHB4KSBsZWZ0IHRvcCAvIHZhcigtLWNvcm5lci1kaWFtZXRlcikgdmFyKC0tY29ybmVyLWRpYW1ldGVyKSBuby1yZXBlYXQsCiAgICByYWRpYWwtZ3JhZGllbnQoY2lyY2xlIGF0IDE0cHggMTRweCwgIzAwMCAwIDEzLjI1cHgsIHJnYmEoMCwgMCwgMCwgMCkgMTRweCkgcmlnaHQgdG9wIC8gdmFyKC0tY29ybmVyLWRpYW1ldGVyKSB2YXIoLS1jb3JuZXItZGlhbWV0ZXIpIG5vLXJlcGVhdCwKICAgIHJhZGlhbC1ncmFkaWVudChjaXJjbGUgYXQgMTRweCAxNHB4LCAjMDAwIDAgMTMuMjVweCwgcmdiYSgwLCAwLCAwLCAwKSAxNHB4KSBsZWZ0IGJvdHRvbSAvIHZhcigtLWNvcm5lci1kaWFtZXRlcikgdmFyKC0tY29ybmVyLWRpYW1ldGVyKSBuby1yZXBlYXQsCiAgICByYWRpYWwtZ3JhZGllbnQoY2lyY2xlIGF0IDE0cHggMTRweCwgIzAwMCAwIDEzLjI1cHgsIHJnYmEoMCwgMCwgMCwgMCkgMTRweCkgcmlnaHQgYm90dG9tIC8gdmFyKC0tY29ybmVyLWRpYW1ldGVyKSB2YXIoLS1jb3JuZXItZGlhbWV0ZXIpIG5vLXJlcGVhdCAhaW1wb3J0YW50OwogIG1hc2s6CiAgICBsaW5lYXItZ3JhZGllbnQoIzAwMCAwIDApIGNlbnRlciAvIDEwMCUgY2FsYygxMDAlIC0gdmFyKC0tY29ybmVyLWRpYW1ldGVyKSkgbm8tcmVwZWF0LAogICAgbGluZWFyLWdyYWRpZW50KCMwMDAgMCAwKSBjZW50ZXIgLyBjYWxjKDEwMCUgLSB2YXIoLS1jb3JuZXItZGlhbWV0ZXIpKSAxMDAlIG5vLXJlcGVhdCwKICAgIHJhZGlhbC1ncmFkaWVudChjaXJjbGUgYXQgMTRweCAxNHB4LCAjMDAwIDAgMTMuMjVweCwgcmdiYSgwLCAwLCAwLCAwKSAxNHB4KSBsZWZ0IHRvcCAvIHZhcigtLWNvcm5lci1kaWFtZXRlcikgdmFyKC0tY29ybmVyLWRpYW1ldGVyKSBuby1yZXBlYXQsCiAgICByYWRpYWwtZ3JhZGllbnQoY2lyY2xlIGF0IDE0cHggMTRweCwgIzAwMCAwIDEzLjI1cHgsIHJnYmEoMCwgMCwgMCwgMCkgMTRweCkgcmlnaHQgdG9wIC8gdmFyKC0tY29ybmVyLWRpYW1ldGVyKSB2YXIoLS1jb3JuZXItZGlhbWV0ZXIpIG5vLXJlcGVhdCwKICAgIHJhZGlhbC1ncmFkaWVudChjaXJjbGUgYXQgMTRweCAxNHB4LCAjMDAwIDAgMTMuMjVweCwgcmdiYSgwLCAwLCAwLCAwKSAxNHB4KSBsZWZ0IGJvdHRvbSAvIHZhcigtLWNvcm5lci1kaWFtZXRlcikgdmFyKC0tY29ybmVyLWRpYW1ldGVyKSBuby1yZXBlYXQsCiAgICByYWRpYWwtZ3JhZGllbnQoY2lyY2xlIGF0IDE0cHggMTRweCwgIzAwMCAwIDEzLjI1cHgsIHJnYmEoMCwgMCwgMCwgMCkgMTRweCkgcmlnaHQgYm90dG9tIC8gdmFyKC0tY29ybmVyLWRpYW1ldGVyKSB2YXIoLS1jb3JuZXItZGlhbWV0ZXIpIG5vLXJlcGVhdCAhaW1wb3J0YW50Owp9Cgpib2R5Lm1heGltaXplZCAuYXBwLXNoZWxsIHsKICBib3JkZXItcmFkaXVzOiAwICFpbXBvcnRhbnQ7CiAgLXdlYmtpdC1tYXNrOiBub25lICFpbXBvcnRhbnQ7CiAgbWFzazogbm9uZSAhaW1wb3J0YW50Owp9Cg=='
+          $smoothMask = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($smoothMaskBase64))
+          Add-Content -Encoding utf8 (Join-Path $root 'src/styles.css') $smoothMask
+
+          $mainPath = Join-Path $root 'src/main.js'
+          $main = (Get-Content -Raw $mainPath).Replace('hasShadow: true,', 'hasShadow: false,')
+          Set-Content -Encoding utf8 $mainPath $main
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Python for node-gyp
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Restore icon
+        shell: pwsh
+        working-directory: .chatgpt-build/python-editor
+        run: |
+          $bytes = [Convert]::FromBase64String((Get-Content -Raw assets/icon.ico.b64))
+          [IO.File]::WriteAllBytes((Join-Path (Get-Location) 'assets/icon.ico'), $bytes)
+
+      - name: Install dependencies
+        working-directory: .chatgpt-build/python-editor
+        run: npm install --no-audit --no-fund
+
+      - name: Build executable
+        working-directory: .chatgpt-build/python-editor
+        run: npm run dist
+
+      - name: Prepare artifact
+        shell: pwsh
+        working-directory: .chatgpt-build/python-editor
+        run: |
+          if (-not (Test-Path 'dist/PythonEditorSmoothCornersV8.exe')) { throw 'Executable was not created.' }
+          $hash = (Get-FileHash 'dist/PythonEditorSmoothCornersV8.exe' -Algorithm SHA256).Hash
+          @('PythonEditorSmoothCornersV8.exe', "SHA256=$hash", 'Corners=per-pixel-alpha-mask', 'SetWindowRgn=not-used') | Set-Content 'dist/verification-v8.txt'
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Python-Editor-Smooth-Corners-v8-final
+          path: |
+            .chatgpt-build/python-editor/dist/PythonEditorSmoothCornersV8.exe
+            .chatgpt-build/python-editor/dist/verification-v8.txt
+          if-no-files-found: error
+          compression-level: 0
