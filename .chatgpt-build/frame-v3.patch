@@ -1,0 +1,234 @@
+diff -ruN PythonEditorSource_frame_v2/native/window_frame.cc PythonEditorSource_frame_v3/native/window_frame.cc
+--- PythonEditorSource_frame_v2/native/window_frame.cc	2026-07-24 16:33:01.283302007 +0000
++++ PythonEditorSource_frame_v3/native/window_frame.cc	2026-07-24 17:18:40.355364558 +0000
+@@ -28,6 +28,13 @@
+ 
+ LRESULT CALLBACK FrameWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+   switch (message) {
++    case WM_NCCALCSIZE:
++      // Keep the resize-capable native style for Snap/resize, but make the
++      // entire HWND client area. This removes the transparent inset/gap that
++      // Windows otherwise reserves for the non-client frame.
++      if (wParam == TRUE) return 0;
++      break;
++
+     case WM_NCHITTEST: {
+       if (!IsZoomed(hwnd)) {
+         RECT rect{};
+diff -ruN PythonEditorSource_frame_v2/package.json PythonEditorSource_frame_v3/package.json
+--- PythonEditorSource_frame_v2/package.json	2026-07-24 16:41:26.811313551 +0000
++++ PythonEditorSource_frame_v3/package.json	2026-07-24 17:19:06.307365151 +0000
+@@ -45,10 +45,10 @@
+         }
+       ],
+       "icon": "assets/icon.ico",
+-      "executableName": "Python Editor"
++      "executableName": "PythonEditorDarkFrameV3"
+     },
+     "portable": {
+-      "artifactName": "Python Editor.exe",
++      "artifactName": "PythonEditorDarkFrameV3.exe",
+       "requestExecutionLevel": "user"
+     },
+     "asarUnpack": [
+diff -ruN PythonEditorSource_frame_v2/src/index.html PythonEditorSource_frame_v3/src/index.html
+--- PythonEditorSource_frame_v2/src/index.html	2026-07-24 15:48:05.999240455 +0000
++++ PythonEditorSource_frame_v3/src/index.html	2026-07-24 17:18:40.351364558 +0000
+@@ -10,7 +10,6 @@
+   <div id="app" class="app-shell">
+     <header class="titlebar">
+       <div class="drag-region brand-block">
+-        <img class="app-logo" src="../assets/icon.ico" alt="">
+         <span class="app-name">Python Editor</span>
+         <span id="document-state" class="document-state"></span>
+       </div>
+diff -ruN PythonEditorSource_frame_v2/src/renderer.js PythonEditorSource_frame_v3/src/renderer.js
+--- PythonEditorSource_frame_v2/src/renderer.js	2026-07-24 15:47:37.451239803 +0000
++++ PythonEditorSource_frame_v3/src/renderer.js	2026-07-24 17:18:40.351364558 +0000
+@@ -83,25 +83,25 @@
+       base: 'vs-dark',
+       inherit: true,
+       rules: [
+-        { token: 'comment', foreground: '6E7D73' },
+-        { token: 'keyword', foreground: '79AFA8' },
+-        { token: 'string', foreground: 'C9AA7A' },
+-        { token: 'number', foreground: 'B58FBB' },
+-        { token: 'type.identifier', foreground: '8FB8CF' }
++        { token: 'comment', foreground: '767676' },
++        { token: 'keyword', foreground: 'D8D8D8' },
++        { token: 'string', foreground: 'BDBDBD' },
++        { token: 'number', foreground: 'AFAFAF' },
++        { token: 'type.identifier', foreground: 'C9C9C9' }
+       ],
+       colors: {
+-        'editor.background': '#111315',
+-        'editor.foreground': '#DDE2E4',
+-        'editorLineNumber.foreground': '#4D565C',
+-        'editorLineNumber.activeForeground': '#A8B0B4',
+-        'editorCursor.foreground': '#68A89F',
+-        'editor.selectionBackground': '#2B4D49AA',
+-        'editor.inactiveSelectionBackground': '#263C3A77',
+-        'editorIndentGuide.background1': '#24292D',
+-        'editorIndentGuide.activeBackground1': '#3F4A4F',
+-        'editorWhitespace.foreground': '#30363A',
+-        'editorGutter.background': '#111315',
+-        'editor.lineHighlightBackground': '#171A1D'
++        'editor.background': '#050505',
++        'editor.foreground': '#E8E8E8',
++        'editorLineNumber.foreground': '#515151',
++        'editorLineNumber.activeForeground': '#BEBEBE',
++        'editorCursor.foreground': '#F2F2F2',
++        'editor.selectionBackground': '#353535AA',
++        'editor.inactiveSelectionBackground': '#2A2A2A77',
++        'editorIndentGuide.background1': '#1C1C1C',
++        'editorIndentGuide.activeBackground1': '#424242',
++        'editorWhitespace.foreground': '#252525',
++        'editorGutter.background': '#050505',
++        'editor.lineHighlightBackground': '#0B0B0B'
+       }
+     });
+ 
+diff -ruN PythonEditorSource_frame_v2/src/styles.css PythonEditorSource_frame_v3/src/styles.css
+--- PythonEditorSource_frame_v2/src/styles.css	2026-07-24 16:33:51.835303161 +0000
++++ PythonEditorSource_frame_v3/src/styles.css	2026-07-24 17:18:40.351364558 +0000
+@@ -1,26 +1,26 @@
+ :root {
+   color-scheme: dark;
+-  --bg: #111315;
+-  --panel: #171a1d;
+-  --panel-2: #1c2024;
+-  --panel-3: #22272b;
+-  --line: #2b3136;
+-  --line-soft: #24292d;
+-  --text: #e8ebed;
+-  --muted: #8f989f;
+-  --subtle: #667078;
+-  --accent: #4f8f86;
+-  --accent-strong: #68a89f;
+-  --accent-soft: rgba(79, 143, 134, 0.18);
+-  --danger: #d06767;
+-  --warning: #c49a5a;
+-  --success: #70aa7c;
+-  --titlebar: #141719;
+-  --status: #202529;
+-  --terminal: #121416;
+-  --frame-border: rgba(255, 255, 255, 0.16);
+-  --caption-hover: rgba(255, 255, 255, 0.09);
+-  --shadow: 0 24px 70px rgba(0, 0, 0, 0.42);
++  --bg: #050505;
++  --panel: #090909;
++  --panel-2: #0d0d0d;
++  --panel-3: #151515;
++  --line: #222222;
++  --line-soft: #191919;
++  --text: #eeeeee;
++  --muted: #9a9a9a;
++  --subtle: #666666;
++  --accent: #cfcfcf;
++  --accent-strong: #f3f3f3;
++  --accent-soft: rgba(255, 255, 255, 0.09);
++  --danger: #d56b6b;
++  --warning: #c9a66b;
++  --success: #86b68d;
++  --titlebar: #050505;
++  --status: #090909;
++  --terminal: #060606;
++  --frame-border: transparent;
++  --caption-hover: rgba(255, 255, 255, 0.10);
++  --shadow: none;
+   font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+ }
+ 
+@@ -85,13 +85,13 @@
+ 
+ .app-shell {
+   display: grid;
+-  grid-template-rows: 32px 1fr;
++  grid-template-rows: 36px 1fr;
+   width: 100%;
+   height: 100%;
+   overflow: hidden;
+   background: var(--bg);
+-  border: 1px solid var(--frame-border);
+-  border-radius: 9px;
++  border: 0;
++  border-radius: 10px;
+ }
+ 
+ body.maximized .app-shell {
+@@ -102,7 +102,7 @@
+ .titlebar {
+   display: flex;
+   align-items: stretch;
+-  min-height: 32px;
++  min-height: 36px;
+   background: var(--titlebar);
+   border-bottom: 1px solid var(--line-soft);
+   user-select: none;
+@@ -116,16 +116,10 @@
+   display: flex;
+   align-items: center;
+   gap: 7px;
+-  padding: 0 10px;
+-  min-width: 220px;
++  padding: 0 12px;
++  min-width: 190px;
+ }
+ 
+-.app-logo {
+-  width: 16px;
+-  height: 16px;
+-  border-radius: 4px;
+-  object-fit: cover;
+-}
+ 
+ .app-name {
+   font-size: 12px;
+@@ -178,8 +172,8 @@
+ .window-button {
+   display: grid;
+   place-items: center;
+-  width: 46px;
+-  height: 32px;
++  width: 48px;
++  height: 36px;
+   padding: 0;
+   border: 0;
+   border-radius: 0;
+@@ -189,9 +183,9 @@
+ }
+ 
+ .window-button svg {
+-  width: 11px;
+-  height: 11px;
+-  stroke-width: 1.45;
++  width: 13px;
++  height: 13px;
++  stroke-width: 1.5;
+ }
+ 
+ .window-button:hover {
+@@ -373,7 +367,7 @@
+ 
+ .primary-run {
+   padding: 0 11px;
+-  border-color: rgba(104, 168, 159, 0.45);
++  border-color: rgba(255, 255, 255, 0.22);
+   background: var(--accent-soft);
+   color: var(--accent-strong);
+   font-weight: 600;
+@@ -381,12 +375,12 @@
+ }
+ 
+ .primary-run:hover {
+-  background: rgba(79, 143, 134, 0.28);
++  background: rgba(255, 255, 255, 0.14);
+ }
+ 
+ .primary-run kbd {
+   padding-left: 8px;
+-  border-left: 1px solid rgba(104, 168, 159, 0.35);
++  border-left: 1px solid rgba(255, 255, 255, 0.20);
+   color: var(--muted);
+   font-family: inherit;
+   font-size: 10px;
