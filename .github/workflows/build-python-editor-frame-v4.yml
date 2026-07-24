@@ -35,8 +35,13 @@ jobs:
           tar -xzf $sourceArchive -C '.chatgpt-build/python-editor'
           if ($LASTEXITCODE -ne 0) { throw 'Could not extract verified source.' }
 
-          git apply --directory='.chatgpt-build/python-editor' --whitespace=nowarn '.chatgpt-build/frame-v2-to-v4.patch'
-          if ($LASTEXITCODE -ne 0) { throw 'Could not apply frame v4 changes.' }
+          Push-Location '.chatgpt-build/python-editor'
+          try {
+            git apply --whitespace=nowarn '..\frame-v2-to-v4.patch'
+            if ($LASTEXITCODE -ne 0) { throw 'Could not apply frame v4 changes.' }
+          } finally {
+            Pop-Location
+          }
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
