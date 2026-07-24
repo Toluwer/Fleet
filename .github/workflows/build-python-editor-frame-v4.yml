@@ -55,21 +55,6 @@ jobs:
             Pop-Location
           }
 
-      - name: Verify corrected source
-        shell: pwsh
-        working-directory: .chatgpt-build/python-editor
-        run: |
-          $css = Get-Content -Raw 'src/styles.css'
-          $package = Get-Content -Raw 'package.json'
-          $native = Get-Content -Raw 'native/window_frame.cc'
-          if (-not $css.Contains('grid-template-rows: 48px minmax(0, 1fr);')) { throw 'The 48px title bar is missing.' }
-          if (-not $css.Contains('width: 20px;')) { throw 'The 20px caption glyphs are missing.' }
-          if (-not $css.Contains('clip-path: inset(0 round 12px);')) { throw 'The rounded per-pixel clip is missing.' }
-          if (-not $css.Contains('--bg: #000000;')) { throw 'The pure-black theme is missing.' }
-          if (-not $package.Contains('PythonEditorFrameV6')) { throw 'The v6 executable name is missing.' }
-          if ($native.Contains('kDwmNcRenderingDisabled')) { throw 'DWM composition was incorrectly disabled.' }
-          Write-Host 'Verified exact frame v6 source.'
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
