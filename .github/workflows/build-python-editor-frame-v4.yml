@@ -1,4 +1,4 @@
-name: Build Python Editor Frame v5
+name: Build Python Editor Frame v6
 
 on:
   pull_request:
@@ -25,7 +25,7 @@ jobs:
           repository: Toluwer/Fleet
           run-id: 30113967176
 
-      - name: Restore source and apply frame fixes
+      - name: Restore and patch source
         shell: pwsh
         run: |
           $sourceArchive = '.chatgpt-build/source-artifact/frame-v2-source.tar.gz'
@@ -41,15 +41,41 @@ jobs:
           $v5Patch = '.chatgpt-build/frame-v4-to-v5.patch'
           [IO.File]::WriteAllBytes($v5Patch, [Convert]::FromBase64String($v5Base64))
 
+          $v6Compressed = [Convert]::FromBase64String((Get-Content -Raw '.chatgpt-build/frame-v5-to-v6.patch.gz.b64'))
+          $inputStream = [IO.MemoryStream]::new($v6Compressed)
+          $gzipStream = [IO.Compression.GZipStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
+          $v6Patch = '.chatgpt-build/frame-v5-to-v6.patch'
+          $outputStream = [IO.File]::Create($v6Patch)
+          $gzipStream.CopyTo($outputStream)
+          $outputStream.Dispose()
+          $gzipStream.Dispose()
+          $inputStream.Dispose()
+
           Push-Location '.chatgpt-build/python-editor'
           try {
             git apply --whitespace=nowarn '..\frame-v2-to-v4.patch'
             if ($LASTEXITCODE -ne 0) { throw 'Could not apply frame v4 base changes.' }
             git apply --whitespace=nowarn '..\frame-v4-to-v5.patch'
-            if ($LASTEXITCODE -ne 0) { throw 'Could not apply frame v5 corrections.' }
+            if ($LASTEXITCODE -ne 0) { throw 'Could not apply frame v5 changes.' }
+            git apply --whitespace=nowarn '..\frame-v5-to-v6.patch'
+            if ($LASTEXITCODE -ne 0) { throw 'Could not apply frame v6 corrections.' }
           } finally {
             Pop-Location
           }
+
+      - name: Verify corrected source
+        shell: pwsh
+        working-directory: .chatgpt-build/python-editor
+        run: |
+          $css = Get-Content -Raw 'src/styles.css'
+          $package = Get-Content -Raw 'package.json'
+          $native = Get-Content -Raw 'native/window_frame.cc'
+          if ($css -notmatch 'grid-template-rows:\s*48px') { throw 'The 48px title bar is missing.' }
+          if ($css -notmatch '\.window-button svg[\s\S]*width:\s*20px') { throw 'The 20px caption glyphs are missing.' }
+          if ($css -notmatch 'clip-path:\s*inset\(0 round 12px\)') { throw 'The rounded per-pixel clip is missing.' }
+          if ($css -notmatch '--bg:\s*#000000') { throw 'The pure-black theme is missing.' }
+          if ($package -notmatch 'PythonEditorFrameV6') { throw 'The v6 executable name is missing.' }
+          if ($native -match 'kDwmNcRenderingDisabled') { throw 'DWM composition was incorrectly disabled.' }
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -76,19 +102,27 @@ jobs:
         working-directory: .chatgpt-build/python-editor
         run: npm run dist
 
-      - name: Verify native frame module
+      - name: Verify packaged application
         shell: pwsh
         working-directory: .chatgpt-build/python-editor
         run: |
           if (-not (Test-Path 'build/Release/window_frame.node')) { throw 'Native frame module was not created.' }
-          $exe = Get-ChildItem 'dist/*.exe' | Select-Object -First 1
-          if (-not $exe) { throw 'Portable executable was not created.' }
-          Copy-Item $exe.FullName 'dist/PythonEditorFrameV5.exe' -Force
+          if (-not (Test-Path 'dist/PythonEditorFrameV6.exe')) { throw 'The exact v6 portable executable was not created.' }
+          if (-not (Test-Path 'dist/win-unpacked/resources/app.asar')) { throw 'The packaged ASAR was not created.' }
+          node 'node_modules/@electron/asar/bin/asar.js' extract 'dist/win-unpacked/resources/app.asar' 'dist/verified-app'
+          $packedCss = Get-Content -Raw 'dist/verified-app/src/styles.css'
+          $packedPackage = Get-Content -Raw 'dist/verified-app/package.json'
+          if ($packedCss -notmatch 'grid-template-rows:\s*48px') { throw 'Packaged app has the wrong title bar.' }
+          if ($packedCss -notmatch '\.window-button svg[\s\S]*width:\s*20px') { throw 'Packaged app has the wrong caption glyph size.' }
+          if ($packedCss -notmatch 'clip-path:\s*inset\(0 round 12px\)') { throw 'Packaged app is missing rounded clipping.' }
+          if ($packedCss -notmatch '--bg:\s*#000000') { throw 'Packaged app is not pure black.' }
+          if ($packedPackage -notmatch 'PythonEditorFrameV6') { throw 'Packaged app is not v6.' }
+          Get-FileHash 'dist/PythonEditorFrameV6.exe' -Algorithm SHA256 | Format-List
 
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
-          name: Python-Editor-Frame-v5
-          path: .chatgpt-build/python-editor/dist/PythonEditorFrameV5.exe
+          name: Python-Editor-Frame-v6-verified
+          path: .chatgpt-build/python-editor/dist/PythonEditorFrameV6.exe
           if-no-files-found: error
           compression-level: 0
