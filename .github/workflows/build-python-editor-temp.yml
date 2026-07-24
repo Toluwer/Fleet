@@ -1,4 +1,4 @@
-name: Build Python Editor Frame
+name: Build Python Editor Dark Frame
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-windows:
-    runs-on: windows-2022
+    runs-on: windows-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -30,11 +30,6 @@ jobs:
           $patchBase64 = Get-Content -Raw '.chatgpt-build/python-editor-frame-patch.tar.gz.b64'
           [IO.File]::WriteAllBytes($patchArchive, [Convert]::FromBase64String($patchBase64))
           tar -xzf $patchArchive -C '.chatgpt-build/python-editor'
-
-          $packagePath = '.chatgpt-build/python-editor/package.json'
-          $packageText = Get-Content -Raw $packagePath
-          $packageText = $packageText.Replace('"node-gyp": "11.5.0"', '"node-gyp": "11.4.2"')
-          Set-Content -Path $packagePath -Value $packageText -Encoding utf8
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -72,7 +67,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Python-Editor-Frame-Build-Log
+          name: Python-Editor-Dark-Frame-Build-Log
           path: |
             .chatgpt-build/python-editor/build.log
             .chatgpt-build/python-editor/build-exit-code.txt
@@ -95,7 +90,7 @@ jobs:
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
-          name: Python-Editor-Windows-Frame-v2
-          path: .chatgpt-build/python-editor/dist/Python Editor.exe
+          name: Python-Editor-Dark-Frame-v3
+          path: .chatgpt-build/python-editor/dist/PythonEditorDarkFrameV3.exe
           if-no-files-found: error
           compression-level: 0
