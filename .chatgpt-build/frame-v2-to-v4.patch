@@ -1,0 +1,242 @@
+diff --git a/native/window_frame.cc b/native/window_frame.cc
+index b72b839..3442ce9 100644
+--- a/native/window_frame.cc
++++ b/native/window_frame.cc
+@@ -28,6 +28,21 @@ LRESULT CallOriginal(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+ 
+ LRESULT CALLBACK FrameWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+   switch (message) {
++    case WM_NCCALCSIZE:
++      // Preserve the resize-capable style while assigning every pixel to the
++      // Chromium client surface. Handling both NCCALCSIZE forms prevents the
++      // one-pixel non-client inset that can appear after DPI or state changes.
++      return 0;
++
++    case WM_NCPAINT:
++      // The renderer supplies the complete per-pixel frame. Do not let USER32
++      // paint a second border around it.
++      return 0;
++
++    case WM_NCACTIVATE:
++      // Suppress active/inactive non-client border painting.
++      return TRUE;
++
+     case WM_NCHITTEST: {
+       if (!IsZoomed(hwnd)) {
+         RECT rect{};
+diff --git a/package.json b/package.json
+index fe2bbc3..d3c262a 100644
+--- a/package.json
++++ b/package.json
+@@ -16,7 +16,7 @@
+   "devDependencies": {
+     "electron": "43.2.0",
+     "electron-builder": "26.15.3",
+-    "node-gyp": "11.5.0"
++    "node-gyp": "11.4.2"
+   },
+   "build": {
+     "appId": "com.toluwa.pythoneditor",
+@@ -45,10 +45,10 @@
+         }
+       ],
+       "icon": "assets/icon.ico",
+-      "executableName": "Python Editor"
++      "executableName": "PythonEditorFrameV4"
+     },
+     "portable": {
+-      "artifactName": "Python Editor.exe",
++      "artifactName": "PythonEditorFrameV4.exe",
+       "requestExecutionLevel": "user"
+     },
+     "asarUnpack": [
+diff --git a/src/index.html b/src/index.html
+index 92e0af7..2174054 100644
+--- a/src/index.html
++++ b/src/index.html
+@@ -10,7 +10,6 @@
+   <div id="app" class="app-shell">
+     <header class="titlebar">
+       <div class="drag-region brand-block">
+-        <img class="app-logo" src="../assets/icon.ico" alt="">
+         <span class="app-name">Python Editor</span>
+         <span id="document-state" class="document-state"></span>
+       </div>
+diff --git a/src/main.js b/src/main.js
+index ddd0a17..08b9145 100644
+--- a/src/main.js
++++ b/src/main.js
+@@ -75,7 +75,7 @@ function createWindow() {
+   const iconPath = path.join(__dirname, '..', 'assets', 'icon.ico');
+   const bounds = initialWindowBounds();
+   const frameAddon = loadWindowFrameAddon();
+-  const perPixelFrame = process.platform === 'win32' && Boolean(frameAddon);
++  const perPixelFrame = process.platform === 'win32';
+ 
+   mainWindow = new BrowserWindow({
+     x: bounds.x,
+@@ -94,7 +94,7 @@ function createWindow() {
+     minimizable: true,
+     maximizable: true,
+     closable: true,
+-    backgroundColor: perPixelFrame ? '#00000000' : '#111315',
++    backgroundColor: perPixelFrame ? '#00000000' : '#050505',
+     icon: iconPath,
+     webPreferences: {
+       preload: path.join(__dirname, 'preload.js'),
+@@ -104,7 +104,7 @@ function createWindow() {
+     }
+   });
+ 
+-  if (perPixelFrame) {
++  if (frameAddon) {
+     frameAddon.attach(mainWindow.getNativeWindowHandle());
+   }
+ 
+diff --git a/src/styles.css b/src/styles.css
+index 2406f53..6856475 100644
+--- a/src/styles.css
++++ b/src/styles.css
+@@ -1,26 +1,26 @@
+ :root {
+   color-scheme: dark;
+-  --bg: #111315;
+-  --panel: #171a1d;
+-  --panel-2: #1c2024;
+-  --panel-3: #22272b;
+-  --line: #2b3136;
+-  --line-soft: #24292d;
+-  --text: #e8ebed;
+-  --muted: #8f989f;
+-  --subtle: #667078;
+-  --accent: #4f8f86;
+-  --accent-strong: #68a89f;
+-  --accent-soft: rgba(79, 143, 134, 0.18);
+-  --danger: #d06767;
+-  --warning: #c49a5a;
+-  --success: #70aa7c;
+-  --titlebar: #141719;
+-  --status: #202529;
+-  --terminal: #121416;
+-  --frame-border: rgba(255, 255, 255, 0.16);
+-  --caption-hover: rgba(255, 255, 255, 0.09);
+-  --shadow: 0 24px 70px rgba(0, 0, 0, 0.42);
++  --bg: #050505;
++  --panel: #090909;
++  --panel-2: #0d0d0d;
++  --panel-3: #151515;
++  --line: #222222;
++  --line-soft: #191919;
++  --text: #eeeeee;
++  --muted: #9a9a9a;
++  --subtle: #666666;
++  --accent: #cfcfcf;
++  --accent-strong: #f3f3f3;
++  --accent-soft: rgba(255, 255, 255, 0.09);
++  --danger: #d56b6b;
++  --warning: #c9a66b;
++  --success: #86b68d;
++  --titlebar: #050505;
++  --status: #090909;
++  --terminal: #060606;
++  --frame-border: transparent;
++  --caption-hover: rgba(255, 255, 255, 0.10);
++  --shadow: none;
+   font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+ }
+ 
+@@ -90,21 +90,25 @@ svg {
+   height: 100%;
+   overflow: hidden;
+   background: var(--bg);
+-  border: 1px solid var(--frame-border);
++  border: 0;
+   border-radius: 9px;
++  clip-path: inset(0 round 9px);
++  contain: paint;
+ }
+ 
+ body.maximized .app-shell {
+   border-color: transparent;
+   border-radius: 0;
++  clip-path: none;
+ }
+ 
+ .titlebar {
+   display: flex;
+   align-items: stretch;
++  height: 32px;
+   min-height: 32px;
+   background: var(--titlebar);
+-  border-bottom: 1px solid var(--line-soft);
++  border-bottom: 0;
+   user-select: none;
+ }
+ 
+@@ -115,17 +119,12 @@ body.maximized .app-shell {
+ .brand-block {
+   display: flex;
+   align-items: center;
+-  gap: 7px;
+-  padding: 0 10px;
+-  min-width: 220px;
++  gap: 6px;
++  padding: 0 10px 0 12px;
++  min-width: 0;
++  flex: 0 0 auto;
+ }
+ 
+-.app-logo {
+-  width: 16px;
+-  height: 16px;
+-  border-radius: 4px;
+-  object-fit: cover;
+-}
+ 
+ .app-name {
+   font-size: 12px;
+@@ -148,6 +147,7 @@ body.maximized .app-shell {
+ .title-actions {
+   display: flex;
+   align-items: center;
++  margin-left: 2px;
+   -webkit-app-region: no-drag;
+ }
+ 
+@@ -189,9 +189,9 @@ body.maximized .app-shell {
+ }
+ 
+ .window-button svg {
+-  width: 11px;
+-  height: 11px;
+-  stroke-width: 1.45;
++  width: 10px;
++  height: 10px;
++  stroke-width: 1.35;
+ }
+ 
+ .window-button:hover {
+@@ -373,7 +373,7 @@ body.maximized .restore-icon {
+ 
+ .primary-run {
+   padding: 0 11px;
+-  border-color: rgba(104, 168, 159, 0.45);
++  border-color: rgba(255, 255, 255, 0.22);
+   background: var(--accent-soft);
+   color: var(--accent-strong);
+   font-weight: 600;
+@@ -381,12 +381,12 @@ body.maximized .restore-icon {
+ }
+ 
+ .primary-run:hover {
+-  background: rgba(79, 143, 134, 0.28);
++  background: rgba(255, 255, 255, 0.14);
+ }
+ 
+ .primary-run kbd {
+   padding-left: 8px;
+-  border-left: 1px solid rgba(104, 168, 159, 0.35);
++  border-left: 1px solid rgba(255, 255, 255, 0.20);
+   color: var(--muted);
+   font-family: inherit;
+   font-size: 10px;
