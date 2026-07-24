@@ -17,103 +17,42 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Restore application source and frame patch
+      - name: Capture verified frame source
         shell: pwsh
         run: |
           $restoreLog = Join-Path (Get-Location) '.chatgpt-build/restore.log'
           try {
-            "HEAD: $(git rev-parse HEAD)" | Set-Content $restoreLog
-            "Old frame commit reachable: $(git cat-file -t 0e5121da83ef816509400664214613980e238b68 2>&1)" | Add-Content $restoreLog
-
             $archive = Join-Path $env:RUNNER_TEMP 'python-editor-source.tar.gz'
             $base64 = (Get-ChildItem '.chatgpt-build/chunks/part-*.txt' |
               Sort-Object Name |
               ForEach-Object { Get-Content -Raw $_.FullName }) -join ''
-            "Source base64 length: $($base64.Length)" | Add-Content $restoreLog
             [IO.File]::WriteAllBytes($archive, [Convert]::FromBase64String($base64))
             New-Item -ItemType Directory -Force '.chatgpt-build/python-editor' | Out-Null
-            tar -xzf $archive -C '.chatgpt-build/python-editor' 2>&1 | Add-Content $restoreLog
+            tar -xzf $archive -C '.chatgpt-build/python-editor'
             if ($LASTEXITCODE -ne 0) { throw 'Could not extract the application source.' }
 
             $patchArchive = Join-Path $env:RUNNER_TEMP 'python-editor-frame-v2-patch.tar.gz'
             $patchBase64 = (git show '0e5121da83ef816509400664214613980e238b68:.chatgpt-build/python-editor-frame-patch.tar.gz.b64' 2>> $restoreLog) -join ''
-            "V2 patch base64 length: $($patchBase64.Length)" | Add-Content $restoreLog
             if ($LASTEXITCODE -ne 0) { throw 'Could not restore the verified frame v2 patch.' }
             [IO.File]::WriteAllBytes($patchArchive, [Convert]::FromBase64String($patchBase64))
-            tar -xzf $patchArchive -C '.chatgpt-build/python-editor' 2>&1 | Add-Content $restoreLog
+            tar -xzf $patchArchive -C '.chatgpt-build/python-editor'
             if ($LASTEXITCODE -ne 0) { throw 'Could not extract the verified frame v2 patch.' }
 
-            git apply --check --directory='.chatgpt-build/python-editor' -p1 --whitespace=nowarn '.chatgpt-build/frame-v3.patch' 2>&1 | Add-Content $restoreLog
-            if ($LASTEXITCODE -ne 0) { throw 'The dark frame v3 patch did not pass validation.' }
-            git apply --directory='.chatgpt-build/python-editor' -p1 --whitespace=nowarn '.chatgpt-build/frame-v3.patch' 2>&1 | Add-Content $restoreLog
-            if ($LASTEXITCODE -ne 0) { throw 'Could not apply the dark frame v3 changes.' }
-            'Restore completed.' | Add-Content $restoreLog
+            tar -czf '.chatgpt-build/frame-v2-source.tar.gz' -C '.chatgpt-build/python-editor' .
+            if ($LASTEXITCODE -ne 0) { throw 'Could not archive the verified frame source.' }
+            'Verified frame source captured.' | Set-Content $restoreLog
+            throw 'Intentional stop after source capture.'
           } catch {
             $_ | Out-String | Add-Content $restoreLog
             throw
           }
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Set up Python for node-gyp
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Restore application icon
-        shell: pwsh
-        working-directory: .chatgpt-build/python-editor
-        run: |
-          $bytes = [Convert]::FromBase64String((Get-Content -Raw assets/icon.ico.b64))
-          [IO.File]::WriteAllBytes((Join-Path (Get-Location) 'assets/icon.ico'), $bytes)
-
-      - name: Install dependencies
-        working-directory: .chatgpt-build/python-editor
-        run: npm install --no-audit --no-fund
-
-      - name: Build portable executable
-        id: build
-        shell: pwsh
-        continue-on-error: true
-        working-directory: .chatgpt-build/python-editor
-        run: |
-          npm run dist *>&1 | Tee-Object -FilePath build.log
-          $exitCode = $LASTEXITCODE
-          Set-Content -Path build-exit-code.txt -Value $exitCode
-          exit $exitCode
-
-      - name: Upload build diagnostics
+      - name: Upload captured source
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Python-Editor-Dark-Frame-Build-Log
+          name: Python-Editor-Frame-v2-Source
           path: |
+            .chatgpt-build/frame-v2-source.tar.gz
             .chatgpt-build/restore.log
-            .chatgpt-build/python-editor/build.log
-            .chatgpt-build/python-editor/build-exit-code.txt
-          if-no-files-found: warn
-
-      - name: Verify build result
-        shell: pwsh
-        working-directory: .chatgpt-build/python-editor
-        run: |
-          $exitCode = [int](Get-Content -Raw build-exit-code.txt)
-          if ($exitCode -ne 0) {
-            Write-Error "Electron build failed with exit code $exitCode."
-            exit $exitCode
-          }
-          if (-not (Test-Path 'build/Release/window_frame.node')) {
-            Write-Error 'Native window frame module was not created.'
-            exit 1
-          }
-
-      - name: Upload executable
-        uses: actions/upload-artifact@v4
-        with:
-          name: Python-Editor-Dark-Frame-v3
-          path: .chatgpt-build/python-editor/dist/PythonEditorDarkFrameV3.exe
           if-no-files-found: error
-          compression-level: 0
