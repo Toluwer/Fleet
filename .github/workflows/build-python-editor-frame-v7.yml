@@ -25,7 +25,7 @@ jobs:
           repository: Toluwer/Fleet
           run-id: 30113967176
 
-      - name: Restore source and exact v7 overlay
+      - name: Restore source and apply frame v7 directly
         shell: pwsh
         run: |
           $sourceArchive = '.chatgpt-build/source-artifact/frame-v2-source.tar.gz'
@@ -34,27 +34,387 @@ jobs:
           tar -xzf $sourceArchive -C '.chatgpt-build/python-editor'
           if ($LASTEXITCODE -ne 0) { throw 'Could not extract verified source.' }
 
-          $overlayBytes = [Convert]::FromBase64String((Get-Content -Raw '.chatgpt-build/frame-v7-overlay.tar.gz.b64'))
-          $overlayPath = '.chatgpt-build/frame-v7-overlay.tar.gz'
-          [IO.File]::WriteAllBytes($overlayPath, $overlayBytes)
-          tar -xzf $overlayPath -C '.chatgpt-build/python-editor'
-          if ($LASTEXITCODE -ne 0) { throw 'Could not extract exact v7 overlay.' }
+          $root = Join-Path $PWD '.chatgpt-build/python-editor'
 
-      - name: Verify exact v7 source
+          $packagePath = Join-Path $root 'package.json'
+          $package = Get-Content -Raw $packagePath | ConvertFrom-Json
+          $package.version = '1.0.7'
+          $package.build.win.executableName = 'PythonEditorFrameV7'
+          $package.build.portable.artifactName = 'PythonEditorFrameV7.exe'
+          $package | ConvertTo-Json -Depth 20 | Set-Content -Encoding utf8 $packagePath
+
+          $indexPath = Join-Path $root 'src/index.html'
+          $index = Get-Content -Raw $indexPath
+          $index = $index.Replace('<div id="app" class="app-shell">', '<div id="app" class="app-shell" data-build="frame-v7">')
+          $index = [regex]::Replace($index, '(?m)^\s*<img class="app-logo"[^>]*>\r?\n', '')
+          $index = $index.Replace('<path d="M5 12h14"/>', '<path d="M4 12h16"/>')
+          $index = $index.Replace('<rect x="5" y="5" width="14" height="14" rx="1"/>', '<rect x="4.5" y="4.5" width="15" height="15" rx="0.6"/>')
+          $index = $index.Replace('<path d="m6 6 12 12M18 6 6 18"/>', '<path d="m4.5 4.5 15 15M19.5 4.5 4.5 19.5"/>')
+          Set-Content -Encoding utf8 $indexPath $index
+
+          $stylesPath = Join-Path $root 'src/styles.css'
+          $frameStyles = @'
+
+/* FRAME_V7_DIRECT */
+:root {
+  color-scheme: dark;
+  --bg: #000000;
+  --panel: #050505;
+  --panel-2: #080808;
+  --panel-3: #111111;
+  --line: #202020;
+  --line-soft: #151515;
+  --text: #f2f2f2;
+  --muted: #a0a0a0;
+  --subtle: #666666;
+  --accent: #d6d6d6;
+  --accent-strong: #ffffff;
+  --accent-soft: rgba(255, 255, 255, 0.09);
+  --danger: #d56b6b;
+  --warning: #c9a66b;
+  --success: #86b68d;
+  --titlebar: #000000;
+  --status: #050505;
+  --terminal: #020202;
+  --frame-border: transparent;
+  --caption-hover: rgba(255, 255, 255, 0.11);
+  --shadow: none;
+}
+
+html,
+body {
+  background: transparent !important;
+}
+
+.app-shell {
+  position: fixed !important;
+  inset: 0 !important;
+  width: auto !important;
+  height: auto !important;
+  grid-template-rows: 48px minmax(0, 1fr) !important;
+  overflow: hidden !important;
+  border: 0 !important;
+  border-radius: 12px !important;
+  clip-path: inset(0 round 12px) !important;
+  -webkit-clip-path: inset(0 round 12px) !important;
+  background: #000000 !important;
+  box-shadow: inset 0 0 0 1px #202020 !important;
+  isolation: isolate;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+body.maximized .app-shell {
+  border-radius: 0 !important;
+  clip-path: none !important;
+  -webkit-clip-path: none !important;
+  box-shadow: none !important;
+  transform: none;
+}
+
+.titlebar {
+  height: 48px !important;
+  min-height: 48px !important;
+  background: #000000 !important;
+  border: 0 !important;
+  border-bottom: 1px solid #202020 !important;
+}
+
+.brand-block {
+  gap: 6px !important;
+  padding: 0 12px 0 14px !important;
+  min-width: 0 !important;
+  flex: 0 0 auto !important;
+}
+
+.app-logo {
+  display: none !important;
+}
+
+.app-name,
+.text-action {
+  font-size: 14px !important;
+}
+
+.title-actions {
+  margin-left: 4px !important;
+}
+
+.text-action {
+  padding: 0 12px !important;
+}
+
+.window-controls {
+  height: 48px !important;
+  flex: 0 0 auto !important;
+}
+
+.window-button {
+  width: 50px !important;
+  min-width: 50px !important;
+  height: 48px !important;
+  min-height: 48px !important;
+}
+
+.window-button svg {
+  width: 22px !important;
+  height: 22px !important;
+  stroke-width: 1.45 !important;
+  shape-rendering: geometricPrecision;
+}
+
+.workspace,
+.main-area,
+.content-stack,
+.editor-container,
+.output-panel,
+.output-body,
+.terminal-input-row {
+  background-color: var(--bg) !important;
+}
+
+.activity-rail,
+.editor-header,
+.output-header,
+.statusbar {
+  background-color: var(--panel) !important;
+}
+
+.primary-run {
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  background: rgba(255, 255, 255, 0.09) !important;
+  color: #f2f2f2 !important;
+}
+
+.primary-run:hover {
+  background: rgba(255, 255, 255, 0.14) !important;
+}
+'@
+          Add-Content -Encoding utf8 $stylesPath $frameStyles
+
+          $mainPath = Join-Path $root 'src/main.js'
+          $main = Get-Content -Raw $mainPath
+          $main = $main.Replace('return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };', "return { ...DEFAULT_SETTINGS, ...JSON.parse(raw), theme: 'dark' };")
+          $main = $main.Replace('const settings = { ...DEFAULT_SETTINGS, ...next };', "const settings = { ...DEFAULT_SETTINGS, ...next, theme: 'dark' };")
+          $main = $main.Replace("nativeTheme.themeSource = settings.theme === 'light' ? 'light' : 'dark';", "nativeTheme.themeSource = 'dark';")
+          $main = $main.Replace("const perPixelFrame = process.platform === 'win32' && Boolean(frameAddon);", "const perPixelFrame = process.platform === 'win32';")
+          $main = $main.Replace("backgroundColor: perPixelFrame ? '#00000000' : '#111315',", "backgroundColor: perPixelFrame ? '#00000000' : '#000000',")
+          $main = $main.Replace('if (perPixelFrame) {', 'if (frameAddon) {')
+          Set-Content -Encoding utf8 $mainPath $main
+
+          $rendererPath = Join-Path $root 'src/renderer.js'
+          $renderer = Get-Content -Raw $rendererPath
+          $renderer = $renderer.Replace('document.documentElement.dataset.theme = state.settings.theme;', "document.documentElement.dataset.theme = 'dark';")
+          $renderer = $renderer.Replace("monaco.editor.setTheme(state.settings.theme === 'light' ? 'python-editor-light' : 'python-editor-dark');", "monaco.editor.setTheme('python-editor-dark');")
+          $renderer = $renderer.Replace("theme: state.settings.theme === 'light' ? 'python-editor-light' : 'python-editor-dark',", "theme: 'python-editor-dark',")
+          $renderer = $renderer.Replace("elements.themeSelect.value = state.settings.theme || 'dark';", "elements.themeSelect.value = 'dark';")
+          $renderer = $renderer.Replace('theme: elements.themeSelect.value,', "theme: 'dark',")
+          Set-Content -Encoding utf8 $rendererPath $renderer
+
+          $nativePath = Join-Path $root 'native/window_frame.cc'
+          $native = @'
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <windowsx.h>
+#include <node_api.h>
+#include <algorithm>
+#include <cstring>
+
+namespace {
+
+constexpr wchar_t kOriginalProcProperty[] = L"PythonEditorOriginalWindowProc";
+constexpr DWORD kDwmBorderColor = 34;
+constexpr COLORREF kDwmColorNone = 0xFFFFFFFE;
+
+using DwmSetWindowAttributeFn = HRESULT(WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
+
+WNDPROC OriginalProc(HWND hwnd) {
+  return reinterpret_cast<WNDPROC>(GetPropW(hwnd, kOriginalProcProperty));
+}
+
+UINT WindowDpi(HWND hwnd) {
+  using GetDpiForWindowFn = UINT(WINAPI*)(HWND);
+  static auto getDpiForWindow = reinterpret_cast<GetDpiForWindowFn>(
+      GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+  return getDpiForWindow ? getDpiForWindow(hwnd) : 96U;
+}
+
+void DisableNativeFramePainting(HWND hwnd) {
+  static HMODULE dwmApi = LoadLibraryW(L"dwmapi.dll");
+  static auto setWindowAttribute = dwmApi
+      ? reinterpret_cast<DwmSetWindowAttributeFn>(
+            GetProcAddress(dwmApi, "DwmSetWindowAttribute"))
+      : nullptr;
+
+  if (setWindowAttribute) {
+    const COLORREF borderColor = kDwmColorNone;
+    setWindowAttribute(hwnd, kDwmBorderColor, &borderColor, sizeof(borderColor));
+  }
+
+  LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+  exStyle &= ~(WS_EX_CLIENTEDGE | WS_EX_WINDOWEDGE | WS_EX_DLGMODALFRAME | WS_EX_STATICEDGE);
+  SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exStyle);
+}
+
+LRESULT CallOriginal(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+  WNDPROC original = OriginalProc(hwnd);
+  return original ? CallWindowProcW(original, hwnd, message, wParam, lParam)
+                  : DefWindowProcW(hwnd, message, wParam, lParam);
+}
+
+LRESULT CALLBACK FrameWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+  switch (message) {
+    case WM_NCCALCSIZE:
+      return 0;
+
+    case WM_NCPAINT:
+      return 0;
+
+    case WM_NCACTIVATE:
+      return TRUE;
+
+    case WM_DWMCOMPOSITIONCHANGED:
+    case WM_THEMECHANGED:
+      DisableNativeFramePainting(hwnd);
+      break;
+
+    case WM_NCHITTEST: {
+      if (!IsZoomed(hwnd)) {
+        RECT rect{};
+        if (GetWindowRect(hwnd, &rect)) {
+          const int x = GET_X_LPARAM(lParam);
+          const int y = GET_Y_LPARAM(lParam);
+          const int border = std::max(6, MulDiv(8, static_cast<int>(WindowDpi(hwnd)), 96));
+
+          const bool left = x >= rect.left && x < rect.left + border;
+          const bool right = x < rect.right && x >= rect.right - border;
+          const bool top = y >= rect.top && y < rect.top + border;
+          const bool bottom = y < rect.bottom && y >= rect.bottom - border;
+
+          if (top && left) return HTTOPLEFT;
+          if (top && right) return HTTOPRIGHT;
+          if (bottom && left) return HTBOTTOMLEFT;
+          if (bottom && right) return HTBOTTOMRIGHT;
+          if (left) return HTLEFT;
+          if (right) return HTRIGHT;
+          if (top) return HTTOP;
+          if (bottom) return HTBOTTOM;
+        }
+      }
+      return CallOriginal(hwnd, message, wParam, lParam);
+    }
+
+    case WM_GETMINMAXINFO: {
+      auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
+      const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+      MONITORINFO monitorInfo{sizeof(MONITORINFO)};
+      if (monitor && GetMonitorInfoW(monitor, &monitorInfo)) {
+        const RECT& work = monitorInfo.rcWork;
+        const RECT& bounds = monitorInfo.rcMonitor;
+        info->ptMaxPosition.x = work.left - bounds.left;
+        info->ptMaxPosition.y = work.top - bounds.top;
+        info->ptMaxSize.x = work.right - work.left;
+        info->ptMaxSize.y = work.bottom - work.top;
+      }
+      return 0;
+    }
+
+    case WM_NCLBUTTONDBLCLK:
+      if (wParam == HTCAPTION) {
+        ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+        return 0;
+      }
+      break;
+
+    case WM_NCDESTROY: {
+      WNDPROC original = OriginalProc(hwnd);
+      RemovePropW(hwnd, kOriginalProcProperty);
+      if (original) {
+        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(original));
+        return CallWindowProcW(original, hwnd, message, wParam, lParam);
+      }
+      return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+  }
+
+  return CallOriginal(hwnd, message, wParam, lParam);
+}
+
+napi_value BooleanResult(napi_env env, bool value) {
+  napi_value result;
+  napi_get_boolean(env, value, &result);
+  return result;
+}
+
+napi_value Attach(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  if (argc != 1) return BooleanResult(env, false);
+
+  bool isBuffer = false;
+  napi_is_buffer(env, argv[0], &isBuffer);
+  if (!isBuffer) return BooleanResult(env, false);
+
+  void* data = nullptr;
+  size_t length = 0;
+  napi_get_buffer_info(env, argv[0], &data, &length);
+  if (!data || length == 0) return BooleanResult(env, false);
+
+  HWND hwnd = nullptr;
+  std::memcpy(&hwnd, data, std::min(length, sizeof(hwnd)));
+  if (!IsWindow(hwnd)) return BooleanResult(env, false);
+  if (OriginalProc(hwnd)) return BooleanResult(env, true);
+
+  LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+  style |= WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU;
+  style &= ~(WS_CAPTION | WS_BORDER | WS_DLGFRAME);
+  SetWindowLongPtrW(hwnd, GWL_STYLE, style);
+  DisableNativeFramePainting(hwnd);
+
+  SetLastError(0);
+  WNDPROC original = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
+      hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(FrameWindowProc)));
+  if (!original && GetLastError() != 0) return BooleanResult(env, false);
+
+  SetPropW(hwnd, kOriginalProcProperty, reinterpret_cast<HANDLE>(original));
+  SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  DisableNativeFramePainting(hwnd);
+  return BooleanResult(env, true);
+}
+
+napi_value Initialize(napi_env env, napi_value exports) {
+  napi_value attach;
+  napi_create_function(env, "attach", NAPI_AUTO_LENGTH, Attach, nullptr, &attach);
+  napi_set_named_property(env, exports, "attach", attach);
+  return exports;
+}
+
+}  // namespace
+
+NAPI_MODULE(NODE_GYP_MODULE_NAME, Initialize)
+'@
+          Set-Content -Encoding utf8 $nativePath $native
+
+      - name: Verify frame v7 source
         shell: pwsh
         working-directory: .chatgpt-build/python-editor
         run: |
           $html = Get-Content -Raw 'src/index.html'
           $css = Get-Content -Raw 'src/styles.css'
           $package = Get-Content -Raw 'package.json'
+          $native = Get-Content -Raw 'native/window_frame.cc'
           if ($html -match 'class="app-logo"') { throw 'Title-bar logo still exists.' }
           if ($html -notmatch 'data-build="frame-v7"') { throw 'Frame v7 marker is missing.' }
+          if ($css -notmatch 'FRAME_V7_DIRECT') { throw 'Frame v7 CSS is missing.' }
           if ($css -notmatch 'grid-template-rows:\s*48px') { throw '48px title bar is missing.' }
-          if ($css -notmatch '\.window-button svg[\s\S]*width:\s*22px') { throw '22px caption glyphs are missing.' }
+          if ($css -notmatch 'width:\s*22px') { throw '22px caption glyphs are missing.' }
           if ($css -notmatch '--bg:\s*#000000') { throw 'Pure-black theme is missing.' }
           if ($css -notmatch 'clip-path:\s*inset\(0 round 12px\)') { throw 'Rounded clipping is missing.' }
           if ($package -notmatch 'PythonEditorFrameV7') { throw 'V7 executable name is missing.' }
-          Write-Host 'Exact v7 source verified.'
+          if ($native -notmatch 'DisableNativeFramePainting') { throw 'Native border suppression is missing.' }
+          Write-Host 'Frame v7 source verified.'
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -98,13 +458,14 @@ jobs:
             'CaptionGlyphs=22px',
             'TitleBarLogo=removed',
             'Theme=pure-black',
-            'RoundedClip=12px'
+            'RoundedClip=12px',
+            'NativeBorderPainting=disabled'
           ) | Set-Content 'dist/verification.txt'
 
       - name: Upload verified v7 build
         uses: actions/upload-artifact@v4
         with:
-          name: Python-Editor-Frame-v7-exact-verified
+          name: Python-Editor-Frame-v7-direct-final
           path: |
             .chatgpt-build/python-editor/dist/PythonEditorFrameV7.exe
             .chatgpt-build/python-editor/dist/win-unpacked/resources/app.asar
