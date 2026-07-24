@@ -1,8 +1,8 @@
 name: Build Python Editor Frame v7
 
 on:
-  pull_request:
-    branches: [main]
+  push:
+    branches: [chatgpt/python-editor-frame-v7-direct-20260724]
   workflow_dispatch:
 
 permissions:
