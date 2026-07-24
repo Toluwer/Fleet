@@ -19,7 +19,10 @@ jobs:
         shell: pwsh
         run: |
           $archive = Join-Path $env:RUNNER_TEMP 'python-editor-source.tar.gz'
-          $bytes = [Convert]::FromBase64String((Get-Content -Raw '.chatgpt-build/python-editor-source.tar.gz.b64'))
+          $base64 = (Get-ChildItem '.chatgpt-build/chunks/part-*.txt' |
+            Sort-Object Name |
+            ForEach-Object { Get-Content -Raw $_.FullName }) -join ''
+          $bytes = [Convert]::FromBase64String($base64)
           [IO.File]::WriteAllBytes($archive, $bytes)
           New-Item -ItemType Directory -Force '.chatgpt-build/python-editor' | Out-Null
           tar -xzf $archive -C '.chatgpt-build/python-editor'
@@ -28,8 +31,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: .chatgpt-build/python-editor/package.json
 
       - name: Restore application icon
         shell: pwsh
