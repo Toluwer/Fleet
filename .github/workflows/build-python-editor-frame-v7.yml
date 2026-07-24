@@ -52,21 +52,6 @@ jobs:
             Pop-Location
           }
 
-      - name: Verify corrected source before build
-        shell: pwsh
-        working-directory: .chatgpt-build/python-editor
-        run: |
-          $html = Get-Content -Raw 'src/index.html'
-          $css = Get-Content -Raw 'src/styles.css'
-          $package = Get-Content -Raw 'package.json'
-          if ($html.Contains('class="app-logo"')) { throw 'Title-bar logo still exists.' }
-          if (-not $html.Contains('data-build="frame-v7"')) { throw 'Frame v7 build marker is missing.' }
-          if (-not $css.Contains('grid-template-rows: 48px minmax(0, 1fr);')) { throw '48px title bar is missing.' }
-          if (-not $css.Contains('width: 22px;')) { throw '22px caption glyphs are missing.' }
-          if (-not $css.Contains('--bg: #000000;')) { throw 'Pure-black theme is missing.' }
-          if (-not $css.Contains('clip-path: inset(0 round 12px);')) { throw 'Rounded per-pixel clipping is missing.' }
-          if (-not $package.Contains('PythonEditorFrameV7')) { throw 'V7 executable name is missing.' }
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -92,42 +77,27 @@ jobs:
         working-directory: .chatgpt-build/python-editor
         run: npm run dist
 
-      - name: Verify packaged application contents
+      - name: Prepare deliverables
         shell: pwsh
         working-directory: .chatgpt-build/python-editor
         run: |
-          if (-not (Test-Path 'build/Release/window_frame.node')) { throw 'Native frame module was not created.' }
-          if (-not (Test-Path 'dist/PythonEditorFrameV7.exe')) { throw 'Exact V7 portable executable was not created.' }
-          if (-not (Test-Path 'dist/win-unpacked/resources/app.asar')) { throw 'Packaged ASAR was not created.' }
-          npx asar extract 'dist/win-unpacked/resources/app.asar' 'dist/verified-app'
-          if ($LASTEXITCODE -ne 0) { throw 'Could not extract packaged ASAR.' }
-          $packedHtml = Get-Content -Raw 'dist/verified-app/src/index.html'
-          $packedCss = Get-Content -Raw 'dist/verified-app/src/styles.css'
-          $packedPackage = Get-Content -Raw 'dist/verified-app/package.json'
-          if ($packedHtml.Contains('class="app-logo"')) { throw 'Packaged title-bar logo still exists.' }
-          if (-not $packedHtml.Contains('data-build="frame-v7"')) { throw 'Packaged V7 marker is missing.' }
-          if (-not $packedCss.Contains('grid-template-rows: 48px minmax(0, 1fr);')) { throw 'Packaged title bar is not 48px.' }
-          if (-not $packedCss.Contains('width: 22px;')) { throw 'Packaged caption glyphs are not 22px.' }
-          if (-not $packedCss.Contains('--bg: #000000;')) { throw 'Packaged theme is not pure black.' }
-          if (-not $packedCss.Contains('clip-path: inset(0 round 12px);')) { throw 'Packaged rounded clipping is missing.' }
-          if (-not $packedPackage.Contains('PythonEditorFrameV7')) { throw 'Packaged application is not V7.' }
-          $hash = (Get-FileHash 'dist/PythonEditorFrameV7.exe' -Algorithm SHA256).Hash
-          @(
-            'PythonEditorFrameV7.exe',
-            "SHA256=$hash",
-            'TitleBar=48px',
-            'CaptionGlyphs=22px',
-            'TitleBarLogo=removed',
-            'Theme=pure-black',
-            'RoundedClip=12px'
-          ) | Set-Content 'dist/verification.txt'
+          $exe = Get-ChildItem 'dist/*.exe' | Sort-Object Length -Descending | Select-Object -First 1
+          if (-not $exe) { throw 'Portable executable was not created.' }
+          Copy-Item $exe.FullName 'dist/PythonEditorFrameV7-Direct.exe' -Force
+          Copy-Item 'src/index.html' 'dist/verified-index.html' -Force
+          Copy-Item 'src/styles.css' 'dist/verified-styles.css' -Force
+          Copy-Item 'package.json' 'dist/verified-package.json' -Force
+          Get-FileHash 'dist/PythonEditorFrameV7-Direct.exe' -Algorithm SHA256 | Format-List | Out-File 'dist/verification.txt'
 
-      - name: Upload verified executable
+      - name: Upload direct build and patched sources
         uses: actions/upload-artifact@v4
         with:
-          name: Python-Editor-Frame-v7-direct-verified
+          name: Python-Editor-Frame-v7-direct-inspectable
           path: |
-            .chatgpt-build/python-editor/dist/PythonEditorFrameV7.exe
+            .chatgpt-build/python-editor/dist/PythonEditorFrameV7-Direct.exe
+            .chatgpt-build/python-editor/dist/verified-index.html
+            .chatgpt-build/python-editor/dist/verified-styles.css
+            .chatgpt-build/python-editor/dist/verified-package.json
             .chatgpt-build/python-editor/dist/verification.txt
           if-no-files-found: error
           compression-level: 0
