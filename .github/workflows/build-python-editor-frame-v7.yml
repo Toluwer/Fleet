@@ -1,4 +1,4 @@
-name: Build Python Editor Frame v7
+name: Build Python Editor Smooth Corners V8
 
 on:
   pull_request:
@@ -25,7 +25,7 @@ jobs:
           repository: Toluwer/Fleet
           run-id: 30113967176
 
-      - name: Restore source and apply frame v7 directly
+      - name: Restore source and apply verified frame patch
         shell: pwsh
         run: |
           $sourceArchive = '.chatgpt-build/source-artifact/frame-v2-source.tar.gz'
@@ -33,73 +33,99 @@ jobs:
           New-Item -ItemType Directory -Force '.chatgpt-build/python-editor' | Out-Null
           tar -xzf $sourceArchive -C '.chatgpt-build/python-editor'
           if ($LASTEXITCODE -ne 0) { throw 'Could not extract verified source.' }
-          $root = Join-Path $PWD '.chatgpt-build/python-editor'
 
-          $packagePath = Join-Path $root 'package.json'
+          $compressed = [Convert]::FromBase64String((Get-Content -Raw '.chatgpt-build/frame-v2-to-v7-direct.patch.gz.b64'))
+          $inputStream = [IO.MemoryStream]::new($compressed)
+          $gzipStream = [IO.Compression.GZipStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
+          $patchPath = '.chatgpt-build/frame-v2-to-v7-direct.patch'
+          $outputStream = [IO.File]::Create($patchPath)
+          $gzipStream.CopyTo($outputStream)
+          $outputStream.Dispose()
+          $gzipStream.Dispose()
+          $inputStream.Dispose()
+
+          Push-Location '.chatgpt-build/python-editor'
+          try {
+            git apply --whitespace=nowarn '..\frame-v2-to-v7-direct.patch'
+            if ($LASTEXITCODE -ne 0) { throw 'Could not apply the verified frame patch.' }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Replace hard clip with smooth per-pixel mask
+        shell: pwsh
+        working-directory: .chatgpt-build/python-editor
+        run: |
+          $packagePath = 'package.json'
           $package = Get-Content -Raw $packagePath | ConvertFrom-Json
-          $package.version = '1.0.7'
-          $package.build.win.executableName = 'PythonEditorFrameV7'
-          $package.build.portable.artifactName = 'PythonEditorFrameV7.exe'
+          $package.version = '1.0.8'
+          $package.build.win.executableName = 'PythonEditorSmoothCornersV8'
+          $package.build.portable.artifactName = 'PythonEditorSmoothCornersV8.exe'
           $package | ConvertTo-Json -Depth 20 | Set-Content -Encoding utf8 $packagePath
 
-          $indexPath = Join-Path $root 'src/index.html'
-          $index = Get-Content -Raw $indexPath
-          $index = $index.Replace('<div id="app" class="app-shell">', '<div id="app" class="app-shell" data-build="frame-v7">')
-          $index = [regex]::Replace($index, '(?m)^\s*<img class="app-logo"[^>]*>\r?\n', '')
-          $index = $index.Replace('<path d="M5 12h14"/>', '<path d="M4 12h16"/>')
-          $index = $index.Replace('<rect x="5" y="5" width="14" height="14" rx="1"/>', '<rect x="4.5" y="4.5" width="15" height="15" rx="0.6"/>')
-          $index = $index.Replace('<path d="m6 6 12 12M18 6 6 18"/>', '<path d="m4.5 4.5 15 15M19.5 4.5 4.5 19.5"/>')
-          Set-Content -Encoding utf8 $indexPath $index
+          $htmlPath = 'src/index.html'
+          $html = Get-Content -Raw $htmlPath
+          $html = $html.Replace('data-build="frame-v7"', 'data-build="frame-v8-smooth-corners"')
+          Set-Content -Encoding utf8 $htmlPath $html
 
-          $cssBase64 = 'Ci8qIEZSQU1FX1Y3X0RJUkVDVCAqLwo6cm9vdCB7CiAgY29sb3Itc2NoZW1lOiBkYXJrOwogIC0tYmc6ICMwMDAwMDA7CiAgLS1wYW5lbDogIzA1MDUwNTsKICAtLXBhbmVsLTI6ICMwODA4MDg7CiAgLS1wYW5lbC0zOiAjMTExMTExOwogIC0tbGluZTogIzIwMjAyMDsKICAtLWxpbmUtc29mdDogIzE1MTUxNTsKICAtLXRleHQ6ICNmMmYyZjI7CiAgLS1tdXRlZDogI2EwYTBhMDsKICAtLXN1YnRsZTogIzY2NjY2NjsKICAtLWFjY2VudDogI2Q2ZDZkNjsKICAtLWFjY2VudC1zdHJvbmc6ICNmZmZmZmY7CiAgLS1hY2NlbnQtc29mdDogcmdiYSgyNTUsIDI1NSwgMjU1LCAwLjA5KTsKICAtLWRhbmdlcjogI2Q1NmI2YjsKICAtLXdhcm5pbmc6ICNjOWE2NmI7CiAgLS1zdWNjZXNzOiAjODZiNjhkOwogIC0tdGl0bGViYXI6ICMwMDAwMDA7CiAgLS1zdGF0dXM6ICMwNTA1MDU7CiAgLS10ZXJtaW5hbDogIzAyMDIwMjsKICAtLWZyYW1lLWJvcmRlcjogdHJhbnNwYXJlbnQ7CiAgLS1jYXB0aW9uLWhvdmVyOiByZ2JhKDI1NSwgMjU1LCAyNTUsIDAuMTEpOwogIC0tc2hhZG93OiBub25lOwp9Cmh0bWwsIGJvZHkgeyBiYWNrZ3JvdW5kOiB0cmFuc3BhcmVudCAhaW1wb3J0YW50OyB9Ci5hcHAtc2hlbGwgewogIHBvc2l0aW9uOiBmaXhlZCAhaW1wb3J0YW50OwogIGluc2V0OiAwICFpbXBvcnRhbnQ7CiAgd2lkdGg6IGF1dG8gIWltcG9ydGFudDsKICBoZWlnaHQ6IGF1dG8gIWltcG9ydGFudDsKICBncmlkLXRlbXBsYXRlLXJvd3M6IDQ4cHggbWlubWF4KDAsIDFmcikgIWltcG9ydGFudDsKICBvdmVyZmxvdzogaGlkZGVuICFpbXBvcnRhbnQ7CiAgYm9yZGVyOiAwICFpbXBvcnRhbnQ7CiAgYm9yZGVyLXJhZGl1czogMTJweCAhaW1wb3J0YW50OwogIGNsaXAtcGF0aDogaW5zZXQoMCByb3VuZCAxMnB4KSAhaW1wb3J0YW50OwogIC13ZWJraXQtY2xpcC1wYXRoOiBpbnNldCgwIHJvdW5kIDEycHgpICFpbXBvcnRhbnQ7CiAgYmFja2dyb3VuZDogIzAwMDAwMCAhaW1wb3J0YW50OwogIGJveC1zaGFkb3c6IGluc2V0IDAgMCAwIDFweCAjMjAyMDIwICFpbXBvcnRhbnQ7CiAgaXNvbGF0aW9uOiBpc29sYXRlOwogIHRyYW5zZm9ybTogdHJhbnNsYXRlWigwKTsKICBiYWNrZmFjZS12aXNpYmlsaXR5OiBoaWRkZW47Cn0KYm9keS5tYXhpbWl6ZWQgLmFwcC1zaGVsbCB7CiAgYm9yZGVyLXJhZGl1czogMCAhaW1wb3J0YW50OwogIGNsaXAtcGF0aDogbm9uZSAhaW1wb3J0YW50OwogIC13ZWJraXQtY2xpcC1wYXRoOiBub25lICFpbXBvcnRhbnQ7CiAgYm94LXNoYWRvdzogbm9uZSAhaW1wb3J0YW50OwogIHRyYW5zZm9ybTogbm9uZTsKfQoudGl0bGViYXIgewogIGhlaWdodDogNDhweCAhaW1wb3J0YW50OwogIG1pbi1oZWlnaHQ6IDQ4cHggIWltcG9ydGFudDsKICBiYWNrZ3JvdW5kOiAjMDAwMDAwICFpbXBvcnRhbnQ7CiAgYm9yZGVyOiAwICFpbXBvcnRhbnQ7CiAgYm9yZGVyLWJvdHRvbTogMXB4IHNvbGlkICMyMDIwMjAgIWltcG9ydGFudDsKfQouYnJhbmQtYmxvY2sgewogIGdhcDogNnB4ICFpbXBvcnRhbnQ7CiAgcGFkZGluZzogMCAxMnB4IDAgMTRweCAhaW1wb3J0YW50OwogIG1pbi13aWR0aDogMCAhaW1wb3J0YW50OwogIGZsZXg6IDAgMCBhdXRvICFpbXBvcnRhbnQ7Cn0KLmFwcC1sb2dvIHsgZGlzcGxheTogbm9uZSAhaW1wb3J0YW50OyB9Ci5hcHAtbmFtZSwgLnRleHQtYWN0aW9uIHsgZm9udC1zaXplOiAxNHB4ICFpbXBvcnRhbnQ7IH0KLnRpdGxlLWFjdGlvbnMgeyBtYXJnaW4tbGVmdDogNHB4ICFpbXBvcnRhbnQ7IH0KLnRleHQtYWN0aW9uIHsgcGFkZGluZzogMCAxMnB4ICFpbXBvcnRhbnQ7IH0KLndpbmRvdy1jb250cm9scyB7IGhlaWdodDogNDhweCAhaW1wb3J0YW50OyBmbGV4OiAwIDAgYXV0byAhaW1wb3J0YW50OyB9Ci53aW5kb3ctYnV0dG9uIHsKICB3aWR0aDogNTBweCAhaW1wb3J0YW50OwogIG1pbi13aWR0aDogNTBweCAhaW1wb3J0YW50OwogIGhlaWdodDogNDhweCAhaW1wb3J0YW50OwogIG1pbi1oZWlnaHQ6IDQ4cHggIWltcG9ydGFudDsKfQoud2luZG93LWJ1dHRvbiBzdmcgewogIHdpZHRoOiAyMnB4ICFpbXBvcnRhbnQ7CiAgaGVpZ2h0OiAyMnB4ICFpbXBvcnRhbnQ7CiAgc3Ryb2tlLXdpZHRoOiAxLjQ1ICFpbXBvcnRhbnQ7CiAgc2hhcGUtcmVuZGVyaW5nOiBnZW9tZXRyaWNQcmVjaXNpb247Cn0KLndvcmtzcGFjZSwgLm1haW4tYXJlYSwgLmNvbnRlbnQtc3RhY2ssIC5lZGl0b3ItY29udGFpbmVyLCAub3V0cHV0LXBhbmVsLCAub3V0cHV0LWJvZHksIC50ZXJtaW5hbC1pbnB1dC1yb3cgewogIGJhY2tncm91bmQtY29sb3I6IHZhcigtLWJnKSAhaW1wb3J0YW50Owp9Ci5hY3Rpdml0eS1yYWlsLCAuZWRpdG9yLWhlYWRlciwgLm91dHB1dC1oZWFkZXIsIC5zdGF0dXNiYXIgewogIGJhY2tncm91bmQtY29sb3I6IHZhcigtLXBhbmVsKSAhaW1wb3J0YW50Owp9Ci5wcmltYXJ5LXJ1biB7CiAgYm9yZGVyLWNvbG9yOiByZ2JhKDI1NSwgMjU1LCAyNTUsIDAuMjQpICFpbXBvcnRhbnQ7CiAgYmFja2dyb3VuZDogcmdiYSgyNTUsIDI1NSwgMjU1LCAwLjA5KSAhaW1wb3J0YW50OwogIGNvbG9yOiAjZjJmMmYyICFpbXBvcnRhbnQ7Cn0KLnByaW1hcnktcnVuOmhvdmVyIHsgYmFja2dyb3VuZDogcmdiYSgyNTUsIDI1NSwgMjU1LCAwLjE0KSAhaW1wb3J0YW50OyB9Cg=='
-          $stylesPath = Join-Path $root 'src/styles.css'
-          $frameStyles = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($cssBase64))
-          Add-Content -Encoding utf8 $stylesPath $frameStyles
+          $smoothMask = @'
 
-          $mainPath = Join-Path $root 'src/main.js'
+/* FRAME_V8_SMOOTH_MASK */
+.app-shell {
+  --corner-radius: 14px;
+  --corner-diameter: 28px;
+  border-radius: var(--corner-radius) !important;
+  overflow: hidden !important;
+  clip-path: none !important;
+  -webkit-clip-path: none !important;
+  transform: none !important;
+  backface-visibility: visible !important;
+  -webkit-mask:
+    linear-gradient(#000 0 0) center / 100% calc(100% - var(--corner-diameter)) no-repeat,
+    linear-gradient(#000 0 0) center / calc(100% - var(--corner-diameter)) 100% no-repeat,
+    radial-gradient(circle at 14px 14px, #000 0 13.25px, rgba(0, 0, 0, 0) 14px) left top / var(--corner-diameter) var(--corner-diameter) no-repeat,
+    radial-gradient(circle at 14px 14px, #000 0 13.25px, rgba(0, 0, 0, 0) 14px) right top / var(--corner-diameter) var(--corner-diameter) no-repeat,
+    radial-gradient(circle at 14px 14px, #000 0 13.25px, rgba(0, 0, 0, 0) 14px) left bottom / var(--corner-diameter) var(--corner-diameter) no-repeat,
+    radial-gradient(circle at 14px 14px, #000 0 13.25px, rgba(0, 0, 0, 0) 14px) right bottom / var(--corner-diameter) var(--corner-diameter) no-repeat !important;
+  mask:
+    linear-gradient(#000 0 0) center / 100% calc(100% - var(--corner-diameter)) no-repeat,
+    linear-gradient(#000 0 0) center / calc(100% - var(--corner-diameter)) 100% no-repeat,
+    radial-gradient(circle at 14px 14px, #000 0 13.25px, rgba(0, 0, 0, 0) 14px) left top / var(--corner-diameter) var(--corner-diameter) no-repeat,
+    radial-gradient(circle at 14px 14px, #000 0 13.25px, rgba(0, 0, 0, 0) 14px) right top / var(--corner-diameter) var(--corner-diameter) no-repeat,
+    radial-gradient(circle at 14px 14px, #000 0 13.25px, rgba(0, 0, 0, 0) 14px) left bottom / var(--corner-diameter) var(--corner-diameter) no-repeat,
+    radial-gradient(circle at 14px 14px, #000 0 13.25px, rgba(0, 0, 0, 0) 14px) right bottom / var(--corner-diameter) var(--corner-diameter) no-repeat !important;
+}
+
+body.maximized .app-shell {
+  border-radius: 0 !important;
+  -webkit-mask: none !important;
+  mask: none !important;
+}
+'@
+          Add-Content -Encoding utf8 'src/styles.css' $smoothMask
+
+          $mainPath = 'src/main.js'
           $main = Get-Content -Raw $mainPath
-          $main = $main.Replace('return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };', "return { ...DEFAULT_SETTINGS, ...JSON.parse(raw), theme: 'dark' };")
-          $main = $main.Replace('const settings = { ...DEFAULT_SETTINGS, ...next };', "const settings = { ...DEFAULT_SETTINGS, ...next, theme: 'dark' };")
-          $main = $main.Replace("nativeTheme.themeSource = settings.theme === 'light' ? 'light' : 'dark';", "nativeTheme.themeSource = 'dark';")
-          $main = $main.Replace("const perPixelFrame = process.platform === 'win32' && Boolean(frameAddon);", "const perPixelFrame = process.platform === 'win32';")
-          $main = $main.Replace("backgroundColor: perPixelFrame ? '#00000000' : '#111315',", "backgroundColor: perPixelFrame ? '#00000000' : '#000000',")
-          $main = $main.Replace('if (perPixelFrame) {', 'if (frameAddon) {')
+          $main = $main.Replace('hasShadow: true,', 'hasShadow: false,')
           Set-Content -Encoding utf8 $mainPath $main
 
-          $rendererPath = Join-Path $root 'src/renderer.js'
-          $renderer = Get-Content -Raw $rendererPath
-          $renderer = $renderer.Replace('document.documentElement.dataset.theme = state.settings.theme;', "document.documentElement.dataset.theme = 'dark';")
-          $renderer = $renderer.Replace("monaco.editor.setTheme(state.settings.theme === 'light' ? 'python-editor-light' : 'python-editor-dark');", "monaco.editor.setTheme('python-editor-dark');")
-          $renderer = $renderer.Replace("theme: state.settings.theme === 'light' ? 'python-editor-light' : 'python-editor-dark',", "theme: 'python-editor-dark',")
-          $renderer = $renderer.Replace("elements.themeSelect.value = state.settings.theme || 'dark';", "elements.themeSelect.value = 'dark';")
-          $renderer = $renderer.Replace('theme: elements.themeSelect.value,', "theme: 'dark',")
-          $renderer = $renderer.Replace("'editor.background': '#111315'", "'editor.background': '#000000'")
-          $renderer = $renderer.Replace("'editorGutter.background': '#111315'", "'editorGutter.background': '#000000'")
-          $renderer = $renderer.Replace("'editor.lineHighlightBackground': '#171A1D'", "'editor.lineHighlightBackground': '#080808'")
-          Set-Content -Encoding utf8 $rendererPath $renderer
-
-          $nativeBase64 = 'I2RlZmluZSBXSU4zMl9MRUFOX0FORF9NRUFOCiNpbmNsdWRlIDx3aW5kb3dzLmg+CiNpbmNsdWRlIDx3aW5kb3dzeC5oPgojaW5jbHVkZSA8bm9kZV9hcGkuaD4KI2luY2x1ZGUgPGFsZ29yaXRobT4KI2luY2x1ZGUgPGNzdHJpbmc+CgpuYW1lc3BhY2UgewoKY29uc3RleHByIHdjaGFyX3Qga09yaWdpbmFsUHJvY1Byb3BlcnR5W10gPSBMIlB5dGhvbkVkaXRvck9yaWdpbmFsV2luZG93UHJvYyI7CmNvbnN0ZXhwciBEV09SRCBrRHdtQm9yZGVyQ29sb3IgPSAzNDsKY29uc3RleHByIENPTE9SUkVGIGtEd21Db2xvck5vbmUgPSAweEZGRkZGRkZFOwoKdXNpbmcgRHdtU2V0V2luZG93QXR0cmlidXRlRm4gPSBIUkVTVUxUKFdJTkFQSSopKEhXTkQsIERXT1JELCBMUENWT0lELCBEV09SRCk7CgpXTkRQUk9DIE9yaWdpbmFsUHJvYyhIV05EIGh3bmQpIHsKICByZXR1cm4gcmVpbnRlcnByZXRfY2FzdDxXTkRQUk9DPihHZXRQcm9wVyhod25kLCBrT3JpZ2luYWxQcm9jUHJvcGVydHkpKTsKfQoKVUlOVCBXaW5kb3dEcGkoSFdORCBod25kKSB7CiAgdXNpbmcgR2V0RHBpRm9yV2luZG93Rm4gPSBVSU5UKFdJTkFQSSopKEhXTkQpOwogIHN0YXRpYyBhdXRvIGdldERwaUZvcldpbmRvdyA9IHJlaW50ZXJwcmV0X2Nhc3Q8R2V0RHBpRm9yV2luZG93Rm4+KAogICAgICBHZXRQcm9jQWRkcmVzcyhHZXRNb2R1bGVIYW5kbGVXKEwidXNlcjMyLmRsbCIpLCAiR2V0RHBpRm9yV2luZG93IikpOwogIHJldHVybiBnZXREcGlGb3JXaW5kb3cgPyBnZXREcGlGb3JXaW5kb3coaHduZCkgOiA5NlU7Cn0KCnZvaWQgRGlzYWJsZU5hdGl2ZUZyYW1lUGFpbnRpbmcoSFdORCBod25kKSB7CiAgc3RhdGljIEhNT0RVTEUgZHdtQXBpID0gTG9hZExpYnJhcnlXKEwiZHdtYXBpLmRsbCIpOwogIHN0YXRpYyBhdXRvIHNldFdpbmRvd0F0dHJpYnV0ZSA9IGR3bUFwaQogICAgICA/IHJlaW50ZXJwcmV0X2Nhc3Q8RHdtU2V0V2luZG93QXR0cmlidXRlRm4+KAogICAgICAgICAgICBHZXRQcm9jQWRkcmVzcyhkd21BcGksICJEd21TZXRXaW5kb3dBdHRyaWJ1dGUiKSkKICAgICAgOiBudWxscHRyOwoKICBpZiAoc2V0V2luZG93QXR0cmlidXRlKSB7CiAgICBjb25zdCBDT0xPUlJFRiBib3JkZXJDb2xvciA9IGtEd21Db2xvck5vbmU7CiAgICBzZXRXaW5kb3dBdHRyaWJ1dGUoaHduZCwga0R3bUJvcmRlckNvbG9yLCAmYm9yZGVyQ29sb3IsIHNpemVvZihib3JkZXJDb2xvcikpOwogIH0KCiAgTE9OR19QVFIgZXhTdHlsZSA9IEdldFdpbmRvd0xvbmdQdHJXKGh3bmQsIEdXTF9FWFNUWUxFKTsKICBleFN0eWxlICY9IH4oV1NfRVhfQ0xJRU5URURHRSB8IFdTX0VYX1dJTkRPV0VER0UgfCBXU19FWF9ETEdNT0RBTEZSQU1FIHwgV1NfRVhfU1RBVElDRURHRSk7CiAgU2V0V2luZG93TG9uZ1B0clcoaHduZCwgR1dMX0VYU1RZTEUsIGV4U3R5bGUpOwp9CgpMUkVTVUxUIENhbGxPcmlnaW5hbChIV05EIGh3bmQsIFVJTlQgbWVzc2FnZSwgV1BBUkFNIHdQYXJhbSwgTFBBUkFNIGxQYXJhbSkgewogIFdORFBST0Mgb3JpZ2luYWwgPSBPcmlnaW5hbFByb2MoaHduZCk7CiAgcmV0dXJuIG9yaWdpbmFsID8gQ2FsbFdpbmRvd1Byb2NXKG9yaWdpbmFsLCBod25kLCBtZXNzYWdlLCB3UGFyYW0sIGxQYXJhbSkKICAgICAgICAgICAgICAgICAgOiBEZWZXaW5kb3dQcm9jVyhod25kLCBtZXNzYWdlLCB3UGFyYW0sIGxQYXJhbSk7Cn0KCkxSRVNVTFQgQ0FMTEJBQ0sgRnJhbWVXaW5kb3dQcm9jKEhXTkQgaHduZCwgVUlOVCBtZXNzYWdlLCBXUEFSQU0gd1BhcmFtLCBMUEFSQU0gbFBhcmFtKSB7CiAgc3dpdGNoIChtZXNzYWdlKSB7CiAgICBjYXNlIFdNX05DQ0FMQ1NJWkU6CiAgICAgIHJldHVybiAwOwoKICAgIGNhc2UgV01fTkNQQUlOVDoKICAgICAgcmV0dXJuIDA7CgogICAgY2FzZSBXTV9OQ0FDVElWQVRFOgogICAgICByZXR1cm4gVFJVRTsKCiAgICBjYXNlIFdNX0RXTUNPTVBPU0lUSU9OQ0hBTkdFRDoKICAgIGNhc2UgV01fVEhFTUVDSEFOR0VEOgogICAgICBEaXNhYmxlTmF0aXZlRnJhbWVQYWludGluZyhod25kKTsKICAgICAgYnJlYWs7CgogICAgY2FzZSBXTV9OQ0hJVFRFU1Q6IHsKICAgICAgaWYgKCFJc1pvb21lZChod25kKSkgewogICAgICAgIFJFQ1QgcmVjdHt9OwogICAgICAgIGlmIChHZXRXaW5kb3dSZWN0KGh3bmQsICZyZWN0KSkgewogICAgICAgICAgY29uc3QgaW50IHggPSBHRVRfWF9MUEFSQU0obFBhcmFtKTsKICAgICAgICAgIGNvbnN0IGludCB5ID0gR0VUX1lfTFBBUkFNKGxQYXJhbSk7CiAgICAgICAgICBjb25zdCBpbnQgYm9yZGVyID0gc3RkOjptYXgoNiwgTXVsRGl2KDgsIHN0YXRpY19jYXN0PGludD4oV2luZG93RHBpKGh3bmQpKSwgOTYpKTsKCiAgICAgICAgICBjb25zdCBib29sIGxlZnQgPSB4ID49IHJlY3QubGVmdCAmJiB4IDwgcmVjdC5sZWZ0ICsgYm9yZGVyOwogICAgICAgICAgY29uc3QgYm9vbCByaWdodCA9IHggPCByZWN0LnJpZ2h0ICYmIHggPj0gcmVjdC5yaWdodCAtIGJvcmRlcjsKICAgICAgICAgIGNvbnN0IGJvb2wgdG9wID0geSA+PSByZWN0LnRvcCAmJiB5IDwgcmVjdC50b3AgKyBib3JkZXI7CiAgICAgICAgICBjb25zdCBib29sIGJvdHRvbSA9IHkgPCByZWN0LmJvdHRvbSAmJiB5ID49IHJlY3QuYm90dG9tIC0gYm9yZGVyOwoKICAgICAgICAgIGlmICh0b3AgJiYgbGVmdCkgcmV0dXJuIEhUVE9QTEVGVDsKICAgICAgICAgIGlmICh0b3AgJiYgcmlnaHQpIHJldHVybiBIVFRPUFJJR0hUOwogICAgICAgICAgaWYgKGJvdHRvbSAmJiBsZWZ0KSByZXR1cm4gSFRCT1RUT01MRUZUOwogICAgICAgICAgaWYgKGJvdHRvbSAmJiByaWdodCkgcmV0dXJuIEhUQk9UVE9NUklHSFQ7CiAgICAgICAgICBpZiAobGVmdCkgcmV0dXJuIEhUTEVGVDsKICAgICAgICAgIGlmIChyaWdodCkgcmV0dXJuIEhUUklHSFQ7CiAgICAgICAgICBpZiAodG9wKSByZXR1cm4gSFRUT1A7CiAgICAgICAgICBpZiAoYm90dG9tKSByZXR1cm4gSFRCT1RUT007CiAgICAgICAgfQogICAgICB9CiAgICAgIHJldHVybiBDYWxsT3JpZ2luYWwoaHduZCwgbWVzc2FnZSwgd1BhcmFtLCBsUGFyYW0pOwogICAgfQoKICAgIGNhc2UgV01fR0VUTUlOTUFYSU5GTzogewogICAgICBhdXRvKiBpbmZvID0gcmVpbnRlcnByZXRfY2FzdDxNSU5NQVhJTkZPKj4obFBhcmFtKTsKICAgICAgY29uc3QgSE1PTklUT1IgbW9uaXRvciA9IE1vbml0b3JGcm9tV2luZG93KGh3bmQsIE1PTklUT1JfREVGQVVMVFRPTkVBUkVTVCk7CiAgICAgIE1PTklUT1JJTkZPIG1vbml0b3JJbmZve3NpemVvZihNT05JVE9SSU5GTyl9OwogICAgICBpZiAobW9uaXRvciAmJiBHZXRNb25pdG9ySW5mb1cobW9uaXRvciwgJm1vbml0b3JJbmZvKSkgewogICAgICAgIGNvbnN0IFJFQ1QmIHdvcmsgPSBtb25pdG9ySW5mby5yY1dvcms7CiAgICAgICAgY29uc3QgUkVDVCYgYm91bmRzID0gbW9uaXRvckluZm8ucmNNb25pdG9yOwogICAgICAgIGluZm8tPnB0TWF4UG9zaXRpb24ueCA9IHdvcmsubGVmdCAtIGJvdW5kcy5sZWZ0OwogICAgICAgIGluZm8tPnB0TWF4UG9zaXRpb24ueSA9IHdvcmsudG9wIC0gYm91bmRzLnRvcDsKICAgICAgICBpbmZvLT5wdE1heFNpemUueCA9IHdvcmsucmlnaHQgLSB3b3JrLmxlZnQ7CiAgICAgICAgaW5mby0+cHRNYXhTaXplLnkgPSB3b3JrLmJvdHRvbSAtIHdvcmsudG9wOwogICAgICB9CiAgICAgIHJldHVybiAwOwogICAgfQoKICAgIGNhc2UgV01fTkNMQlVUVE9OREJMQ0xLOgogICAgICBpZiAod1BhcmFtID09IEhUQ0FQVElPTikgewogICAgICAgIFNob3dXaW5kb3coaHduZCwgSXNab29tZWQoaHduZCkgPyBTV19SRVNUT1JFIDogU1dfTUFYSU1JWkUpOwogICAgICAgIHJldHVybiAwOwogICAgICB9CiAgICAgIGJyZWFrOwoKICAgIGNhc2UgV01fTkNERVNUUk9ZOiB7CiAgICAgIFdORFBST0Mgb3JpZ2luYWwgPSBPcmlnaW5hbFByb2MoaHduZCk7CiAgICAgIFJlbW92ZVByb3BXKGh3bmQsIGtPcmlnaW5hbFByb2NQcm9wZXJ0eSk7CiAgICAgIGlmIChvcmlnaW5hbCkgewogICAgICAgIFNldFdpbmRvd0xvbmdQdHJXKGh3bmQsIEdXTFBfV05EUFJPQywgcmVpbnRlcnByZXRfY2FzdDxMT05HX1BUUj4ob3JpZ2luYWwpKTsKICAgICAgICByZXR1cm4gQ2FsbFdpbmRvd1Byb2NXKG9yaWdpbmFsLCBod25kLCBtZXNzYWdlLCB3UGFyYW0sIGxQYXJhbSk7CiAgICAgIH0KICAgICAgcmV0dXJuIERlZldpbmRvd1Byb2NXKGh3bmQsIG1lc3NhZ2UsIHdQYXJhbSwgbFBhcmFtKTsKICAgIH0KICB9CgogIHJldHVybiBDYWxsT3JpZ2luYWwoaHduZCwgbWVzc2FnZSwgd1BhcmFtLCBsUGFyYW0pOwp9CgpuYXBpX3ZhbHVlIEJvb2xlYW5SZXN1bHQobmFwaV9lbnYgZW52LCBib29sIHZhbHVlKSB7CiAgbmFwaV92YWx1ZSByZXN1bHQ7CiAgbmFwaV9nZXRfYm9vbGVhbihlbnYsIHZhbHVlLCAmcmVzdWx0KTsKICByZXR1cm4gcmVzdWx0Owp9CgpuYXBpX3ZhbHVlIEF0dGFjaChuYXBpX2VudiBlbnYsIG5hcGlfY2FsbGJhY2tfaW5mbyBpbmZvKSB7CiAgc2l6ZV90IGFyZ2MgPSAxOwogIG5hcGlfdmFsdWUgYXJndlsxXTsKICBuYXBpX2dldF9jYl9pbmZvKGVudiwgaW5mbywgJmFyZ2MsIGFyZ3YsIG51bGxwdHIsIG51bGxwdHIpOwogIGlmIChhcmdjICE9IDEpIHJldHVybiBCb29sZWFuUmVzdWx0KGVudiwgZmFsc2UpOwoKICBib29sIGlzQnVmZmVyID0gZmFsc2U7CiAgbmFwaV9pc19idWZmZXIoZW52LCBhcmd2WzBdLCAmaXNCdWZmZXIpOwogIGlmICghaXNCdWZmZXIpIHJldHVybiBCb29sZWFuUmVzdWx0KGVudiwgZmFsc2UpOwoKICB2b2lkKiBkYXRhID0gbnVsbHB0cjsKICBzaXplX3QgbGVuZ3RoID0gMDsKICBuYXBpX2dldF9idWZmZXJfaW5mbyhlbnYsIGFyZ3ZbMF0sICZkYXRhLCAmbGVuZ3RoKTsKICBpZiAoIWRhdGEgfHwgbGVuZ3RoID09IDApIHJldHVybiBCb29sZWFuUmVzdWx0KGVudiwgZmFsc2UpOwoKICBIV05EIGh3bmQgPSBudWxscHRyOwogIHN0ZDo6bWVtY3B5KCZod25kLCBkYXRhLCBzdGQ6Om1pbihsZW5ndGgsIHNpemVvZihod25kKSkpOwogIGlmICghSXNXaW5kb3coaHduZCkpIHJldHVybiBCb29sZWFuUmVzdWx0KGVudiwgZmFsc2UpOwogIGlmIChPcmlnaW5hbFByb2MoaHduZCkpIHJldHVybiBCb29sZWFuUmVzdWx0KGVudiwgdHJ1ZSk7CgogIExPTkdfUFRSIHN0eWxlID0gR2V0V2luZG93TG9uZ1B0clcoaHduZCwgR1dMX1NUWUxFKTsKICBzdHlsZSB8PSBXU19USElDS0ZSQU1FIHwgV1NfTUlOSU1JWkVCT1ggfCBXU19NQVhJTUlaRUJPWCB8IFdTX1NZU01FTlU7CiAgc3R5bGUgJj0gfihXU19DQVBUSU9OIHwgV1NfQk9SREVSIHwgV1NfRExHRlJBTUUpOwogIFNldFdpbmRvd0xvbmdQdHJXKGh3bmQsIEdXTF9TVFlMRSwgc3R5bGUpOwogIERpc2FibGVOYXRpdmVGcmFtZVBhaW50aW5nKGh3bmQpOwoKICBTZXRMYXN0RXJyb3IoMCk7CiAgV05EUFJPQyBvcmlnaW5hbCA9IHJlaW50ZXJwcmV0X2Nhc3Q8V05EUFJPQz4oU2V0V2luZG93TG9uZ1B0clcoCiAgICAgIGh3bmQsIEdXTFBfV05EUFJPQywgcmVpbnRlcnByZXRfY2FzdDxMT05HX1BUUj4oRnJhbWVXaW5kb3dQcm9jKSkpOwogIGlmICghb3JpZ2luYWwgJiYgR2V0TGFzdEVycm9yKCkgIT0gMCkgcmV0dXJuIEJvb2xlYW5SZXN1bHQoZW52LCBmYWxzZSk7CgogIFNldFByb3BXKGh3bmQsIGtPcmlnaW5hbFByb2NQcm9wZXJ0eSwgcmVpbnRlcnByZXRfY2FzdDxIQU5ETEU+KG9yaWdpbmFsKSk7CiAgU2V0V2luZG93UG9zKGh3bmQsIG51bGxwdHIsIDAsIDAsIDAsIDAsCiAgICAgICAgICAgICAgIFNXUF9OT01PVkUgfCBTV1BfTk9TSVpFIHwgU1dQX05PWk9SREVSIHwgU1dQX05PQUNUSVZBVEUgfCBTV1BfRlJBTUVDSEFOR0VEKTsKICBEaXNhYmxlTmF0aXZlRnJhbWVQYWludGluZyhod25kKTsKICByZXR1cm4gQm9vbGVhblJlc3VsdChlbnYsIHRydWUpOwp9CgpuYXBpX3ZhbHVlIEluaXRpYWxpemUobmFwaV9lbnYgZW52LCBuYXBpX3ZhbHVlIGV4cG9ydHMpIHsKICBuYXBpX3ZhbHVlIGF0dGFjaDsKICBuYXBpX2NyZWF0ZV9mdW5jdGlvbihlbnYsICJhdHRhY2giLCBOQVBJX0FVVE9fTEVOR1RILCBBdHRhY2gsIG51bGxwdHIsICZhdHRhY2gpOwogIG5hcGlfc2V0X25hbWVkX3Byb3BlcnR5KGVudiwgZXhwb3J0cywgImF0dGFjaCIsIGF0dGFjaCk7CiAgcmV0dXJuIGV4cG9ydHM7Cn0KCn0gIC8vIG5hbWVzcGFjZQoKTkFQSV9NT0RVTEUoTk9ERV9HWVBfTU9EVUxFX05BTUUsIEluaXRpYWxpemUpCg=='
-          $nativePath = Join-Path $root 'native/window_frame.cc'
-          [IO.File]::WriteAllBytes($nativePath, [Convert]::FromBase64String($nativeBase64))
-
-      - name: Verify frame v7 source
+      - name: Verify smooth-corner source
         shell: pwsh
         working-directory: .chatgpt-build/python-editor
         run: |
           $html = Get-Content -Raw 'src/index.html'
           $css = Get-Content -Raw 'src/styles.css'
-          $package = Get-Content -Raw 'package.json'
+          $main = Get-Content -Raw 'src/main.js'
           $native = Get-Content -Raw 'native/window_frame.cc'
-          if ($html -match 'class="app-logo"') { throw 'Title-bar logo still exists.' }
-          if ($html -notmatch 'data-build="frame-v7"') { throw 'Frame v7 marker is missing.' }
-          if ($css -notmatch 'FRAME_V7_DIRECT') { throw 'Frame v7 CSS is missing.' }
-          if ($css -notmatch 'grid-template-rows:\s*48px') { throw '48px title bar is missing.' }
-          if ($css -notmatch 'width:\s*22px') { throw '22px caption glyphs are missing.' }
-          if ($css -notmatch '--bg:\s*#000000') { throw 'Pure-black theme is missing.' }
-          if ($css -notmatch 'clip-path:\s*inset\(0 round 12px\)') { throw 'Rounded clipping is missing.' }
-          if ($package -notmatch 'PythonEditorFrameV7') { throw 'V7 executable name is missing.' }
-          if ($native -notmatch 'DisableNativeFramePainting') { throw 'Native border suppression is missing.' }
-          Write-Host 'Frame v7 source verified.'
+          $package = Get-Content -Raw 'package.json'
+          if ($html -notmatch 'frame-v8-smooth-corners') { throw 'V8 build marker is missing.' }
+          if ($css -notmatch 'FRAME_V8_SMOOTH_MASK') { throw 'Smooth mask override is missing.' }
+          if ($css -notmatch 'clip-path:\s*none\s*!important') { throw 'The hard clip was not disabled.' }
+          if ($css -notmatch 'radial-gradient') { throw 'The anti-aliased corner mask is missing.' }
+          if ($css -notmatch 'body\.maximized[\s\S]*mask:\s*none') { throw 'Maximized square-corner override is missing.' }
+          if ($main -notmatch 'hasShadow:\s*false') { throw 'Square native shadow is still enabled.' }
+          if ($native -match 'SetWindowRgn|CreateRoundRectRgn') { throw 'A jagged Windows region was introduced.' }
+          if ($package -notmatch 'PythonEditorSmoothCornersV8') { throw 'V8 executable name is missing.' }
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -126,37 +152,40 @@ jobs:
         working-directory: .chatgpt-build/python-editor
         run: npm run dist
 
-      - name: Prepare verified deliverables
+      - name: Verify packaged application
         shell: pwsh
         working-directory: .chatgpt-build/python-editor
         run: |
-          if (-not (Test-Path 'dist/PythonEditorFrameV7.exe')) { throw 'V7 portable executable was not created.' }
-          if (-not (Test-Path 'dist/win-unpacked/resources/app.asar')) { throw 'Packaged app.asar was not created.' }
-          Copy-Item 'src/index.html' 'dist/verified-index.html' -Force
-          Copy-Item 'src/styles.css' 'dist/verified-styles.css' -Force
-          Copy-Item 'package.json' 'dist/verified-package.json' -Force
-          $hash = (Get-FileHash 'dist/PythonEditorFrameV7.exe' -Algorithm SHA256).Hash
+          if (-not (Test-Path 'dist/PythonEditorSmoothCornersV8.exe')) { throw 'V8 executable was not created.' }
+          if (-not (Test-Path 'dist/win-unpacked/resources/app.asar')) { throw 'Packaged ASAR was not created.' }
+          npx asar extract 'dist/win-unpacked/resources/app.asar' 'dist/verified-app'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not extract packaged ASAR.' }
+          $packedHtml = Get-Content -Raw 'dist/verified-app/src/index.html'
+          $packedCss = Get-Content -Raw 'dist/verified-app/src/styles.css'
+          $packedMain = Get-Content -Raw 'dist/verified-app/src/main.js'
+          $packedNative = Get-Content -Raw 'dist/verified-app/native/window_frame.cc'
+          if ($packedHtml -notmatch 'frame-v8-smooth-corners') { throw 'Packaged V8 marker is missing.' }
+          if ($packedCss -notmatch 'FRAME_V8_SMOOTH_MASK') { throw 'Packaged smooth mask is missing.' }
+          if ($packedCss -notmatch 'clip-path:\s*none\s*!important') { throw 'Packaged hard clip is still active.' }
+          if ($packedMain -notmatch 'hasShadow:\s*false') { throw 'Packaged native shadow is still active.' }
+          if ($packedNative -match 'SetWindowRgn|CreateRoundRectRgn') { throw 'Packaged app uses a jagged Windows region.' }
+          $hash = (Get-FileHash 'dist/PythonEditorSmoothCornersV8.exe' -Algorithm SHA256).Hash
           @(
-            'PythonEditorFrameV7.exe',
+            'PythonEditorSmoothCornersV8.exe',
             "SHA256=$hash",
-            'TitleBar=48px',
-            'CaptionGlyphs=22px',
-            'TitleBarLogo=removed',
-            'Theme=pure-black',
-            'RoundedClip=12px',
-            'NativeBorderPainting=disabled'
-          ) | Set-Content 'dist/verification.txt'
+            'Corners=per-pixel-alpha-mask',
+            'HardClip=disabled',
+            'SetWindowRgn=not-used',
+            'MaximizedCorners=square',
+            'NativeShadow=disabled'
+          ) | Set-Content 'dist/verification-v8.txt'
 
-      - name: Upload verified v7 build
+      - name: Upload smooth-corner executable
         uses: actions/upload-artifact@v4
         with:
-          name: Python-Editor-Frame-v7-direct-final
+          name: Python-Editor-Smooth-Corners-v8
           path: |
-            .chatgpt-build/python-editor/dist/PythonEditorFrameV7.exe
-            .chatgpt-build/python-editor/dist/win-unpacked/resources/app.asar
-            .chatgpt-build/python-editor/dist/verified-index.html
-            .chatgpt-build/python-editor/dist/verified-styles.css
-            .chatgpt-build/python-editor/dist/verified-package.json
-            .chatgpt-build/python-editor/dist/verification.txt
+            .chatgpt-build/python-editor/dist/PythonEditorSmoothCornersV8.exe
+            .chatgpt-build/python-editor/dist/verification-v8.txt
           if-no-files-found: error
           compression-level: 0
