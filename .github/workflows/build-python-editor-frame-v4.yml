@@ -76,12 +76,14 @@ jobs:
         working-directory: .chatgpt-build/python-editor
         run: npm run dist
 
-      - name: Verify build output
+      - name: Verify native frame module
         shell: pwsh
         working-directory: .chatgpt-build/python-editor
         run: |
           if (-not (Test-Path 'build/Release/window_frame.node')) { throw 'Native frame module was not created.' }
-          if (-not (Test-Path 'dist/PythonEditorFrameV5.exe')) { throw 'Portable executable was not created.' }
+          $exe = Get-ChildItem 'dist/*.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'Portable executable was not created.' }
+          Copy-Item $exe.FullName 'dist/PythonEditorFrameV5.exe' -Force
 
       - name: Upload executable
         uses: actions/upload-artifact@v4
