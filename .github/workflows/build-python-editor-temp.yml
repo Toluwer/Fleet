@@ -1,4 +1,4 @@
-name: Build Python Editor
+name: Build Python Editor Frame
 
 on:
   pull_request:
@@ -15,22 +15,31 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Restore application source
+      - name: Restore application source and frame patch
         shell: pwsh
         run: |
           $archive = Join-Path $env:RUNNER_TEMP 'python-editor-source.tar.gz'
           $base64 = (Get-ChildItem '.chatgpt-build/chunks/part-*.txt' |
             Sort-Object Name |
             ForEach-Object { Get-Content -Raw $_.FullName }) -join ''
-          $bytes = [Convert]::FromBase64String($base64)
-          [IO.File]::WriteAllBytes($archive, $bytes)
+          [IO.File]::WriteAllBytes($archive, [Convert]::FromBase64String($base64))
           New-Item -ItemType Directory -Force '.chatgpt-build/python-editor' | Out-Null
           tar -xzf $archive -C '.chatgpt-build/python-editor'
+
+          $patchArchive = Join-Path $env:RUNNER_TEMP 'python-editor-frame-patch.tar.gz'
+          $patchBase64 = Get-Content -Raw '.chatgpt-build/python-editor-frame-patch.tar.gz.b64'
+          [IO.File]::WriteAllBytes($patchArchive, [Convert]::FromBase64String($patchBase64))
+          tar -xzf $patchArchive -C '.chatgpt-build/python-editor'
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Set up Python for node-gyp
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - name: Restore application icon
         shell: pwsh
@@ -58,7 +67,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Python-Editor-Build-Log
+          name: Python-Editor-Frame-Build-Log
           path: |
             .chatgpt-build/python-editor/build.log
             .chatgpt-build/python-editor/build-exit-code.txt
@@ -73,11 +82,15 @@ jobs:
             Write-Error "Electron build failed with exit code $exitCode."
             exit $exitCode
           }
+          if (-not (Test-Path 'build/Release/window_frame.node')) {
+            Write-Error 'Native window frame module was not created.'
+            exit 1
+          }
 
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
-          name: Python-Editor-Windows
+          name: Python-Editor-Windows-Frame-v2
           path: .chatgpt-build/python-editor/dist/Python Editor.exe
           if-no-files-found: error
           compression-level: 0
