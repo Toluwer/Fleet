@@ -27,7 +27,9 @@ jobs:
           tar -xzf $archive -C '.chatgpt-build/python-editor'
 
           $patchArchive = Join-Path $env:RUNNER_TEMP 'python-editor-frame-patch.tar.gz'
-          $patchBase64 = Get-Content -Raw '.chatgpt-build/python-editor-frame-patch.tar.gz.b64'
+          $patchBase64 = (Get-ChildItem '.chatgpt-build/frame-v3/part-*.txt' |
+            Sort-Object Name |
+            ForEach-Object { Get-Content -Raw $_.FullName }) -join ''
           [IO.File]::WriteAllBytes($patchArchive, [Convert]::FromBase64String($patchBase64))
           tar -xzf $patchArchive -C '.chatgpt-build/python-editor'
 
