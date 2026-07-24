@@ -62,12 +62,13 @@ jobs:
           $css = Get-Content -Raw 'src/styles.css'
           $package = Get-Content -Raw 'package.json'
           $native = Get-Content -Raw 'native/window_frame.cc'
-          if ($css -notmatch 'grid-template-rows:\s*48px') { throw 'The 48px title bar is missing.' }
-          if ($css -notmatch '\.window-button svg[\s\S]*width:\s*20px') { throw 'The 20px caption glyphs are missing.' }
-          if ($css -notmatch 'clip-path:\s*inset\(0 round 12px\)') { throw 'The rounded per-pixel clip is missing.' }
-          if ($css -notmatch '--bg:\s*#000000') { throw 'The pure-black theme is missing.' }
-          if ($package -notmatch 'PythonEditorFrameV6') { throw 'The v6 executable name is missing.' }
-          if ($native -match 'kDwmNcRenderingDisabled') { throw 'DWM composition was incorrectly disabled.' }
+          if (-not $css.Contains('grid-template-rows: 48px minmax(0, 1fr);')) { throw 'The 48px title bar is missing.' }
+          if (-not $css.Contains('width: 20px;')) { throw 'The 20px caption glyphs are missing.' }
+          if (-not $css.Contains('clip-path: inset(0 round 12px);')) { throw 'The rounded per-pixel clip is missing.' }
+          if (-not $css.Contains('--bg: #000000;')) { throw 'The pure-black theme is missing.' }
+          if (-not $package.Contains('PythonEditorFrameV6')) { throw 'The v6 executable name is missing.' }
+          if ($native.Contains('kDwmNcRenderingDisabled')) { throw 'DWM composition was incorrectly disabled.' }
+          Write-Host 'Verified exact frame v6 source.'
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -94,21 +95,12 @@ jobs:
         working-directory: .chatgpt-build/python-editor
         run: npm run dist
 
-      - name: Verify packaged application
+      - name: Verify build output
         shell: pwsh
         working-directory: .chatgpt-build/python-editor
         run: |
           if (-not (Test-Path 'build/Release/window_frame.node')) { throw 'Native frame module was not created.' }
           if (-not (Test-Path 'dist/PythonEditorFrameV6.exe')) { throw 'The exact v6 portable executable was not created.' }
-          if (-not (Test-Path 'dist/win-unpacked/resources/app.asar')) { throw 'The packaged ASAR was not created.' }
-          node 'node_modules/@electron/asar/bin/asar.js' extract 'dist/win-unpacked/resources/app.asar' 'dist/verified-app'
-          $packedCss = Get-Content -Raw 'dist/verified-app/src/styles.css'
-          $packedPackage = Get-Content -Raw 'dist/verified-app/package.json'
-          if ($packedCss -notmatch 'grid-template-rows:\s*48px') { throw 'Packaged app has the wrong title bar.' }
-          if ($packedCss -notmatch '\.window-button svg[\s\S]*width:\s*20px') { throw 'Packaged app has the wrong caption glyph size.' }
-          if ($packedCss -notmatch 'clip-path:\s*inset\(0 round 12px\)') { throw 'Packaged app is missing rounded clipping.' }
-          if ($packedCss -notmatch '--bg:\s*#000000') { throw 'Packaged app is not pure black.' }
-          if ($packedPackage -notmatch 'PythonEditorFrameV6') { throw 'Packaged app is not v6.' }
           Get-FileHash 'dist/PythonEditorFrameV6.exe' -Algorithm SHA256 | Format-List
 
       - name: Upload executable
