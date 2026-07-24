@@ -1,0 +1,58 @@
+{
+  "name": "python-editor",
+  "version": "1.0.7",
+  "description": "A focused Python code editor with an integrated runner.",
+  "main": "src/main.js",
+  "author": "Toluwa",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "npm run build:native && electron-builder --win portable --x64",
+    "build:native": "node-gyp rebuild --target=43.2.0 --arch=x64 --dist-url=https://electronjs.org/headers"
+  },
+  "dependencies": {
+    "monaco-editor": "0.56.0"
+  },
+  "devDependencies": {
+    "electron": "43.2.0",
+    "electron-builder": "26.15.3",
+    "node-gyp": "11.4.2"
+  },
+  "build": {
+    "appId": "com.toluwa.pythoneditor",
+    "productName": "Python Editor",
+    "copyright": "Copyright © 2026 Toluwa",
+    "compression": "maximum",
+    "asar": true,
+    "npmRebuild": false,
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "node_modules/monaco-editor/**/*",
+      "package.json",
+      "build/Release/*.node"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "executableName": "PythonEditorFrameV7"
+    },
+    "portable": {
+      "artifactName": "PythonEditorFrameV7.exe",
+      "requestExecutionLevel": "user"
+    },
+    "asarUnpack": [
+      "**/*.node"
+    ]
+  }
+}
