@@ -1,0 +1,86 @@
+name: Build Python Editor Frame v4
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore verified source and apply frame fixes
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $headers = @{
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $artifactZip = Join-Path $env:RUNNER_TEMP 'frame-v2-source.zip'
+          Invoke-WebRequest `
+            -Headers $headers `
+            -Uri 'https://api.github.com/repos/Toluwer/Fleet/actions/artifacts/8604657212/zip' `
+            -OutFile $artifactZip `
+            -MaximumRedirection 5
+
+          $artifactDir = Join-Path $env:RUNNER_TEMP 'frame-v2-source'
+          Expand-Archive -Path $artifactZip -DestinationPath $artifactDir -Force
+          $sourceArchive = Join-Path $artifactDir 'frame-v2-source.tar.gz'
+          if (-not (Test-Path $sourceArchive)) { throw 'Verified source archive was not found.' }
+
+          New-Item -ItemType Directory -Force '.chatgpt-build/python-editor' | Out-Null
+          tar -xzf $sourceArchive -C '.chatgpt-build/python-editor'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not extract verified source.' }
+
+          git apply --directory='.chatgpt-build/python-editor' --whitespace=nowarn '.chatgpt-build/frame-v2-to-v4.patch'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not apply frame v4 changes.' }
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Python for node-gyp
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Restore application icon
+        shell: pwsh
+        working-directory: .chatgpt-build/python-editor
+        run: |
+          $bytes = [Convert]::FromBase64String((Get-Content -Raw assets/icon.ico.b64))
+          [IO.File]::WriteAllBytes((Join-Path (Get-Location) 'assets/icon.ico'), $bytes)
+
+      - name: Install dependencies
+        working-directory: .chatgpt-build/python-editor
+        run: npm install --no-audit --no-fund
+
+      - name: Build portable executable
+        working-directory: .chatgpt-build/python-editor
+        run: npm run dist
+
+      - name: Verify build
+        shell: pwsh
+        working-directory: .chatgpt-build/python-editor
+        run: |
+          if (-not (Test-Path 'build/Release/window_frame.node')) { throw 'Native frame module was not created.' }
+          if (-not (Test-Path 'dist/PythonEditorFrameV4.exe')) { throw 'Portable executable was not created.' }
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Python-Editor-Frame-v4
+          path: .chatgpt-build/python-editor/dist/PythonEditorFrameV4.exe
+          if-no-files-found: error
+          compression-level: 0
