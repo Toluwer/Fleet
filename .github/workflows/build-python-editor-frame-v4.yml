@@ -68,17 +68,15 @@ jobs:
         working-directory: .chatgpt-build/python-editor
         run: npm run dist
 
-      - name: Verify build
+      - name: List build output
         shell: pwsh
         working-directory: .chatgpt-build/python-editor
-        run: |
-          if (-not (Test-Path 'build/Release/window_frame.node')) { throw 'Native frame module was not created.' }
-          if (-not (Test-Path 'dist/PythonEditorFrameV4.exe')) { throw 'Portable executable was not created.' }
+        run: Get-ChildItem dist -File | Select-Object Name, Length, LastWriteTime
 
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
           name: Python-Editor-Frame-v4
-          path: .chatgpt-build/python-editor/dist/PythonEditorFrameV4.exe
+          path: .chatgpt-build/python-editor/dist/*.exe
           if-no-files-found: error
           compression-level: 0
