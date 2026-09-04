@@ -3,6 +3,7 @@
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 
 const logger = require('./logger');
@@ -199,9 +200,34 @@ function makeBackend(ctx) {
     const res = await fetch(url, { headers: { 'User-Agent': 'Fleet-Updater' } });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const buf = Buffer.from(await res.arrayBuffer());
-    fs.writeFileSync(target, buf);
     if (latest.size && buf.length !== Number(latest.size)) throw new Error('Downloaded installer size did not match latest.yml.');
+    // Verify the signed digest published in latest.yml BEFORE writing anything
+    // to disk or executing it — a mismatched download is never run.
+    const expected = normalizeDigest(latest.sha512);
+    if (expected) {
+      const actual = crypto.createHash('sha512').update(buf).digest('base64');
+      if (normalizeDigest(actual) !== expected) {
+        throw new Error('Downloaded installer failed checksum verification and was discarded.');
+      }
+    } else {
+      throw new Error('Update feed did not publish a checksum for the installer, so it cannot be verified.');
+    }
+    fs.writeFileSync(target, buf);
     return target;
+  }
+
+  /** Accept base64, base64url or hex digests from latest.yml. */
+  function normalizeDigest(value) {
+    const raw = String(value || '').trim().replace(/\s+/g, '');
+    if (!raw) return '';
+    if (/^[A-Za-z0-9+/_-]+={0,2}$/.test(raw) && !/^[0-9a-fA-F]{128}$/.test(raw)) {
+      // base64 / base64url form
+      const b64 = raw.replace(/-/g, '+').replace(/_/g, '/');
+      const bin = Buffer.from(b64, 'base64');
+      return bin.length === 64 ? bin.toString('hex') : raw;
+    }
+    if (/^[0-9a-fA-F]{128}$/.test(raw)) return raw.toLowerCase();
+    return raw;
   }
 
   async function checkForUpdate() {
@@ -272,10 +298,9 @@ function makeBackend(ctx) {
       return doLaunch({ accountIds, targetUserId });
     },
     async people_list(payload) { return people.listFriends(asInt(payload.page) || 0, asInt(payload.pageSize) || 9, !!payload.force); },
-    async people_server_list(payload) { return people.listServerPeople ? people.listServerPeople(!!payload.force) : { ok: false, error: 'Server roster unavailable.' }; },
-    async people_search(payload) { return people.search ? people.search(payload.query, payload.cursor) : { ok: false, error: 'Search unavailable.' }; },
-    async people_profile(payload) { return people.profile ? people.profile(payload.userId) : { ok: false, error: 'Profile unavailable.' }; },
-    async people_presence(payload) { return people.presence ? people.presence(payload.userIds) : { ok: true, presence: [] }; },
+    async people_search(payload) { return people.search(payload.query, payload.cursor); },
+    async people_profile(payload) { return people.profile(payload.userId); },
+    async people_presence(payload) { return people.presence(payload.userIds); },
     async accounts_list() { return { ok: true, accounts: accounts.list() }; },
     async accounts_add(payload) { return accounts.add(payload || {}); },
     async accounts_add_cookie(payload) { return accounts.addFromCookie(String((payload && payload.cookie) || '')); },
@@ -335,11 +360,11 @@ function makeBackend(ctx) {
         if (pathStatus.normalized) partial.robloxPath = pathStatus.normalized;
       }
       const settings = store.saveSettings(partial);
-      if (settings.pollIntervalMs !== before.pollIntervalMs) monitor.setInterval(settings.pollIntervalMs);
+      if (settings.pollIntervalMs !== before.pollIntervalMs) monitor.setPollInterval(settings.pollIntervalMs);
       return { ok: true, settings };
     },
     async settings_reset() {
-      const settings = store.resetSettings(); monitor.setInterval(settings.pollIntervalMs); return { ok: true, settings };
+      const settings = store.resetSettings(); monitor.setPollInterval(settings.pollIntervalMs); return { ok: true, settings };
     },
     async settings_browse() {
       const picked = await pickFile();

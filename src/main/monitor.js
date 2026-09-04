@@ -58,7 +58,7 @@ class ProcessMonitor extends EventEmitter {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
   }
 
-  setInterval(ms) {
+  setPollInterval(ms) {
     this.intervalMs = Math.max(750, ms | 0);
     if (this.timer) { this.stop(); this.start(); }
   }

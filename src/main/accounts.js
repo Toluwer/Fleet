@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /**
  * accounts.js — Roblox account management.
@@ -614,6 +614,8 @@ async function getUserInfo(userId) {
       info = { name: j.name || '', displayName: j.displayName || j.name || '', bio: (j.description || '').trim() };
     }
   } catch (_) {}
+  // Bound the cache so long-running sessions never grow it without limit.
+  while (bioCache.size >= 200) bioCache.delete(bioCache.keys().next().value);
   bioCache.set(userId, info);
   return info;
 }

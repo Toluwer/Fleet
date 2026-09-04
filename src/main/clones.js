@@ -10,14 +10,13 @@
  * therefore a distinct per-path mutex — with no file copying (a junction is a
  * reparse point, created instantly and sharing the original files).
  *
- * Safety: junctions only ever live under our clones root, and removal uses a
- * plain `rmdir` (never `/s`) which deletes the junction link without touching
- * the target's contents.
+ * Junctions are created with Node's own filesystem API (no `cmd.exe /c mklink`
+ * child processes) and removed with a plain rmdir that never recurses into the
+ * target's contents.
  */
 
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
 
 let root = null;
 let logger = { info() {}, warn() {}, error() {} };
@@ -30,16 +29,26 @@ function configure(dir, log) {
   try { fs.mkdirSync(root, { recursive: true }); } catch (_) {}
 }
 
+function removeJunctionLink(link) {
+  // Remove just the reparse point, never its contents. unlinkSync handles
+  // junctions and symlinks on Windows (and symlinks on POSIX); rmdirSync is a
+  // fallback for older Node builds that expose junctions as directories.
+  try { fs.unlinkSync(link); return; } catch (_) {}
+  try { fs.rmdirSync(link); } catch (_) {}
+}
+
 function makeJunction(link, target) {
   // Recreate so the junction always points at the current version folder.
-  try { execFileSync('cmd', ['/c', 'rmdir', link], { stdio: 'ignore', windowsHide: true }); } catch (_) {}
-  execFileSync('cmd', ['/c', 'mklink', '/J', link, target], { stdio: 'ignore', windowsHide: true });
+  // fs.symlinkSync with type 'junction' needs no elevation on Windows and does
+  // not spawn cmd.exe (fewer child processes, less antivirus friction).
+  removeJunctionLink(link);
+  fs.symlinkSync(target, link, 'junction');
 }
 
 function removeJunction(link) {
-  // Only ever remove links inside our root, and never with /s.
+  // Only ever remove links inside our root, and never recursively.
   if (!root || !link.startsWith(root)) return;
-  try { execFileSync('cmd', ['/c', 'rmdir', link], { stdio: 'ignore', windowsHide: true }); } catch (_) {}
+  removeJunctionLink(link);
 }
 
 /**

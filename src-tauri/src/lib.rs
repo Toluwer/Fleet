@@ -401,7 +401,6 @@ backend_command!(games_search, "games_search", (query: Option<String>, page_toke
 backend_command!(games_servers, "games_servers", (place_id: Option<String>, cursor: Option<String>), json!({ "placeId": place_id, "cursor": cursor }));
 backend_command!(games_server_scan, "games_server_scan", (place_id: Option<String>, page_limit: Option<usize>), json!({ "placeId": place_id, "pageLimit": page_limit }));
 backend_command!(people_list, "people_list", (page: Option<usize>, page_size: Option<usize>, force: Option<bool>), json!({ "page": page, "pageSize": page_size, "force": force }));
-backend_command!(people_server_list, "people_server_list", (force: Option<bool>), json!({ "force": force }));
 backend_command!(people_search, "people_search", (query: Option<String>, cursor: Option<String>), json!({ "query": query, "cursor": cursor }));
 backend_command!(people_profile, "people_profile", (user_id: Option<i64>), json!({ "userId": user_id }));
 backend_command!(people_presence, "people_presence", (user_ids: Vec<i64>), json!({ "userIds": user_ids }));
@@ -482,7 +481,6 @@ pub fn run() {
             games_servers,
             games_server_scan,
             people_list,
-            people_server_list,
             people_search,
             people_profile,
             people_presence,

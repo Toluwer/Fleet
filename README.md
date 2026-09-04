@@ -79,6 +79,10 @@ Tauri desktop shell · vanilla HTML/CSS/JS renderer · [koffi](https://koffi.dev
 
 Existing account sessions remain stored only on your machine and are never shown in the UI. Run only as many clients as your PC can handle, and follow Roblox's Terms of Use.
 
+## Antivirus false positives
+
+Fleet is unsigned open-source software, so some antivirus engines occasionally score its installer with heuristic ("!ml") verdicts. Fleet contains **no process-memory reading** — the old experimental in-memory server roster was removed precisely because that pattern reads like a cheat tool to antivirus engines. If your antivirus blocks a Fleet file, see [docs/ANTIVIRUS.md](docs/ANTIVIRUS.md) for why it happens and how to submit a false-positive report (Microsoft usually clears these within a few days of submission).
+
 ## License
 
 MIT

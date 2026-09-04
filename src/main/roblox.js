@@ -28,7 +28,9 @@ function normalizePlayerPath(value) {
     let raw = expandEnvVars(value).trim();
     if (!raw) return '';
     raw = raw.replace(/^file:\/+/i, '');
-    raw = raw.replace(/\//g, path.sep);
+    // Accept either separator regardless of the platform this runs on, so
+    // quoted registry strings, env-var paths and POSIX paths all resolve.
+    raw = raw.replace(/[\\/]+/g, path.sep);
 
     const quoted = raw.match(/"([^"]*RobloxPlayerBeta\.exe)"/i);
     if (quoted) raw = quoted[1];

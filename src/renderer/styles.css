@@ -440,12 +440,6 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 /* ----------------------------- People ----------------------------- */
 .people-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(264px, 1fr)); gap: var(--space-grid); }
 .people-tools { margin-top: 0; }
-.server-roster-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 14px;
-  padding: 0 2px; color: var(--ink-3); font-size: 12px; }
-.server-roster-meta .row-split { flex: 1; align-items: center !important; min-width: 0; gap: 10px !important; }
-.server-roster-meta .section-title { color: var(--ink); font-size: 13px; font-weight: 650; white-space: nowrap; }
-.server-roster-meta .hint { margin-top: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.server-roster-refresh { color: var(--ink-3); font-size: 11px; white-space: nowrap; }
 .person { border: 1px solid var(--hair); border-radius: var(--r-lg); padding: 16px; background: var(--surface);
   box-shadow: var(--sh-sm); display: flex; flex-direction: column; gap: 12px; min-height: 156px; animation: rowIn .3s var(--ease);
   transition: border-color .16s var(--ease), box-shadow .16s var(--ease), transform .16s var(--ease); }
@@ -458,13 +452,6 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 .person .uname { font-size: 12px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .person-bio { font-size: 12.5px; color: var(--ink-2); line-height: 1.4; overflow: hidden;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
-.server-person { min-height: 166px; animation: none; }
-.server-avatar-slot { display: block; flex: none; width: 48px; height: 48px; }
-.server-person-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.server-person-stats > div { min-width: 0; padding: 9px 10px; border: 1px solid var(--hair); border-radius: var(--r-sm); background: var(--surface-2); }
-.server-person-stats span { display: block; margin-bottom: 3px; color: var(--ink-3); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
-.server-person-stats strong { display: block; color: var(--ink); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.server-person-id { color: var(--ink-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 
 /* ----------------------------- Tables ----------------------------- */
 table.data { width: 100%; border-collapse: collapse; font-size: 13px; }

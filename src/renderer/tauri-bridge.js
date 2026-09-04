@@ -93,7 +93,6 @@ window.fleet = {
   },
   people: {
     list: (page, pageSize, force) => tauriInvoke('people_list', { page, pageSize, force }),
-    serverList: (force) => tauriInvoke('people_server_list', { force }),
     search: (query, cursor) => tauriInvoke('people_search', { query, cursor }),
     profile: (userId) => tauriInvoke('people_profile', { userId }),
     presence: (userIds) => tauriInvoke('people_presence', { userIds }),
