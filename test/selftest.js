@@ -601,6 +601,17 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && !installerTemplate.includes('MUI_PAGE_WELCOME')
     && !installerTemplate.includes('MUI_PAGE_DIRECTORY')
     && !installerTemplate.includes('MUI_PAGE_FINISH'));
+  check('Installer matches the Fleet app theme with native caption buttons',
+    installerTemplate.includes('!define FLEET_ACCENT 0x2563EB')
+    && installerTemplate.includes('Segoe MDL2 Assets')
+    && installerTemplate.includes('Function FleetHoverPoll')
+    && installerTemplate.includes('DarkMode_Explorer')
+    && installerTemplate.includes('MUI_CUSTOMFUNCTION_GUIINIT FleetGuiInit'));
+  check('Uninstaller uses the same custom Fleet surface instead of the stock wizard',
+    installerTemplate.includes('UninstPage custom un.FleetConfirmPage')
+    && installerTemplate.includes('Function un.FleetConfirmPage')
+    && installerTemplate.includes('Function un.InstFilesShow')
+    && !installerTemplate.includes('MUI_UNPAGE_CONFIRM'));
 
   await section('Resilient people search');
   const response = (status, data, headers) => ({

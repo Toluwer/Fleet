@@ -82,6 +82,15 @@ Fleet uses a frameless, single-surface NSIS template with its own title bar,
 install location control, progress styling, and completion view. The stock
 welcome/directory/finish wizard pages are not shown.
 
+The installer is skinned to match the app's Obsidian theme (same palette,
+Segoe UI typography, `#2563eb` accent). The title bar uses the real Windows
+caption glyphs (Segoe MDL2 Assets) for minimize/close with live hover states
+(driven by an nsDialogs timer), input controls are themed with
+`DarkMode_Explorer`, and the uninstaller renders the same custom surface
+(`un.FleetConfirmPage` + dark progress) instead of the stock MUI wizard.
+`fleet-installer.nsi` compiles as UTF-8 with BOM because of the literal
+caption glyphs — keep that encoding when editing.
+
 Tauri's NSIS bundle installs resources under this layout:
 
 ```text

@@ -1,4 +1,4 @@
-Unicode true
+﻿Unicode true
 ManifestDPIAware true
 ; Add in `dpiAwareness` `PerMonitorV2` to manifest for Windows 10 1607+ (note this should not affect lower versions since they should be able to ignore this and pick up `dpiAware` `true` set by `ManifestDPIAware true`)
 ; Currently undocumented on NSIS's website but is in the Docs folder of source tree, see
@@ -79,12 +79,23 @@ Var WixMode
 Var OldMainBinaryName
 
 ; Fleet's installer is a single branded surface rather than a page-by-page wizard.
+; Fleet UI palette - mirrors src/renderer/styles.css (Obsidian dark theme)
+; so the installer reads as the same product as the app.
 !define FLEET_BG 0x08090B
+!define FLEET_RAIL 0x0C0D10
 !define FLEET_SURFACE 0x111217
-!define FLEET_SURFACE_RAISED 0x191B22
-!define FLEET_TEXT 0xF8FBFF
-!define FLEET_MUTED 0x969AA6
-!define FLEET_BLUE 0x2F6DF2
+!define FLEET_SURFACE2 0x17181E
+!define FLEET_SURFACE3 0x1D1E25
+!define FLEET_HAIR 0x202128
+!define FLEET_TEXT 0xF4F0F1
+!define FLEET_INK2 0xAAA3A7
+!define FLEET_INK3 0x726C71
+!define FLEET_ACCENT 0x2563EB
+!define FLEET_ACCENT2 0x3B82F6
+!define FLEET_ONACCENT 0xF8FBFF
+!define FLEET_DANGER 0xDC4259
+!define FLEET_DANGER2 0xE8556B
+
 !define /ifndef SS_NOTIFY 0x00000100
 !define /ifndef SS_CENTER 0x00000001
 !define /ifndef SS_CENTERIMAGE 0x00000200
@@ -102,7 +113,6 @@ Var FleetMinimizeButton
 Var FleetWindowCloseButton
 Var FleetLogo
 Var FleetLogoImage
-Var FleetBrand
 Var FleetVersionLabel
 Var FleetTitle
 Var FleetSubtitle
@@ -214,6 +224,11 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !define MUI_LANGDLL_REGISTRY_ROOT "HKCU"
 !define MUI_LANGDLL_REGISTRY_KEY "${MANUPRODUCTKEY}"
 !define MUI_LANGDLL_REGISTRY_VALUENAME "Installer Language"
+
+; Fleet GUI init: style the wizard window before the first page is shown,
+; so the stock caption never flashes.
+!define MUI_CUSTOMFUNCTION_GUIINIT FleetGuiInit
+!define MUI_CUSTOMFUNCTION_UNGUIINIT un.FleetGuiInit
 
 ; Detect an existing installation before showing Fleet's custom surface.
 Var ReinstallPageCheck
@@ -411,45 +426,85 @@ Page custom FleetInstallPage FleetInstallLeave
 !insertmacro MUI_PAGE_INSTFILES
 Page custom FleetFinishPage
 
+; Hide one piece of the stock NSIS wizard by dialog item id.
+!macro FleetHideStockCtl ID
+  GetDlgItem $0 $HWNDPARENT ${ID}
+  ${If} $0 != 0
+    ShowWindow $0 ${SW_HIDE}
+  ${EndIf}
+!macroend
+
+; Strip every visible piece of the stock wizard chrome: nav buttons,
+; header text/bitmap slots, divider lines and the brand strip.
+!macro FleetHideWizardChrome
+  !insertmacro FleetHideStockCtl 1
+  !insertmacro FleetHideStockCtl 2
+  !insertmacro FleetHideStockCtl 3
+  !insertmacro FleetHideStockCtl 1028
+  !insertmacro FleetHideStockCtl 1034
+  !insertmacro FleetHideStockCtl 1035
+  !insertmacro FleetHideStockCtl 1036
+  !insertmacro FleetHideStockCtl 1037
+  !insertmacro FleetHideStockCtl 1038
+  !insertmacro FleetHideStockCtl 1039
+  !insertmacro FleetHideStockCtl 1040
+  !insertmacro FleetHideStockCtl 1041
+  !insertmacro FleetHideStockCtl 1042
+  !insertmacro FleetHideStockCtl 1043
+  !insertmacro FleetHideStockCtl 1045
+  !insertmacro FleetHideStockCtl 1046
+  !insertmacro FleetHideStockCtl 1250
+!macroend
+
+Var FleetFontGlyph
+Var FleetDpi
+Var FleetStatusText
+Var FleetProgressTitle
+Var FleetProgressNote
+Var FleetHairline
+Var FleetUninstallButton
+Var FleetHoverState
+
+; Fleet owns the whole window: no NSIS caption or resize frame, DWM dark
+; mode with Windows 11 rounded corners, taskbar minimize retained, and a
+; roomy DPI-scaled canvas instead of NSIS's cramped legacy default.
 Function FleetApplyWindowTheme
-  ; Fleet owns the whole window. Keep Windows 11's smooth DWM corners while
-  ; removing the native NSIS caption and resize frame.
   System::Call 'DWMAPI::DwmSetWindowAttribute(p$HWNDPARENT,i20,*i1,i4)i.r0'
   ${If} $0 != 0
     System::Call 'DWMAPI::DwmSetWindowAttribute(p$HWNDPARENT,i19,*i1,i4)i.r0'
   ${EndIf}
   System::Call 'DWMAPI::DwmSetWindowAttribute(p$HWNDPARENT,i33,*i2,i4)i.r0'
-  ${NSD_RemoveStyle} $HWNDPARENT 0x00C40000
 
-  ; NSIS keeps a compact legacy window by default. Give Fleet a roomy canvas.
-  System::Call 'USER32::GetSystemMetrics(i0)i.r0'
-  System::Call 'USER32::GetSystemMetrics(i1)i.r1'
-  IntOp $0 $0 - 760
-  IntOp $0 $0 / 2
-  IntOp $1 $1 - 540
-  IntOp $1 $1 / 2
-  System::Call 'USER32::SetWindowPos(p$HWNDPARENT,p0,ir0,ir1,i760,i540,i0x0024)'
+  ${NSD_RemoveStyle} $HWNDPARENT 0x00C40000   ; WS_CAPTION|WS_THICKFRAME
+  ${NSD_RemoveStyle} $HWNDPARENT 0x00010000   ; WS_MAXIMIZEBOX
+  ${NSD_AddStyle} $HWNDPARENT 0x000A0000      ; WS_SYSMENU|WS_MINIMIZEBOX
 
-  ; Remove the stock wizard navigation. Every action lives inside Fleet's surface.
-  GetDlgItem $0 $HWNDPARENT 1
-  ShowWindow $0 ${SW_HIDE}
-  GetDlgItem $0 $HWNDPARENT 2
-  ShowWindow $0 ${SW_HIDE}
-  GetDlgItem $0 $HWNDPARENT 3
-  ShowWindow $0 ${SW_HIDE}
-  GetDlgItem $0 $HWNDPARENT 1035
-  ShowWindow $0 ${SW_HIDE}
-  GetDlgItem $0 $HWNDPARENT 1037
-  ShowWindow $0 ${SW_HIDE}
-  GetDlgItem $0 $HWNDPARENT 1038
-  ShowWindow $0 ${SW_HIDE}
-  GetDlgItem $0 $HWNDPARENT 1039
-  ShowWindow $0 ${SW_HIDE}
+  System::Call 'USER32::GetDpiForWindow(p$HWNDPARENT)i.r0'
+  ${If} $0 = 0
+  ${OrIf} $0 == error
+    StrCpy $0 96
+  ${EndIf}
+  StrCpy $FleetDpi $0
+
+  IntOp $1 $0 * 760
+  IntOp $1 $1 / 96
+  IntOp $2 $0 * 540
+  IntOp $2 $2 / 96
+  System::Call 'USER32::GetSystemMetrics(i0)i.r3'
+  System::Call 'USER32::GetSystemMetrics(i1)i.r4'
+  IntOp $3 $3 - $1
+  IntOp $3 $3 / 2
+  IntOp $4 $4 - $2
+  IntOp $4 $4 / 2
+  System::Call 'USER32::SetWindowPos(p$HWNDPARENT,p0,ir3,ir4,ir1,ir2,i0x0024)'
+
+  SetCtlColors $HWNDPARENT ${FLEET_TEXT} ${FLEET_BG}
+  !insertmacro FleetHideWizardChrome
 FunctionEnd
 
+; MUI normally reserves a header and a navigation footer. Expand the
+; custom-page reference rectangle over the complete client area instead.
 Function FleetPrepareFullCanvas
-  ; MUI normally reserves a header and white navigation footer. Expand the
-  ; custom-page reference rectangle over the complete client area instead.
   System::Call 'USER32::GetClientRect(p$HWNDPARENT,@r0)'
   System::Call '*$0(i,i,i.r3,i.r4)'
   GetDlgItem $0 $HWNDPARENT ${IDC_CHILDRECT}
@@ -459,26 +514,46 @@ Function FleetPrepareFullCanvas
 FunctionEnd
 
 Function FleetCreateFonts
-  CreateFont $FleetFontBrand "Segoe UI" 10 600
-  CreateFont $FleetFontTitle "Segoe UI" 16 700
-  CreateFont $FleetFontBody "Segoe UI" 9 400
-  CreateFont $FleetFontSmall "Segoe UI" 7 600
-  CreateFont $FleetFontButton "Segoe UI" 9 600
+  ${If} $FleetFontTitle == ""
+    CreateFont $FleetFontBrand "Segoe UI" 10 600
+    CreateFont $FleetFontTitle "Segoe UI" 15 700
+    CreateFont $FleetFontBody "Segoe UI" 9 400
+    CreateFont $FleetFontSmall "Segoe UI" 7 600
+    CreateFont $FleetFontButton "Segoe UI" 9 600
+    CreateFont $FleetFontGlyph "Segoe MDL2 Assets" 10 400
+  ${EndIf}
 FunctionEnd
 
-Function FleetStyleLabel
-  Pop $0
-  SetCtlColors $0 ${FLEET_TEXT} ${FLEET_BG}
-  SendMessage $0 ${WM_SETFONT} $FleetFontBody 1
+; Place a control at 96-dpi pixel coordinates, scaled to the window DPI.
+; Push x, y, w, h, hwnd in that order.
+Function FleetPlacePx
+  Pop $R5
+  Pop $R9
+  Pop $R8
+  Pop $R7
+  Pop $R6
+  ${If} $FleetDpi != 96
+    IntOp $R6 $R6 * $FleetDpi
+    IntOp $R6 $R6 / 96
+    IntOp $R7 $R7 * $FleetDpi
+    IntOp $R7 $R7 / 96
+    IntOp $R8 $R8 * $FleetDpi
+    IntOp $R8 $R8 / 96
+    IntOp $R9 $R9 * $FleetDpi
+    IntOp $R9 $R9 / 96
+  ${EndIf}
+  System::Call 'USER32::MoveWindow(p$R5,i$R6,i$R7,i$R8,i$R9,i1)'
 FunctionEnd
 
+; One flat titlebar shared by every Fleet surface: logo, wordmark, hairline
+; and Windows caption buttons drawn with the real Segoe MDL2 caption glyphs.
 Function FleetCreateTitleBar
-  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_NOTIFY}|${SS_CENTERIMAGE}" 0 0 0 100% 14% ""
+  ${NSD_CreateLabel} 0 0 100% 8.2% ""
   Pop $FleetTitleBar
-  SetCtlColors $FleetTitleBar ${FLEET_TEXT} ${FLEET_SURFACE}
+  SetCtlColors $FleetTitleBar ${FLEET_TEXT} ${FLEET_BG}
   ${NSD_OnClick} $FleetTitleBar FleetDragWindow
 
-  ${NSD_CreateIcon} 3% 2% 6% 7% ""
+  ${NSD_CreateIcon} 2% 1.1% 4.4% 6.1% ""
   Pop $FleetLogo
   !if "${INSTALLERICON}" != ""
     ${NSD_SetIcon} $FleetLogo "${INSTALLERICON}" $FleetLogoImage
@@ -486,26 +561,166 @@ Function FleetCreateTitleBar
     ${NSD_SetIconFromInstaller} $FleetLogo $FleetLogoImage
   !endif
 
-  ${NSD_CreateLabel} 13% 1% 49% 11% "Fleet Installer"
+  ${NSD_CreateLabel} 8% 0 60% 8.2% "Fleet"
   Pop $FleetTitleBarText
-  SetCtlColors $FleetTitleBarText ${FLEET_TEXT} ${FLEET_SURFACE}
+  SetCtlColors $FleetTitleBarText ${FLEET_TEXT} ${FLEET_BG}
   SendMessage $FleetTitleBarText ${WM_SETFONT} $FleetFontBrand 1
 
-  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_NOTIFY}|${SS_CENTER}|${SS_CENTERIMAGE}" 0 84% 0 8% 14% "-"
+  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_NOTIFY}|${SS_CENTER}|${SS_CENTERIMAGE}" 0 84% 0 8% 8.2% ""
   Pop $FleetMinimizeButton
-  SetCtlColors $FleetMinimizeButton ${FLEET_MUTED} ${FLEET_SURFACE}
-  SendMessage $FleetMinimizeButton ${WM_SETFONT} $FleetFontBrand 1
+  SetCtlColors $FleetMinimizeButton ${FLEET_INK2} ${FLEET_BG}
+  SendMessage $FleetMinimizeButton ${WM_SETFONT} $FleetFontGlyph 1
   ${NSD_OnClick} $FleetMinimizeButton FleetMinimize
 
-  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_NOTIFY}|${SS_CENTER}|${SS_CENTERIMAGE}" 0 92% 0 8% 14% "X"
+  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_NOTIFY}|${SS_CENTER}|${SS_CENTERIMAGE}" 0 92% 0 8% 8.2% ""
   Pop $FleetWindowCloseButton
-  SetCtlColors $FleetWindowCloseButton ${FLEET_TEXT} ${FLEET_SURFACE}
-  SendMessage $FleetWindowCloseButton ${WM_SETFONT} $FleetFontButton 1
+  SetCtlColors $FleetWindowCloseButton ${FLEET_TEXT} ${FLEET_BG}
+  SendMessage $FleetWindowCloseButton ${WM_SETFONT} $FleetFontGlyph 1
   ${NSD_OnClick} $FleetWindowCloseButton FleetCancel
 
-  ; Static controls created by nsDialogs can otherwise land behind the full
-  ; title-bar fill. Pin that fill to the bottom of the sibling Z-order.
+  ; pixel-exact chrome: 44px bar, 46px caption buttons
+  Push 16
+  Push 6
+  Push 32
+  Push 32
+  Push $FleetLogo
+  Call FleetPlacePx
+  Push 56
+  Push 0
+  Push 260
+  Push 44
+  Push $FleetTitleBarText
+  Call FleetPlacePx
+
+  System::Call 'USER32::GetClientRect(p$HWNDPARENT,@r0)'
+  System::Call '*$0(i,i,i.r1,i.r2)'
+  IntOp $R4 $FleetDpi * 46
+  IntOp $R4 $R4 / 96
+  IntOp $R5 $FleetDpi * 44
+  IntOp $R5 $R5 / 96
+  IntOp $R6 $1 - $R4
+  IntOp $R6 $R6 - $R4
+  IntOp $R7 $1 - $R4
+  System::Call 'USER32::MoveWindow(p$FleetMinimizeButton,iR6,i0,iR4,iR5,i1)'
+  System::Call 'USER32::MoveWindow(p$FleetWindowCloseButton,iR7,i0,iR4,iR5,i1)'
+
+  ; hairline separator under the bar
+  ${NSD_CreateLabel} 0 8.2% 100% 1u ""
+  Pop $FleetHairline
+  SetCtlColors $FleetHairline ${FLEET_HAIR} ${FLEET_HAIR}
+
+  ; keep the drag fill below every sibling
   System::Call 'USER32::SetWindowPos(p$FleetTitleBar,p1,i0,i0,i0,i0,i0x0013)'
+FunctionEnd
+
+; Live hover for the caption glyphs and the primary action, driven by a
+; 60ms nsDialogs timer while a Fleet page is on screen. State bits:
+; 1 = minimize, 2 = close, 4 = primary action.
+Function FleetHoverPoll
+  System::Call 'USER32::GetCursorPos(@r5)'
+  System::Call '*$5(i.r1,i.r2)'
+  StrCpy $R0 0
+
+  ${If} $FleetMinimizeButton != ""
+    System::Call 'USER32::GetWindowRect(p$FleetMinimizeButton,@r6)'
+    System::Call '*$6(i.r3,i.r4,i.r7,i.r8)'
+    ${If} $1 >= $3
+    ${AndIf} $1 < $R7
+    ${AndIf} $2 >= $4
+    ${AndIf} $2 < $R8
+      IntOp $R0 $R0 | 1
+    ${EndIf}
+  ${EndIf}
+
+  ${If} $FleetWindowCloseButton != ""
+    System::Call 'USER32::GetWindowRect(p$FleetWindowCloseButton,@r6)'
+    System::Call '*$6(i.r3,i.r4,i.r7,i.r8)'
+    ${If} $1 >= $3
+    ${AndIf} $1 < $R7
+    ${AndIf} $2 >= $4
+    ${AndIf} $2 < $R8
+      IntOp $R0 $R0 | 2
+    ${EndIf}
+  ${EndIf}
+
+  ${If} $FleetInstallButton != ""
+    System::Call 'USER32::GetWindowRect(p$FleetInstallButton,@r6)'
+    System::Call '*$6(i.r3,i.r4,i.r7,i.r8)'
+    ${If} $1 >= $3
+    ${AndIf} $1 < $R7
+    ${AndIf} $2 >= $4
+    ${AndIf} $2 < $R8
+      IntOp $R0 $R0 | 4
+    ${EndIf}
+  ${ElseIf} $FleetLaunchButton != ""
+    System::Call 'USER32::GetWindowRect(p$FleetLaunchButton,@r6)'
+    System::Call '*$6(i.r3,i.r4,i.r7,i.r8)'
+    ${If} $1 >= $3
+    ${AndIf} $1 < $R7
+    ${AndIf} $2 >= $4
+    ${AndIf} $2 < $R8
+      IntOp $R0 $R0 | 4
+    ${EndIf}
+  ${ElseIf} $FleetUninstallButton != ""
+    System::Call 'USER32::GetWindowRect(p$FleetUninstallButton,@r6)'
+    System::Call '*$6(i.r3,i.r4,i.r7,i.r8)'
+    ${If} $1 >= $3
+    ${AndIf} $1 < $R7
+    ${AndIf} $2 >= $4
+    ${AndIf} $2 < $R8
+      IntOp $R0 $R0 | 4
+    ${EndIf}
+  ${EndIf}
+
+  ${If} $R0 != $FleetHoverState
+    StrCpy $FleetHoverState $R0
+
+    IntOp $R1 $R0 & 1
+    ${If} $R1 <> 0
+      SetCtlColors $FleetMinimizeButton ${FLEET_TEXT} ${FLEET_SURFACE2}
+    ${Else}
+      SetCtlColors $FleetMinimizeButton ${FLEET_INK2} ${FLEET_BG}
+    ${EndIf}
+    System::Call 'USER32::InvalidateRect(p$FleetMinimizeButton,p0,i1)'
+
+    IntOp $R1 $R0 & 2
+    ${If} $R1 <> 0
+      SetCtlColors $FleetWindowCloseButton ${FLEET_ONACCENT} ${FLEET_DANGER}
+    ${Else}
+      SetCtlColors $FleetWindowCloseButton ${FLEET_TEXT} ${FLEET_BG}
+    ${EndIf}
+    System::Call 'USER32::InvalidateRect(p$FleetWindowCloseButton,p0,i1)'
+
+    ${If} $FleetInstallButton != ""
+      IntOp $R1 $R0 & 4
+      ${If} $R1 <> 0
+        SetCtlColors $FleetInstallButton ${FLEET_ONACCENT} ${FLEET_ACCENT2}
+      ${Else}
+        SetCtlColors $FleetInstallButton ${FLEET_ONACCENT} ${FLEET_ACCENT}
+      ${EndIf}
+      System::Call 'USER32::InvalidateRect(p$FleetInstallButton,p0,i1)'
+    ${EndIf}
+
+    ${If} $FleetLaunchButton != ""
+      IntOp $R1 $R0 & 4
+      ${If} $R1 <> 0
+        SetCtlColors $FleetLaunchButton ${FLEET_ONACCENT} ${FLEET_ACCENT2}
+      ${Else}
+        SetCtlColors $FleetLaunchButton ${FLEET_ONACCENT} ${FLEET_ACCENT}
+      ${EndIf}
+      System::Call 'USER32::InvalidateRect(p$FleetLaunchButton,p0,i1)'
+    ${EndIf}
+
+    ${If} $FleetUninstallButton != ""
+      IntOp $R1 $R0 & 4
+      ${If} $R1 <> 0
+        SetCtlColors $FleetUninstallButton ${FLEET_ONACCENT} ${FLEET_DANGER2}
+      ${Else}
+        SetCtlColors $FleetUninstallButton ${FLEET_ONACCENT} ${FLEET_DANGER}
+      ${EndIf}
+      System::Call 'USER32::InvalidateRect(p$FleetUninstallButton,p0,i1)'
+    ${EndIf}
+  ${EndIf}
 FunctionEnd
 
 Function FleetDragWindow
@@ -519,11 +734,25 @@ Function FleetMinimize
   ShowWindow $HWNDPARENT 6
 FunctionEnd
 
+Function FleetGuiInit
+  Call FleetApplyWindowTheme
+FunctionEnd
+
+; Update the live status line on the progress surface. No-op when the
+; surface is not on screen (silent installs).
+Function FleetStatus
+  Pop $R0
+  ${If} $FleetStatusText != ""
+  ${AndIf} $FleetStatusText != error
+  ${AndIf} $FleetStatusText != 0
+    SendMessage $FleetStatusText ${WM_SETTEXT} 0 "STR:$R0"
+  ${EndIf}
+FunctionEnd
+
+
 Function FleetInstallPage
   ${If} $PassiveMode = 1
-    Abort
-  ${EndIf}
-  ${If} ${Silent}
+  ${OrIf} ${Silent}
     Abort
   ${EndIf}
 
@@ -536,11 +765,14 @@ Function FleetInstallPage
     Abort
   ${EndIf}
   SetCtlColors $FleetDialog ${FLEET_TEXT} ${FLEET_BG}
+  StrCpy $FleetHoverState 0
+  StrCpy $FleetLaunchButton ""
+  StrCpy $FleetUninstallButton ""
   Call FleetCreateTitleBar
 
-  ${NSD_CreateLabel} 6% 16% 70% 5% "FLEET ${VERSION}  -  WINDOWS 10/11"
+  ${NSD_CreateLabel} 6% 11% 70% 5% "FLEET ${VERSION}  ·  WINDOWS 10/11"
   Pop $FleetVersionLabel
-  SetCtlColors $FleetVersionLabel ${FLEET_MUTED} ${FLEET_BG}
+  SetCtlColors $FleetVersionLabel ${FLEET_INK3} ${FLEET_BG}
   SendMessage $FleetVersionLabel ${WM_SETFONT} $FleetFontSmall 1
 
   ${If} $UpdateMode = 1
@@ -549,58 +781,59 @@ Function FleetInstallPage
     StrCpy $FleetActionText "Install Fleet"
   ${EndIf}
 
-  ${NSD_CreateLabel} 6% 22% 88% 10% "$FleetActionText"
+  ${NSD_CreateLabel} 6% 17% 88% 9% "$FleetActionText"
   Pop $FleetTitle
   SetCtlColors $FleetTitle ${FLEET_TEXT} ${FLEET_BG}
   SendMessage $FleetTitle ${WM_SETFONT} $FleetFontTitle 1
 
-  ${NSD_CreateLabel} 6% 33% 88% 6% "One command center for every Roblox client."
+  ${NSD_CreateLabel} 6% 27% 88% 6% "One command center for every Roblox client."
   Pop $FleetSubtitle
-  Push $FleetSubtitle
-  Call FleetStyleLabel
+  SetCtlColors $FleetSubtitle ${FLEET_INK2} ${FLEET_BG}
+  SendMessage $FleetSubtitle ${WM_SETFONT} $FleetFontBody 1
 
-  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_CENTER}|${SS_CENTERIMAGE}" 0 6% 43% 88% 12% "MULTI-INSTANCE    -    LOCAL-FIRST    -    OPEN SOURCE"
+  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_CENTER}|${SS_CENTERIMAGE}" 0 6% 34% 88% 13% "MULTI-INSTANCE   ·   LOCAL-FIRST   ·   OPEN SOURCE"
   Pop $FleetFeatureBand
-  SetCtlColors $FleetFeatureBand ${FLEET_MUTED} ${FLEET_SURFACE}
+  SetCtlColors $FleetFeatureBand ${FLEET_INK2} ${FLEET_SURFACE}
   SendMessage $FleetFeatureBand ${WM_SETFONT} $FleetFontSmall 1
 
-  ${NSD_CreateLabel} 6% 61% 88% 5% "INSTALL LOCATION"
+  ${NSD_CreateLabel} 6% 52% 88% 5% "INSTALL LOCATION"
   Pop $FleetPathLabel
-  SetCtlColors $FleetPathLabel ${FLEET_MUTED} ${FLEET_BG}
+  SetCtlColors $FleetPathLabel ${FLEET_INK3} ${FLEET_BG}
   SendMessage $FleetPathLabel ${WM_SETFONT} $FleetFontSmall 1
 
-  ${NSD_CreateDirRequest} 6% 67% 68% 9% "$INSTDIR"
+  ${NSD_CreateText} 6% 58% 66% 8% "$INSTDIR"
   Pop $FleetPathField
-  SetCtlColors $FleetPathField ${FLEET_TEXT} ${FLEET_SURFACE}
   System::Call 'UXTHEME::SetWindowTheme(p$FleetPathField,w"DarkMode_Explorer",p0)'
 
-  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_NOTIFY}|${SS_CENTER}|${SS_CENTERIMAGE}" 0 76% 67% 18% 9% "Browse"
+  ${NSD_CreateButton} 74% 58% 20% 8% "Browse"
   Pop $FleetBrowseButton
-  SetCtlColors $FleetBrowseButton ${FLEET_TEXT} ${FLEET_SURFACE_RAISED}
+  System::Call 'UXTHEME::SetWindowTheme(p$FleetBrowseButton,w"DarkMode_Explorer",p0)'
   SendMessage $FleetBrowseButton ${WM_SETFONT} $FleetFontButton 1
   ${NSD_OnClick} $FleetBrowseButton FleetBrowse
 
-  ${NSD_CreateCheckbox} 6% 81% 43% 6% "Create a desktop shortcut"
+  ${NSD_CreateCheckbox} 6% 71% 60% 6% "Create a desktop shortcut"
   Pop $FleetDesktopCheckbox
-  SetCtlColors $FleetDesktopCheckbox ${FLEET_MUTED} ${FLEET_BG}
+  SetCtlColors $FleetDesktopCheckbox ${FLEET_INK2} ${FLEET_BG}
   SendMessage $FleetDesktopCheckbox ${WM_SETFONT} $FleetFontBody 1
-  System::Call 'UXTHEME::SetWindowTheme(p$FleetDesktopCheckbox,w"",w"")'
+  System::Call 'UXTHEME::SetWindowTheme(p$FleetDesktopCheckbox,w"DarkMode_Explorer",p0)'
   ${NSD_Check} $FleetDesktopCheckbox
 
-  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_NOTIFY}|${SS_CENTER}|${SS_CENTERIMAGE}" 0 52% 87% 18% 9% "Cancel"
+  ${NSD_CreateButton} 55% 87% 18% 8% "Cancel"
   Pop $FleetCancelButton
-  SetCtlColors $FleetCancelButton ${FLEET_TEXT} ${FLEET_SURFACE_RAISED}
+  System::Call 'UXTHEME::SetWindowTheme(p$FleetCancelButton,w"DarkMode_Explorer",p0)'
   SendMessage $FleetCancelButton ${WM_SETFONT} $FleetFontButton 1
   ${NSD_OnClick} $FleetCancelButton FleetCancel
 
-  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_NOTIFY}|${SS_CENTER}|${SS_CENTERIMAGE}" 0 73% 87% 21% 9% "$FleetActionText"
+  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_NOTIFY}|${SS_CENTER}|${SS_CENTERIMAGE}" 0 76% 87% 18% 8% "$FleetActionText"
   Pop $FleetInstallButton
-  SetCtlColors $FleetInstallButton 0xFFFFFF ${FLEET_BLUE}
+  SetCtlColors $FleetInstallButton ${FLEET_ONACCENT} ${FLEET_ACCENT}
   SendMessage $FleetInstallButton ${WM_SETFONT} $FleetFontButton 1
   ${NSD_OnClick} $FleetInstallButton FleetBeginInstall
 
+  ${NSD_CreateTimer} FleetHoverPoll 60
   nsDialogs::Show
 FunctionEnd
+
 
 Function FleetBrowse
   Pop $0
@@ -637,33 +870,120 @@ FunctionEnd
 Function FleetProgressShow
   Call FleetApplyWindowTheme
   Call FleetCreateFonts
-  !insertmacro MUI_HEADER_TEXT "Installing Fleet" "Preparing app files and the local runtime."
   FindWindow $FleetProgressDialog "#32770" "" $HWNDPARENT
-  ${If} $FleetProgressDialog != 0
-    System::Call 'USER32::GetClientRect(p$HWNDPARENT,@r0)'
-    System::Call '*$0(i,i,i.r3,i.r4)'
-    System::Call 'USER32::MoveWindow(p$FleetProgressDialog,i0,i0,ir3,ir4,i1)'
-    SetCtlColors $FleetProgressDialog ${FLEET_TEXT} ${FLEET_BG}
-    GetDlgItem $0 $FleetProgressDialog 1006
-    SetCtlColors $0 ${FLEET_TEXT} ${FLEET_BG}
-    SendMessage $0 ${WM_SETFONT} $FleetFontBody 1
-    GetDlgItem $0 $FleetProgressDialog 1027
-    ShowWindow $0 ${SW_HIDE}
-    GetDlgItem $0 $FleetProgressDialog 1016
-    ShowWindow $0 ${SW_HIDE}
-    GetDlgItem $FleetProgressBar $FleetProgressDialog 1004
-    ${If} $FleetProgressBar != 0
-      SendMessage $FleetProgressBar ${PBM_SETBARCOLOR} 0 0x00F26D2F
-      SendMessage $FleetProgressBar ${PBM_SETBKCOLOR} 0 0x002B2220
-    ${EndIf}
+  ${If} $FleetProgressDialog == 0
+    Return
   ${EndIf}
+
+  ; claim the whole client area for Fleet's surface
+  System::Call 'USER32::GetClientRect(p$HWNDPARENT,@r0)'
+  System::Call '*$0(i,i,i.r3,i.r4)'
+  System::Call 'USER32::MoveWindow(p$FleetProgressDialog,i0,i0,ir3,ir4,i1)'
+  SetCtlColors $FleetProgressDialog ${FLEET_TEXT} ${FLEET_BG}
+
+  ; drop every stock piece of the MUI instfiles page
+  GetDlgItem $0 $FleetProgressDialog 1006
+  ${If} $0 != 0
+    ShowWindow $0 ${SW_HIDE}
+  ${EndIf}
+  GetDlgItem $0 $FleetProgressDialog 1016
+  ${If} $0 != 0
+    ShowWindow $0 ${SW_HIDE}
+  ${EndIf}
+  GetDlgItem $0 $FleetProgressDialog 1018
+  ${If} $0 != 0
+    ShowWindow $0 ${SW_HIDE}
+  ${EndIf}
+  GetDlgItem $0 $FleetProgressDialog 1027
+  ${If} $0 != 0
+    ShowWindow $0 ${SW_HIDE}
+  ${EndIf}
+
+  ; heading and live status, drawn by Fleet
+  IntOp $R6 $3 * 6
+  IntOp $R6 $R6 / 100
+  IntOp $R7 $4 * 16
+  IntOp $R7 $R7 / 100
+  IntOp $R8 $3 * 88
+  IntOp $R8 $R8 / 100
+  IntOp $R9 $4 * 9
+  IntOp $R9 $R9 / 100
+  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"Installing Fleet",i0x50000000,iR6,iR7,iR8,iR9,p$FleetProgressDialog,i0,i0,i0)i.s'
+  Pop $FleetProgressTitle
+  SendMessage $FleetProgressTitle ${WM_SETFONT} $FleetFontTitle 1
+  SetCtlColors $FleetProgressTitle ${FLEET_TEXT} ${FLEET_BG}
+
+  IntOp $R7 $4 * 27
+  IntOp $R7 $R7 / 100
+  IntOp $R9 $4 * 6
+  IntOp $R9 $R9 / 100
+  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"Preparing app files and the bundled runtime.",i0x50000000,iR6,iR7,iR8,iR9,p$FleetProgressDialog,i0,i0,i0)i.s'
+  Pop $FleetStatusText
+  SendMessage $FleetStatusText ${WM_SETFONT} $FleetFontBody 1
+  SetCtlColors $FleetStatusText ${FLEET_INK2} ${FLEET_BG}
+
+  IntOp $R7 $4 * 52
+  IntOp $R7 $R7 / 100
+  IntOp $R9 $4 * 5
+  IntOp $R9 $R9 / 100
+  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"Fleet only needs a moment. This window advances itself when finished.",i0x50000000,iR6,iR7,iR8,iR9,p$FleetProgressDialog,i0,i0,i0)i.s'
+  Pop $FleetProgressNote
+  SendMessage $FleetProgressNote ${WM_SETFONT} $FleetFontSmall 1
+  SetCtlColors $FleetProgressNote ${FLEET_INK3} ${FLEET_BG}
+
+  ; progress bar: full-width smooth accent bar on a quiet track
+  GetDlgItem $FleetProgressBar $FleetProgressDialog 1004
+  ${If} $FleetProgressBar != 0
+    System::Call 'USER32::GetWindowLong(p$FleetProgressBar,i-16)i.r0'
+    IntOp $0 $0 | 1
+    System::Call 'USER32::SetWindowLong(p$FleetProgressBar,i-16,ir0)'
+    SendMessage $FleetProgressBar ${PBM_SETBARCOLOR} 0 ${FLEET_ACCENT}
+    SendMessage $FleetProgressBar ${PBM_SETBKCOLOR} 0 ${FLEET_SURFACE3}
+    IntOp $R7 $4 * 40
+    IntOp $R7 $R7 / 100
+    IntOp $R9 $FleetDpi * 8
+    IntOp $R9 $R9 / 96
+    System::Call 'USER32::MoveWindow(p$FleetProgressBar,iR6,iR7,iR8,iR9,i1)'
+  ${EndIf}
+
+  ; wordmark + hairline so the window still reads as Fleet
+  IntOp $R6 $FleetDpi * 24
+  IntOp $R6 $R6 / 96
+  IntOp $R7 $FleetDpi * 11
+  IntOp $R7 $R7 / 96
+  IntOp $R8 $FleetDpi * 260
+  IntOp $R8 $R8 / 96
+  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"Fleet",i0x50000000,iR6,i0,iR8,iR7,p$HWNDPARENT,i0,i0,i0)i.s'
+  Pop $FleetTitleBarText
+  SendMessage $FleetTitleBarText ${WM_SETFONT} $FleetFontBrand 1
+  SetCtlColors $FleetTitleBarText ${FLEET_TEXT} ${FLEET_BG}
+
+  IntOp $R7 $FleetDpi * 44
+  IntOp $R7 $R7 / 96
+  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"",i0x50000000,i0,iR7,ir3,i1,p$HWNDPARENT,i0,i0,i0)i.s'
+  Pop $FleetHairline
+  SetCtlColors $FleetHairline ${FLEET_HAIR} ${FLEET_HAIR}
+
+  ; caption close glyph wired to the wizard's own cancel command (id 2)
+  IntOp $R6 $3 * $FleetDpi
+  IntOp $R6 $R6 / 96
+  IntOp $R7 $FleetDpi * 46
+  IntOp $R7 $R7 / 96
+  IntOp $R6 $R6 - $R7
+  IntOp $R8 $FleetDpi * 44
+  IntOp $R8 $R8 / 96
+  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"",i0x50000301,iR6,i0,iR7,iR8,p$HWNDPARENT,i2,i0,i0)i.s'
+  Pop $FleetWindowCloseButton
+  SendMessage $FleetWindowCloseButton ${WM_SETFONT} $FleetFontGlyph 1
+  SetCtlColors $FleetWindowCloseButton ${FLEET_TEXT} ${FLEET_BG}
+  StrCpy $FleetMinimizeButton ""
+  StrCpy $FleetHoverState 0
 FunctionEnd
+
 
 Function FleetFinishPage
   ${If} $PassiveMode = 1
-    Abort
-  ${EndIf}
-  ${If} ${Silent}
+  ${OrIf} ${Silent}
     Abort
   ${EndIf}
 
@@ -680,42 +1000,47 @@ Function FleetFinishPage
     Abort
   ${EndIf}
   SetCtlColors $FleetFinishDialog ${FLEET_TEXT} ${FLEET_BG}
+  StrCpy $FleetHoverState 0
+  StrCpy $FleetInstallButton ""
+  StrCpy $FleetUninstallButton ""
   Call FleetCreateTitleBar
 
-  ${NSD_CreateLabel} 6% 16% 70% 5% "FLEET ${VERSION}  -  READY"
+  ${NSD_CreateLabel} 6% 11% 70% 5% "FLEET ${VERSION}  ·  READY"
   Pop $FleetVersionLabel
-  SetCtlColors $FleetVersionLabel ${FLEET_MUTED} ${FLEET_BG}
+  SetCtlColors $FleetVersionLabel ${FLEET_INK3} ${FLEET_BG}
   SendMessage $FleetVersionLabel ${WM_SETFONT} $FleetFontSmall 1
 
-  ${NSD_CreateLabel} 6% 28% 88% 11% "Fleet is ready"
+  ${NSD_CreateLabel} 6% 17% 88% 9% "Fleet is ready"
   Pop $FleetTitle
   SetCtlColors $FleetTitle ${FLEET_TEXT} ${FLEET_BG}
   SendMessage $FleetTitle ${WM_SETFONT} $FleetFontTitle 1
 
-  ${NSD_CreateLabel} 6% 42% 88% 8% "Version ${VERSION} is installed for this Windows account."
+  ${NSD_CreateLabel} 6% 27% 88% 6% "Version ${VERSION} is installed for this Windows account."
   Pop $FleetSubtitle
-  Push $FleetSubtitle
-  Call FleetStyleLabel
+  SetCtlColors $FleetSubtitle ${FLEET_INK2} ${FLEET_BG}
+  SendMessage $FleetSubtitle ${WM_SETFONT} $FleetFontBody 1
 
-  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_CENTER}|${SS_CENTERIMAGE}" 0 6% 56% 88% 14% "INSTALLED TO    $INSTDIR"
+  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_CENTER}|${SS_CENTERIMAGE}" 0 6% 34% 88% 13% "INSTALLED TO   ·   $INSTDIR"
   Pop $FleetFeatureBand
-  SetCtlColors $FleetFeatureBand ${FLEET_MUTED} ${FLEET_SURFACE}
+  SetCtlColors $FleetFeatureBand ${FLEET_INK2} ${FLEET_SURFACE}
   SendMessage $FleetFeatureBand ${WM_SETFONT} $FleetFontSmall 1
 
-  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_NOTIFY}|${SS_CENTER}|${SS_CENTERIMAGE}" 0 55% 85% 18% 10% "Close"
+  ${NSD_CreateButton} 55% 87% 18% 8% "Close"
   Pop $FleetCloseButton
-  SetCtlColors $FleetCloseButton ${FLEET_TEXT} ${FLEET_SURFACE_RAISED}
+  System::Call 'UXTHEME::SetWindowTheme(p$FleetCloseButton,w"DarkMode_Explorer",p0)'
   SendMessage $FleetCloseButton ${WM_SETFONT} $FleetFontButton 1
   ${NSD_OnClick} $FleetCloseButton FleetClose
 
-  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_NOTIFY}|${SS_CENTER}|${SS_CENTERIMAGE}" 0 76% 85% 18% 10% "Launch Fleet"
+  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_NOTIFY}|${SS_CENTER}|${SS_CENTERIMAGE}" 0 76% 87% 18% 8% "Launch Fleet"
   Pop $FleetLaunchButton
-  SetCtlColors $FleetLaunchButton 0xFFFFFF ${FLEET_BLUE}
+  SetCtlColors $FleetLaunchButton ${FLEET_ONACCENT} ${FLEET_ACCENT}
   SendMessage $FleetLaunchButton ${WM_SETFONT} $FleetFontButton 1
   ${NSD_OnClick} $FleetLaunchButton FleetLaunch
 
+  ${NSD_CreateTimer} FleetHoverPoll 60
   nsDialogs::Show
 FunctionEnd
+
 
 Function FleetLaunch
   Pop $0
@@ -733,48 +1058,393 @@ Function RunMainBinary
 FunctionEnd
 
 ; Uninstaller Pages
-; 1. Confirm uninstall page
+; 1. Fleet confirm page (custom nsDialogs surface)
 Var DeleteAppDataCheckbox
 Var DeleteAppDataCheckboxState
-!define /ifndef WS_EX_LAYOUTRTL         0x00400000
-!define MUI_PAGE_CUSTOMFUNCTION_SHOW un.ConfirmShow
-Function un.ConfirmShow ; Add add a `Delete app data` check box
-  ; $1 inner dialog HWND
-  ; $2 window DPI
-  ; $3 style
-  ; $4 x
-  ; $5 y
-  ; $6 width
-  ; $7 height
-  FindWindow $1 "#32770" "" $HWNDPARENT ; Find inner dialog
-  System::Call "user32::GetDpiForWindow(p r1) i .r2"
-  ${If} $(^RTL) = 1
-    StrCpy $3 "${__NSD_CheckBox_EXSTYLE} | ${WS_EX_LAYOUTRTL}"
-    IntOp $4 50 * $2
-  ${Else}
-    StrCpy $3 "${__NSD_CheckBox_EXSTYLE}"
-    IntOp $4 0 * $2
-  ${EndIf}
-  IntOp $5 100 * $2
-  IntOp $6 400 * $2
-  IntOp $7 25 * $2
-  IntOp $4 $4 / 96
-  IntOp $5 $5 / 96
-  IntOp $6 $6 / 96
-  IntOp $7 $7 / 96
-  System::Call 'user32::CreateWindowEx(i r3, w "${__NSD_CheckBox_CLASS}", w "$(deleteAppData)", i ${__NSD_CheckBox_STYLE}, i r4, i r5, i r6, i r7, p r1, i0, i0, i0) i .s'
-  Pop $DeleteAppDataCheckbox
-  SendMessage $HWNDPARENT ${WM_GETFONT} 0 0 $1
-  SendMessage $DeleteAppDataCheckbox ${WM_SETFONT} $1 1
-FunctionEnd
-!define MUI_PAGE_CUSTOMFUNCTION_LEAVE un.ConfirmLeave
-Function un.ConfirmLeave
-  SendMessage $DeleteAppDataCheckbox ${BM_GETCHECK} 0 0 $DeleteAppDataCheckboxState
-FunctionEnd
-!define MUI_PAGE_CUSTOMFUNCTION_PRE un.SkipIfPassive
-!insertmacro MUI_UNPAGE_CONFIRM
+UninstPage custom un.FleetConfirmPage un.FleetConfirmPageLeave
+; Uninstaller surfaces. Same Fleet chrome: frameless dark window, MDL2
+; caption glyphs, hover states, one confirm page, one dark progress page.
 
-; 2. Uninstalling Page
+Function un.FleetApplyWindowTheme
+  System::Call 'DWMAPI::DwmSetWindowAttribute(p$HWNDPARENT,i20,*i1,i4)i.r0'
+  ${If} $0 != 0
+    System::Call 'DWMAPI::DwmSetWindowAttribute(p$HWNDPARENT,i19,*i1,i4)i.r0'
+  ${EndIf}
+  System::Call 'DWMAPI::DwmSetWindowAttribute(p$HWNDPARENT,i33,*i2,i4)i.r0'
+
+  ${NSD_RemoveStyle} $HWNDPARENT 0x00C40000
+  ${NSD_RemoveStyle} $HWNDPARENT 0x00010000
+  ${NSD_AddStyle} $HWNDPARENT 0x000A0000
+
+  System::Call 'USER32::GetDpiForWindow(p$HWNDPARENT)i.r0'
+  ${If} $0 = 0
+  ${OrIf} $0 == error
+    StrCpy $0 96
+  ${EndIf}
+  StrCpy $FleetDpi $0
+
+  IntOp $1 $0 * 560
+  IntOp $1 $1 / 96
+  IntOp $2 $0 * 400
+  IntOp $2 $2 / 96
+  System::Call 'USER32::GetSystemMetrics(i0)i.r3'
+  System::Call 'USER32::GetSystemMetrics(i1)i.r4'
+  IntOp $3 $3 - $1
+  IntOp $3 $3 / 2
+  IntOp $4 $4 - $2
+  IntOp $4 $4 / 2
+  System::Call 'USER32::SetWindowPos(p$HWNDPARENT,p0,ir3,ir4,ir1,ir2,i0x0024)'
+
+  SetCtlColors $HWNDPARENT ${FLEET_TEXT} ${FLEET_BG}
+  !insertmacro FleetHideWizardChrome
+FunctionEnd
+
+Function un.FleetCreateFonts
+  ${If} $FleetFontTitle == ""
+    CreateFont $FleetFontBrand "Segoe UI" 10 600
+    CreateFont $FleetFontTitle "Segoe UI" 15 700
+    CreateFont $FleetFontBody "Segoe UI" 9 400
+    CreateFont $FleetFontSmall "Segoe UI" 7 600
+    CreateFont $FleetFontButton "Segoe UI" 9 600
+    CreateFont $FleetFontGlyph "Segoe MDL2 Assets" 10 400
+  ${EndIf}
+FunctionEnd
+
+Function un.FleetPlacePx
+  Pop $R5
+  Pop $R9
+  Pop $R8
+  Pop $R7
+  Pop $R6
+  ${If} $FleetDpi != 96
+    IntOp $R6 $R6 * $FleetDpi
+    IntOp $R6 $R6 / 96
+    IntOp $R7 $R7 * $FleetDpi
+    IntOp $R7 $R7 / 96
+    IntOp $R8 $R8 * $FleetDpi
+    IntOp $R8 $R8 / 96
+    IntOp $R9 $R9 * $FleetDpi
+    IntOp $R9 $R9 / 96
+  ${EndIf}
+  System::Call 'USER32::MoveWindow(p$R5,i$R6,i$R7,i$R8,i$R9,i1)'
+FunctionEnd
+
+Function un.FleetCreateTitleBar
+  ${NSD_CreateLabel} 0 0 100% 11% ""
+  Pop $FleetTitleBar
+  SetCtlColors $FleetTitleBar ${FLEET_TEXT} ${FLEET_BG}
+  ${NSD_OnClick} $FleetTitleBar un.FleetDragWindow
+
+  ${NSD_CreateIcon} 2% 2.6% 6% 7.5% ""
+  Pop $FleetLogo
+  !if "${UNINSTALLERICON}" != ""
+    ${NSD_SetIcon} $FleetLogo "${UNINSTALLERICON}" $FleetLogoImage
+  !else
+    ${NSD_SetIconFromInstaller} $FleetLogo $FleetLogoImage
+  !endif
+
+  ${NSD_CreateLabel} 11% 0 70% 11% "Fleet"
+  Pop $FleetTitleBarText
+  SetCtlColors $FleetTitleBarText ${FLEET_TEXT} ${FLEET_BG}
+  SendMessage $FleetTitleBarText ${WM_SETFONT} $FleetFontBrand 1
+
+  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_NOTIFY}|${SS_CENTER}|${SS_CENTERIMAGE}" 0 84% 0 8% 11% ""
+  Pop $FleetMinimizeButton
+  SetCtlColors $FleetMinimizeButton ${FLEET_INK2} ${FLEET_BG}
+  SendMessage $FleetMinimizeButton ${WM_SETFONT} $FleetFontGlyph 1
+  ${NSD_OnClick} $FleetMinimizeButton un.FleetMinimize
+
+  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_NOTIFY}|${SS_CENTER}|${SS_CENTERIMAGE}" 0 92% 0 8% 11% ""
+  Pop $FleetWindowCloseButton
+  SetCtlColors $FleetWindowCloseButton ${FLEET_TEXT} ${FLEET_BG}
+  SendMessage $FleetWindowCloseButton ${WM_SETFONT} $FleetFontGlyph 1
+  ${NSD_OnClick} $FleetWindowCloseButton un.FleetCancel
+
+  Push 16
+  Push 7
+  Push 30
+  Push 30
+  Push $FleetLogo
+  Call un.FleetPlacePx
+  Push 56
+  Push 0
+  Push 260
+  Push 48
+  Push $FleetTitleBarText
+  Call un.FleetPlacePx
+
+  System::Call 'USER32::GetClientRect(p$HWNDPARENT,@r0)'
+  System::Call '*$0(i,i,i.r1,i.r2)'
+  IntOp $R4 $FleetDpi * 46
+  IntOp $R4 $R4 / 96
+  IntOp $R5 $FleetDpi * 48
+  IntOp $R5 $R5 / 96
+  IntOp $R6 $1 - $R4
+  IntOp $R6 $R6 - $R4
+  IntOp $R7 $1 - $R4
+  System::Call 'USER32::MoveWindow(p$FleetMinimizeButton,iR6,i0,iR4,iR5,i1)'
+  System::Call 'USER32::MoveWindow(p$FleetWindowCloseButton,iR7,i0,iR4,iR5,i1)'
+
+  ${NSD_CreateLabel} 0 11% 100% 1u ""
+  Pop $FleetHairline
+  SetCtlColors $FleetHairline ${FLEET_HAIR} ${FLEET_HAIR}
+
+  System::Call 'USER32::SetWindowPos(p$FleetTitleBar,p1,i0,i0,i0,i0,i0x0013)'
+FunctionEnd
+
+Function un.FleetHoverPoll
+  System::Call 'USER32::GetCursorPos(@r5)'
+  System::Call '*$5(i.r1,i.r2)'
+  StrCpy $R0 0
+
+  ${If} $FleetMinimizeButton != ""
+    System::Call 'USER32::GetWindowRect(p$FleetMinimizeButton,@r6)'
+    System::Call '*$6(i.r3,i.r4,i.r7,i.r8)'
+    ${If} $1 >= $3
+    ${AndIf} $1 < $R7
+    ${AndIf} $2 >= $4
+    ${AndIf} $2 < $R8
+      IntOp $R0 $R0 | 1
+    ${EndIf}
+  ${EndIf}
+
+  ${If} $FleetWindowCloseButton != ""
+    System::Call 'USER32::GetWindowRect(p$FleetWindowCloseButton,@r6)'
+    System::Call '*$6(i.r3,i.r4,i.r7,i.r8)'
+    ${If} $1 >= $3
+    ${AndIf} $1 < $R7
+    ${AndIf} $2 >= $4
+    ${AndIf} $2 < $R8
+      IntOp $R0 $R0 | 2
+    ${EndIf}
+  ${EndIf}
+
+  ${If} $FleetUninstallButton != ""
+    System::Call 'USER32::GetWindowRect(p$FleetUninstallButton,@r6)'
+    System::Call '*$6(i.r3,i.r4,i.r7,i.r8)'
+    ${If} $1 >= $3
+    ${AndIf} $1 < $R7
+    ${AndIf} $2 >= $4
+    ${AndIf} $2 < $R8
+      IntOp $R0 $R0 | 4
+    ${EndIf}
+  ${EndIf}
+
+  ${If} $R0 != $FleetHoverState
+    StrCpy $FleetHoverState $R0
+
+    IntOp $R1 $R0 & 1
+    ${If} $R1 <> 0
+      SetCtlColors $FleetMinimizeButton ${FLEET_TEXT} ${FLEET_SURFACE2}
+    ${Else}
+      SetCtlColors $FleetMinimizeButton ${FLEET_INK2} ${FLEET_BG}
+    ${EndIf}
+    System::Call 'USER32::InvalidateRect(p$FleetMinimizeButton,p0,i1)'
+
+    IntOp $R1 $R0 & 2
+    ${If} $R1 <> 0
+      SetCtlColors $FleetWindowCloseButton ${FLEET_ONACCENT} ${FLEET_DANGER}
+    ${Else}
+      SetCtlColors $FleetWindowCloseButton ${FLEET_TEXT} ${FLEET_BG}
+    ${EndIf}
+    System::Call 'USER32::InvalidateRect(p$FleetWindowCloseButton,p0,i1)'
+
+    IntOp $R1 $R0 & 4
+    ${If} $R1 <> 0
+      SetCtlColors $FleetUninstallButton ${FLEET_ONACCENT} ${FLEET_DANGER2}
+    ${Else}
+      SetCtlColors $FleetUninstallButton ${FLEET_ONACCENT} ${FLEET_DANGER}
+    ${EndIf}
+    System::Call 'USER32::InvalidateRect(p$FleetUninstallButton,p0,i1)'
+  ${EndIf}
+FunctionEnd
+
+Function un.FleetDragWindow
+  Pop $0
+  System::Call 'USER32::ReleaseCapture()'
+  SendMessage $HWNDPARENT ${WM_NCLBUTTONDOWN} ${HTCAPTION} 0
+FunctionEnd
+
+Function un.FleetMinimize
+  Pop $0
+  ShowWindow $HWNDPARENT 6
+FunctionEnd
+
+Function un.FleetCancel
+  Pop $0
+  GetDlgItem $0 $HWNDPARENT 2
+  SendMessage $0 ${BM_CLICK} 0 0
+FunctionEnd
+
+Function un.FleetGuiInit
+  Call un.FleetApplyWindowTheme
+FunctionEnd
+
+; The confirm page: Fleet chrome, a plain-language explanation, the
+; app-data choice, and Uninstall/Cancel in Fleet styling.
+Function un.FleetConfirmPage
+  ${If} $PassiveMode = 1
+  ${OrIf} ${Silent}
+    Abort
+  ${EndIf}
+
+  Call un.FleetApplyWindowTheme
+  Call un.FleetCreateFonts
+  nsDialogs::Create /NOUNLOAD ${IDC_CHILDRECT}
+  Pop $FleetDialog
+  ${If} $FleetDialog == error
+    Abort
+  ${EndIf}
+  SetCtlColors $FleetDialog ${FLEET_TEXT} ${FLEET_BG}
+  StrCpy $FleetHoverState 0
+  StrCpy $FleetInstallButton ""
+  StrCpy $FleetLaunchButton ""
+  Call un.FleetCreateTitleBar
+
+  ${NSD_CreateLabel} 6% 18% 88% 9% "Uninstall Fleet"
+  Pop $FleetTitle
+  SetCtlColors $FleetTitle ${FLEET_TEXT} ${FLEET_BG}
+  SendMessage $FleetTitle ${WM_SETFONT} $FleetFontTitle 1
+
+  ${NSD_CreateLabel} 6% 29% 88% 9% "This removes Fleet, its shortcuts and the bundled runtime from this Windows account."
+  Pop $FleetSubtitle
+  SetCtlColors $FleetSubtitle ${FLEET_INK2} ${FLEET_BG}
+  SendMessage $FleetSubtitle ${WM_SETFONT} $FleetFontBody 1
+
+  ${NSD_CreateCheckbox} 6% 43% 80% 7% "Also delete Fleet app data (instances, accounts and settings)"
+  Pop $DeleteAppDataCheckbox
+  SetCtlColors $DeleteAppDataCheckbox ${FLEET_INK2} ${FLEET_BG}
+  SendMessage $DeleteAppDataCheckbox ${WM_SETFONT} $FleetFontBody 1
+  System::Call 'UXTHEME::SetWindowTheme(p$DeleteAppDataCheckbox,w"DarkMode_Explorer",p0)'
+
+  ${NSD_CreateButton} 55% 84% 18% 9% "Cancel"
+  Pop $FleetCancelButton
+  System::Call 'UXTHEME::SetWindowTheme(p$FleetCancelButton,w"DarkMode_Explorer",p0)'
+  SendMessage $FleetCancelButton ${WM_SETFONT} $FleetFontButton 1
+  ${NSD_OnClick} $FleetCancelButton un.FleetCancel
+
+  nsDialogs::CreateControl STATIC "${DEFAULT_STYLES}|${SS_NOTIFY}|${SS_CENTER}|${SS_CENTERIMAGE}" 0 76% 84% 18% 9% "Uninstall"
+  Pop $FleetUninstallButton
+  SetCtlColors $FleetUninstallButton ${FLEET_ONACCENT} ${FLEET_DANGER}
+  SendMessage $FleetUninstallButton ${WM_SETFONT} $FleetFontButton 1
+  ${NSD_OnClick} $FleetUninstallButton un.FleetBeginUninstall
+
+  ${NSD_CreateTimer} un.FleetHoverPoll 60
+  nsDialogs::Show
+FunctionEnd
+
+Function un.FleetBeginUninstall
+  Pop $0
+  GetDlgItem $0 $HWNDPARENT 1
+  SendMessage $0 ${BM_CLICK} 0 0
+FunctionEnd
+
+Function un.FleetConfirmPageLeave
+  ${If} $DeleteAppDataCheckbox != ""
+    SendMessage $DeleteAppDataCheckbox ${BM_GETCHECK} 0 0 $DeleteAppDataCheckboxState
+  ${EndIf}
+FunctionEnd
+
+; Dark progress surface for the removal itself.
+Function un.InstFilesShow
+  Call un.FleetApplyWindowTheme
+  Call un.FleetCreateFonts
+  FindWindow $1 "#32770" "" $HWNDPARENT
+  ${If} $1 == 0
+    Return
+  ${EndIf}
+
+  System::Call 'USER32::GetClientRect(p$HWNDPARENT,@r0)'
+  System::Call '*$0(i,i,i.r3,i.r4)'
+  System::Call 'USER32::MoveWindow(pr1,i0,i0,ir3,ir4,i1)'
+  SetCtlColors $1 ${FLEET_TEXT} ${FLEET_BG}
+
+  GetDlgItem $0 $1 1006
+  ${If} $0 != 0
+    ShowWindow $0 ${SW_HIDE}
+  ${EndIf}
+  GetDlgItem $0 $1 1016
+  ${If} $0 != 0
+    ShowWindow $0 ${SW_HIDE}
+  ${EndIf}
+  GetDlgItem $0 $1 1018
+  ${If} $0 != 0
+    ShowWindow $0 ${SW_HIDE}
+  ${EndIf}
+  GetDlgItem $0 $1 1027
+  ${If} $0 != 0
+    ShowWindow $0 ${SW_HIDE}
+  ${EndIf}
+
+  IntOp $R6 $3 * 6
+  IntOp $R6 $R6 / 100
+  IntOp $R7 $4 * 20
+  IntOp $R7 $R7 / 100
+  IntOp $R8 $3 * 88
+  IntOp $R8 $R8 / 100
+  IntOp $R9 $4 * 11
+  IntOp $R9 $R9 / 100
+  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"Uninstalling Fleet",i0x50000000,iR6,iR7,iR8,iR9,p r1,i0,i0,i0)i.s'
+  Pop $FleetProgressTitle
+  SendMessage $FleetProgressTitle ${WM_SETFONT} $FleetFontTitle 1
+  SetCtlColors $FleetProgressTitle ${FLEET_TEXT} ${FLEET_BG}
+
+  IntOp $R7 $4 * 33
+  IntOp $R7 $R7 / 100
+  IntOp $R9 $4 * 7
+  IntOp $R9 $R9 / 100
+  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"Removing files, shortcuts and registry entries.",i0x50000000,iR6,iR7,iR8,iR9,p r1,i0,i0,i0)i.s'
+  Pop $FleetStatusText
+  SendMessage $FleetStatusText ${WM_SETFONT} $FleetFontBody 1
+  SetCtlColors $FleetStatusText ${FLEET_INK2} ${FLEET_BG}
+
+  GetDlgItem $FleetProgressBar $1 1004
+  ${If} $FleetProgressBar != 0
+    System::Call 'USER32::GetWindowLong(p$FleetProgressBar,i-16)i.r0'
+    IntOp $0 $0 | 1
+    System::Call 'USER32::SetWindowLong(p$FleetProgressBar,i-16,ir0)'
+    SendMessage $FleetProgressBar ${PBM_SETBARCOLOR} 0 ${FLEET_ACCENT}
+    SendMessage $FleetProgressBar ${PBM_SETBKCOLOR} 0 ${FLEET_SURFACE3}
+    IntOp $R7 $4 * 44
+    IntOp $R7 $R7 / 100
+    IntOp $R9 $FleetDpi * 8
+    IntOp $R9 $R9 / 96
+    System::Call 'USER32::MoveWindow(p$FleetProgressBar,iR6,iR7,iR8,iR9,i1)'
+  ${EndIf}
+
+  ; wordmark + hairline + close glyph (id 2 = wizard cancel)
+  IntOp $R6 $FleetDpi * 24
+  IntOp $R6 $R6 / 96
+  IntOp $R7 $FleetDpi * 12
+  IntOp $R7 $R7 / 96
+  IntOp $R8 $FleetDpi * 260
+  IntOp $R8 $R8 / 96
+  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"Fleet",i0x50000000,iR6,i0,iR8,iR7,p$HWNDPARENT,i0,i0,i0)i.s'
+  Pop $FleetTitleBarText
+  SendMessage $FleetTitleBarText ${WM_SETFONT} $FleetFontBrand 1
+  SetCtlColors $FleetTitleBarText ${FLEET_TEXT} ${FLEET_BG}
+
+  IntOp $R7 $FleetDpi * 48
+  IntOp $R7 $R7 / 96
+  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"",i0x50000000,i0,iR7,ir3,i1,p$HWNDPARENT,i0,i0,i0)i.s'
+  Pop $FleetHairline
+  SetCtlColors $FleetHairline ${FLEET_HAIR} ${FLEET_HAIR}
+
+  IntOp $R6 $3 * $FleetDpi
+  IntOp $R6 $R6 / 96
+  IntOp $R7 $FleetDpi * 46
+  IntOp $R7 $R7 / 96
+  IntOp $R6 $R6 - $R7
+  IntOp $R8 $FleetDpi * 48
+  IntOp $R8 $R8 / 96
+  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"",i0x50000301,iR6,i0,iR7,iR8,p$HWNDPARENT,i2,i0,i0)i.s'
+  Pop $FleetWindowCloseButton
+  SendMessage $FleetWindowCloseButton ${WM_SETFONT} $FleetFontGlyph 1
+  SetCtlColors $FleetWindowCloseButton ${FLEET_TEXT} ${FLEET_BG}
+  StrCpy $FleetMinimizeButton ""
+  StrCpy $FleetHoverState 0
+FunctionEnd
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW un.InstFilesShow
 !insertmacro MUI_UNPAGE_INSTFILES
 
 ;Languages
@@ -857,6 +1527,8 @@ SectionEnd
 
 Section WebView2
   ; Check if Webview2 is already installed and skip this section
+  Push "Checking the WebView2 runtime..."
+  Call FleetStatus
   ${If} ${RunningX64}
     ReadRegStr $4 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\${WEBVIEW2APPGUID}" "pv"
   ${Else}
@@ -905,6 +1577,8 @@ Section WebView2
       Goto webview2_done
 
       install_webview2:
+        Push "Installing the WebView2 runtime..."
+        Call FleetStatus
         DetailPrint "$(installingWebview2)"
         ; $6 holds the path to the webview2 installer
         ExecWait "$6 ${WEBVIEW2INSTALLERARGS} /install" $1
@@ -949,6 +1623,8 @@ SectionEnd
 
 Section Install
   SetOutPath $INSTDIR
+  Push "Copying Fleet files..."
+  Call FleetStatus
 
   !ifmacrodef NSIS_HOOK_PREINSTALL
     !insertmacro NSIS_HOOK_PREINSTALL
@@ -1031,6 +1707,8 @@ Section Install
   !endif
 
   ; Create start menu shortcut
+  Push "Creating shortcuts..."
+  Call FleetStatus
   !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
     Call CreateOrUpdateStartMenuShortcut
   !insertmacro MUI_STARTMENU_WRITE_END
@@ -1214,13 +1892,6 @@ FunctionEnd
 
 Function Skip
   Abort
-FunctionEnd
-
-Function SkipIfPassive
-  ${IfThen} $PassiveMode = 1  ${|} Abort ${|}
-FunctionEnd
-Function un.SkipIfPassive
-  ${IfThen} $PassiveMode = 1  ${|} Abort ${|}
 FunctionEnd
 
 Function CreateOrUpdateStartMenuShortcut
