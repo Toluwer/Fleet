@@ -96,6 +96,28 @@ Node is bundled with Fleet, so installed users do not need a separate Node.js
 setup. WebView2 is downloaded silently only when Windows does not already have
 the required runtime.
 
+## Publish a Release
+
+Releases live at `https://github.com/Toluwer/Fleet/releases`. The in-app updater
+reads `latest.yml` from the **latest non-draft release** and downloads the
+`FleetInstaller.exe` asset from it. Because the updater verifies the `sha512`
+published in `latest.yml` before running anything it downloads, the feed file
+and the installer must be generated from the exact same build.
+
+1. Bump `version` in `package.json`, `src-tauri/tauri.conf.json`,
+   `src-tauri/Cargo.toml` (and `Cargo.lock`), and the `User-Agent` string in
+   `src/main/people.js` so it matches `test/selftest.js`.
+2. Build the installer: `npm run dist`.
+3. Generate the update feed: `powershell scripts/make-release.ps1`
+   (writes `dist/latest.yml` with the installer's sha512 and size).
+4. Create a draft GitHub release for tag `v<version>`, upload
+   `FleetInstaller.exe` and `latest.yml` (plus the optional portable zip and
+   bare `Fleet.exe`), then publish the release. Publishing promotes it to
+   `releases/latest`, which is what existing clients poll.
+
+Keep a release in draft until both assets are uploaded: a published release
+without `latest.yml` breaks the update check in currently installed clients.
+
 ## Clean Generated Output
 
 The following paths are generated and ignored:
