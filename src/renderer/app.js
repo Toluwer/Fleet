@@ -2087,7 +2087,7 @@ document.addEventListener('click', async (e) => {
       const placeEl = $('#lp-place');
       const raw = placeEl ? placeEl.value.trim() : state.placeId;
       const target = parseRobloxTarget(raw);
-      if (target.invalid) { toast('Could not read a place ID from that - paste a Roblox game link or a numeric ID', 'bad'); break; }
+      if (target.invalid) { toast('Could not read a place ID from that — paste a Roblox game link or a numeric ID', 'bad'); break; }
       state.placeId = raw;
       elAction.disabled = true;
       const r = target.gameId && target.placeId
@@ -2252,7 +2252,7 @@ document.addEventListener('click', async (e) => {
       if (!ids.length) { toast('Select the accounts to include first', 'bad'); break; }
       const placeEl = $('#lp-place');
       const target = parseRobloxTarget(placeEl ? placeEl.value.trim() : state.placeId);
-      if (target.invalid) { toast('Could not read a place ID from that - paste a Roblox game link or a numeric ID', 'bad'); break; }
+      if (target.invalid) { toast('Could not read a place ID from that — paste a Roblox game link or a numeric ID', 'bad'); break; }
       state.sessionDraft = {
         accountIds: ids.filter(id => state.accounts.some(account => account.id === id)),
         placeId: target.placeId,
@@ -2267,7 +2267,7 @@ document.addEventListener('click', async (e) => {
             <input type="checkbox" id="session-arrange"> <span>Auto-arrange windows ~20s after launch</span>
           </label>
           <label class="toggle-row inline" style="gap:10px;margin-top:8px;cursor:pointer">
-            <input type="checkbox" id="session-keepalive"> <span>Keep alive - auto-rejoin accounts that crash or disconnect</span>
+            <input type="checkbox" id="session-keepalive"> <span>Keep alive — auto-rejoin accounts that crash or disconnect</span>
           </label>
         </div>
         <div class="m-foot"><button class="btn" data-action="modal-cancel">Cancel</button>

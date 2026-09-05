@@ -470,6 +470,7 @@ table.data td .mono, table.data td.mono { font-family: var(--mono); color: var(-
 /* ----------------------------- Forms ----------------------------- */
 .field { margin-bottom: 18px; }
 .field > label { display: block; font-weight: 550; margin-bottom: 6px; font-size: 13px; }
+.hint { color: var(--ink-3); font-size: 12.5px; line-height: 1.45; margin: 0; }
 .field .hint { color: var(--ink-3); font-size: 12.5px; margin-top: 6px; }
 .field .err { color: var(--danger); font-size: 12.5px; margin-top: 6px; }
 input[type=text], input[type=number], textarea, select {
