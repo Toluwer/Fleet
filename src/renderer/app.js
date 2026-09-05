@@ -211,7 +211,7 @@ function renderFollowDialog() {
     <div class="m-foot">
       <button class="btn" data-action="modal-cancel" ${state.following ? 'disabled' : ''}>Cancel</button>
       <button class="btn primary" data-action="follow-confirm" ${!count || state.following ? 'disabled' : ''}>
-        ${state.following ? '<span class="spinner"></span> Joining-' : `${icon('users-group')} Follow with ${count || ''}`}
+        ${state.following ? '<span class="spinner"></span> Joining…' : `${icon('users-group')} Follow with ${count || ''}`}
       </button>
     </div>`);
 }
@@ -243,7 +243,7 @@ function renderPersonJoinDialog() {
   }).join('');
   const n = join.selectedIds.size;
   openModal(`
-    <div class="m-head"><h3>Join ${esc(join.name || 'player')}</h3><p>Pick one or more accounts - Fleet joins each into their exact server.</p></div>
+    <div class="m-head"><h3>Join ${esc(join.name || 'player')}</h3><p>Pick one or more accounts — Fleet joins each into their exact server.</p></div>
     <div class="m-body">
       <div class="join-account-list">${choices}</div>
       <p class="hint" style="margin:13px 0 0">Fleet checks the live server with your selected account when you click Join. Private or privacy-restricted servers can still block the join.</p>
@@ -251,18 +251,22 @@ function renderPersonJoinDialog() {
     <div class="m-foot">
       <button class="btn" data-action="modal-cancel" ${join.joining ? 'disabled' : ''}>Cancel</button>
       <button class="btn primary" data-action="person-join-confirm" ${!n || join.joining ? 'disabled' : ''}>
-        ${join.joining ? '<span class="spinner"></span> Joining-' : `${icon('play')} Join${n ? ` with ${n} account${n === 1 ? '' : 's'}` : ''}`}
+        ${join.joining ? '<span class="spinner"></span> Joining…' : `${icon('play')} Join${n ? ` with ${n} account${n === 1 ? '' : 's'}` : ''}`}
       </button>
     </div>`);
 }
 
 function openPersonJoinDialog(userId, placeId, gameId, name) {
-  if (!userId) { toast('That person is not in a joinable game', 'bad'); return; }
+  // The join flow is account-driven: Roblox resolves the target's live server
+  // at launch time, so a place/game hint is only cosmetic. The user id is the
+  // one thing that must be valid, and it arrives as a data-* string.
+  const targetId = Number(userId);
+  if (!targetId || !Number.isFinite(targetId)) { toast('That person could not be identified — try refreshing the page', 'bad'); return; }
   if (!state.accounts.length) { toast('Add an account to join', 'bad'); setView('accounts'); return; }
   const preselect = Array.from(state.selected).filter(id => state.accounts.some(a => a.id === id));
   const initial = preselect.length ? preselect : (state.accounts.length === 1 ? [state.accounts[0].id] : []);
   state.personJoin = {
-    userId: String(userId),
+    userId: targetId,
     placeId: placeId ? String(placeId) : null,
     gameId: gameId || null,
     name: name || 'player',
@@ -456,14 +460,14 @@ function saveSessions(list) {
 
 function sessionRows() {
   const sessions = loadSessions();
-  if (!sessions.length) return '<div class="hint">No sessions yet - set up a launch above, then save it here.</div>';
+  if (!sessions.length) return '<div class="hint">No sessions yet — set up a launch above, then save it here.</div>';
   return sessions.map(s => {
     const known = s.accountIds.filter(id => state.accounts.some(a => a.id === id));
     const target = s.gameId ? 'specific server' : (s.placeId ? `place ${s.placeId}` : 'Roblox home');
-    const missing = known.length < s.accountIds.length ? ` - ${s.accountIds.length - known.length} account(s) missing` : '';
+    const missing = known.length < s.accountIds.length ? ` — ${s.accountIds.length - known.length} account(s) missing` : '';
     return `<div class="setting">
       <div><div class="s-label">${esc(s.name)}</div>
-      <div class="s-desc">${known.length} account${known.length === 1 ? '' : 's'} - ${esc(target)}${s.arrange ? ' - auto-arrange' : ''}${s.keepAlive ? ' - keep-alive' : ''}${esc(missing)}</div></div>
+      <div class="s-desc">${known.length} account${known.length === 1 ? '' : 's'} · ${esc(target)}${s.arrange ? ' · auto-arrange' : ''}${s.keepAlive ? ' · keep-alive' : ''}${esc(missing)}</div></div>
       <div class="s-control inline">
         <button class="btn sm primary" data-action="session-launch" data-id="${esc(s.id)}" ${known.length ? '' : 'disabled'}>${icon('play')} Launch</button>
         <button class="btn sm icon" data-action="session-delete" data-id="${esc(s.id)}" data-tip="Delete this session">${icon('x')}</button>
@@ -476,10 +480,10 @@ views.instances = function () {
   let detection;
   if (s.robloxFound) {
     detection = `<div class="banner good"><svg class="b-ico"><use href="#i-check-circle"/></svg>
-      <div class="b-text"><b>Roblox detected</b><span>${esc(s.version || '')} - found via ${esc(s.source || '')}</span></div></div>`;
+      <div class="b-text"><b>Roblox detected</b><span>${esc(s.version || '')} · found via ${esc(s.source || '')}</span></div></div>`;
   } else {
     detection = `<div class="banner bad"><svg class="b-ico"><use href="#i-alert-circle"/></svg>
-      <div class="b-text"><b>Roblox not found</b><span>Install the regular desktop Roblox from roblox.com. The Microsoft Store version and custom launchers (Bloxstrap) aren't detected - or point Settings at your RobloxPlayerBeta.exe manually.</span></div>
+      <div class="b-text"><b>Roblox not found</b><span>Install the regular desktop Roblox from roblox.com. The Microsoft Store version and custom launchers (Bloxstrap) aren't detected — or point Settings at your RobloxPlayerBeta.exe manually.</span></div>
       <div class="b-actions"><button class="btn sm" data-action="goto-settings">Open Settings</button></div></div>`;
   }
   let lockBanner = '';
@@ -498,7 +502,7 @@ views.instances = function () {
 
   const accountPanel = `
     <div id="lp-account" style="${mode === 'account' ? '' : 'display:none'}">
-      <div class="hint" style="margin:2px 0 12px">Select one or more accounts - Fleet opens a signed-in client for each.</div>
+      <div class="hint" style="margin:2px 0 12px">Select one or more accounts — Fleet opens a signed-in client for each.</div>
       <div class="chips">${hasAccounts ? accountChips : '<span class="hint">No accounts yet.</span>'}</div>
       <div class="inline" style="margin-top:16px">
         <input id="lp-place" type="text" placeholder="Place ID or game link (optional)" value="${esc(state.placeId)}" style="max-width:320px" data-tip="Paste a place ID, a roblox.com game URL, or a share link with a server ID" />
@@ -885,7 +889,7 @@ views.games = function () {
   mount(`
     <div class="page-head">
       <h1>Games</h1>
-      <p>Browse and search Roblox experiences, then jump straight in. Joining uses the game's place ID${state.accounts.length ? ' and your selected account (or the first one).' : ' - add an account to join signed in.'}</p>
+      <p>Browse and search Roblox experiences, then jump straight in. Joining uses the game's place ID${state.accounts.length ? ' and your selected account (or the first one).' : ' — add an account to join signed in.'}</p>
     </div>
     <div class="toolbar">
       <div class="search">${icon('search')}<input id="games-search" type="text" placeholder="Search experiences-" value="${esc(g.query)}"></div>
@@ -1083,7 +1087,7 @@ function serverSortControls(sv, visible) {
   const sort = sv.sort || 'best';
   const st = serverStats(visible);
   const f = sv.filters || {};
-  const scanText = sv.scanning ? 'Scanning Roblox pages-' : sv.deepScanned ? `${sv.scan && sv.scan.pagesScanned || 0} pages analyzed` : 'Quick sample';
+  const scanText = sv.scanning ? 'Scanning Roblox pages…' : sv.deepScanned ? `${sv.scan && sv.scan.pagesScanned || 0} pages analyzed` : 'Quick sample';
   return `<div class="server-tools">
     <div class="server-tool-head"><div class="seg-wrap" role="tablist" aria-label="Sort servers">
       ${SERVER_SORTS.map(([v, label]) => `<button class="seg-chip ${sort === v ? 'on' : ''}" data-action="server-sort" data-sort="${v}">${label}</button>`).join('')}
@@ -1279,7 +1283,7 @@ async function joinPlace(placeId, name) {
   if (!placeId) { toast('No place id for this game', 'bad'); return; }
   if (!state.accounts.length) { toast('Add an account to join games', 'bad'); setView('accounts'); return; }
   const ids = state.selected.size ? Array.from(state.selected) : [state.accounts[0].id];
-  toast('Joining ' + (name || 'game') + (ids.length > 1 ? ' with ' + ids.length + ' accounts' : '') + '-');
+  toast('Joining ' + (name || 'game') + (ids.length > 1 ? ' with ' + ids.length + ' accounts' : '') + '…');
   const r = await call(() => api.launch.accounts(ids, String(placeId)));
   if (r && r.ok) {
     toast(`Launched ${r.launched} client${r.launched === 1 ? '' : 's'}`, r.failed ? 'bad' : 'good');
@@ -1887,9 +1891,9 @@ views.settings = async function () {
   }
   const up = state.updater || { state: 'disabled' };
   const updateText = up.state === 'ready' || up.state === 'available' ? `Version ${up.latestVersion || up.availableVersion || 'update'} is available - download and install`
-    : up.state === 'downloading' ? 'Downloading update-'
-      : up.state === 'installing' ? 'Starting the installer-'
-        : up.state === 'checking' ? 'Checking for updates-'
+    : up.state === 'downloading' ? 'Downloading update…'
+      : up.state === 'installing' ? 'Starting the installer…'
+        : up.state === 'checking' ? 'Checking for updates…'
           : up.state === 'error' ? `Update check failed: ${up.error || 'unknown error'}`
             : up.state === 'disabled' ? 'Automatic updates activate in the installed version'
               : `Fleet ${st.appVersion || ''} is up to date`;
@@ -1932,7 +1936,7 @@ views.settings = async function () {
     </div>
     <div class="section-title">Behaviour</div>
     <div class="card pad">
-      ${settingRow('Confirm before bulk actions', 'Ask for confirmation before -End all- and -Cleanup-.',
+      ${settingRow('Confirm before bulk actions', 'Ask for confirmation before “End all” and “Cleanup”.',
         `<label class="toggle"><input type="checkbox" id="set-confirm" ${s.confirmCleanup ? 'checked' : ''}><span class="track"></span></label>`)}
       ${settingRow('Refresh interval', 'How often the running-clients list updates (750-10000 ms).',
         `<input id="set-poll" type="number" min="750" max="10000" step="250" value="${s.pollIntervalMs}" style="width:120px">`)}
@@ -2138,7 +2142,7 @@ document.addEventListener('click', async (e) => {
       if (state.addingAccount) break;
       state.addingAccount = true;
       if (state.view === 'accounts') views.accounts();
-      toast('Opening account flow-');
+      toast('Opening account flow…');
       const r = await call(() => api.accounts.add(), undefined, 0);
       state.addingAccount = false;
       if (r && r.ok) { await loadAccounts(); toast((r.updated ? 'Account updated: ' : 'Account added: ') + (r.account ? r.account.username : ''), 'good'); }
@@ -2152,7 +2156,7 @@ document.addEventListener('click', async (e) => {
       if (state.addingAccount) break;
       state.addingAccount = true;
       if (state.view === 'accounts') views.accounts();
-      toast('Opening account flow-');
+      toast('Opening account flow…');
       const r = await call(() => api.accounts.add(), undefined, 0);
       state.addingAccount = false;
       if (r && r.ok) {
@@ -2166,7 +2170,7 @@ document.addEventListener('click', async (e) => {
     }
     case 'remove-account': {
       const acc = state.accounts.find(a => a.id === id);
-      const ok = await confirmDialog({ title: 'Remove account?', body: 'Remove -' + (acc ? acc.username : '') + '- from Fleet? This deletes its stored session on this PC.', confirmText: 'Remove', danger: true });
+      const ok = await confirmDialog({ title: 'Remove account?', body: 'Remove “' + (acc ? acc.username : '') + '” from Fleet? This deletes its stored session on this PC.', confirmText: 'Remove', danger: true });
       if (!ok) break;
       const r = await call(() => api.accounts.remove(id));
       if (r && r.ok) {
@@ -2183,7 +2187,7 @@ document.addEventListener('click', async (e) => {
       break;
     }
     case 'refresh-accounts': {
-      toast('Refreshing accounts-');
+      toast('Refreshing accounts…');
       const r = await call(() => api.accounts.refresh(undefined, true));
       if (r && r.ok) { state.accounts = r.accounts; state.accountsRefreshedAt = Date.now(); patchAccountGrid(state.accounts); updateAccountsCount(); toast('Accounts refreshed', 'good'); }
       break;

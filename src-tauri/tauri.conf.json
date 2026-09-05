@@ -1,7 +1,7 @@
 {
     "$schema":  "../node_modules/@tauri-apps/cli/config.schema.json",
     "productName":  "Fleet",
-    "version":  "1.5.3",
+    "version":  "1.5.4",
     "identifier":  "com.toluwa.fleet",
     "build":  {
                   "frontendDist":  "../src/renderer",
@@ -48,7 +48,7 @@
                             ],
                    "windows":  {
                                    "webviewInstallMode":  {
-                                                              "type":  "downloadBootstrapper",
+                                                              "type":  "embedBootstrapper",
                                                               "silent":  true
                                                           },
                                    "nsis":  {

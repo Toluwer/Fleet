@@ -35,7 +35,7 @@ Write-Host "Wrote $outFile"
 Write-Host 'Upload to the GitHub release for this version:'
 Write-Host '  FleetInstaller.exe  (required - the updater downloads this asset)'
 Write-Host '  latest.yml          (required - version/sha512/size the updater verifies)'
-Write-Host '  FleetPortable_<version>_x64.zip and Fleet.exe (optional, manual downloads)'
+Write-Host '  FleetPortable_<version>_x64.zip (optional, manual download)'
 Write-Host ''
 Write-Host 'Contents:'
 Get-Content $outFile

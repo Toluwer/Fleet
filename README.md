@@ -8,7 +8,9 @@
 
 Run several Roblox clients at once — signed into different accounts or signed out — and manage them all from one polished, native Windows app.
 
-[**Download FleetInstaller.exe**](https://github.com/Toluwer/Fleet/releases/latest/download/FleetInstaller.exe) — the permanent official installer name. The current Tauri migration builds installer bundles, but automatic updates are not ported yet.
+[**Download FleetInstaller.exe**](https://github.com/Toluwer/Fleet/releases/latest/download/FleetInstaller.exe) — the permanent official installer name. Prefer a no-install copy? Grab [**FleetPortable zip**](https://github.com/Toluwer/Fleet/releases/latest) from the latest release and extract it anywhere (it bundles its own runtime, so it runs without installing).
+
+> The standalone `Fleet.exe` asset was removed from releases — it needs the bundled runtime beside it and only works inside the portable zip or an installed copy.
 
 </div>
 
@@ -49,16 +51,16 @@ npm install      # installs Tauri CLI/API + koffi
 npm start        # run Fleet from source
 ```
 
-Build a standalone, correctly-named **`Fleet.exe`**:
+Build the portable distribution folder (requires the `dist` bundle step's Tauri build):
 
 ```bash
-npm run build    # -> dist\Fleet\Fleet.exe (portable; run or zip it)
+npm run build    # -> dist\Fleet (portable folder: Fleet.exe + node.exe + resources; zip it for distribution)
 ```
 
 Build the branded Tauri installer bundle:
 
 ```bash
-npm run dist     # -> src-tauri\target\release\bundle
+npm run dist     # -> dist\FleetInstaller.exe + src-tauri\target\release\bundle
 ```
 
 Then: open **Accounts -> Add account** and sign in, go to **Instances**, choose **With account**, select one or more accounts, and click **Launch**. Or switch to **Signed out** and pick a number.

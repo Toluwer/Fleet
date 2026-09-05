@@ -24,6 +24,26 @@ function tauriInvoke(channel, payload) {
   return invoke(channel, payload || {});
 }
 
+/**
+ * Tauri command arguments deserialize strictly: an i64/u32/usize field rejects
+ * string values ("12345") outright, which used to break joining people (the
+ * user id arrives from a data-* attribute, always a string). Coerce the common
+ * numeric fields once, here, so no call site can regress this again.
+ */
+function coerceNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function invokeWithNumbers(channel, numericKeys, payload) {
+  const out = Object.assign({}, payload);
+  for (const key of numericKeys) {
+    if (key in out) out[key] = coerceNumber(out[key]);
+  }
+  return tauriInvoke(channel, out);
+}
+
 function currentWindow() {
   const windowApi = tauriApi().window;
   try { return windowApi && typeof windowApi.getCurrentWindow === 'function' ? windowApi.getCurrentWindow() : null; }
@@ -72,11 +92,11 @@ window.fleet = {
     install: () => tauriInvoke('updater_install'),
   },
   launch: {
-    quick: (count) => tauriInvoke('launch_quick', { count }),
+    quick: (count) => invokeWithNumbers('launch_quick', ['count'], { count }),
     accounts: (accountIds, placeId) => tauriInvoke('launch_accounts', { accountIds, placeId }),
     join: (accountIds, placeId, gameId) => tauriInvoke('launch_join', { accountIds, placeId, gameId }),
-    joinPerson: (accountId, targetUserId) => tauriInvoke('launch_join_person', { accountId, targetUserId }),
-    joinPersonMulti: (accountIds, targetUserId) => tauriInvoke('launch_join_person_multi', { accountIds, targetUserId }),
+    joinPerson: (accountId, targetUserId) => invokeWithNumbers('launch_join_person', ['targetUserId'], { accountId, targetUserId }),
+    joinPersonMulti: (accountIds, targetUserId) => invokeWithNumbers('launch_join_person_multi', ['targetUserId'], { accountIds, targetUserId }),
   },
   accounts: {
     list: () => tauriInvoke('accounts_list'),
@@ -89,19 +109,19 @@ window.fleet = {
     browse: () => tauriInvoke('games_browse'),
     search: (query, pageToken) => tauriInvoke('games_search', { query, pageToken }),
     servers: (placeId, cursor) => tauriInvoke('games_servers', { placeId, cursor }),
-    scanServers: (placeId, pageLimit) => tauriInvoke('games_server_scan', { placeId, pageLimit }),
+    scanServers: (placeId, pageLimit) => invokeWithNumbers('games_server_scan', ['pageLimit'], { placeId, pageLimit }),
   },
   people: {
-    list: (page, pageSize, force) => tauriInvoke('people_list', { page, pageSize, force }),
+    list: (page, pageSize, force) => invokeWithNumbers('people_list', ['page', 'pageSize'], { page, pageSize, force }),
     search: (query, cursor) => tauriInvoke('people_search', { query, cursor }),
-    profile: (userId) => tauriInvoke('people_profile', { userId }),
-    presence: (userIds) => tauriInvoke('people_presence', { userIds }),
+    profile: (userId) => invokeWithNumbers('people_profile', ['userId'], { userId }),
+    presence: (userIds) => tauriInvoke('people_presence', { userIds: (userIds || []).map(coerceNumber).filter(n => n !== null) }),
   },
   instances: {
     get: () => tauriInvoke('instances_get'),
-    focus: (pid) => tauriInvoke('instance_focus', { pid }),
-    kill: (pid) => tauriInvoke('instance_kill', { pid }),
-    restart: (pid) => tauriInvoke('instance_restart', { pid }),
+    focus: (pid) => invokeWithNumbers('instance_focus', ['pid'], { pid }),
+    kill: (pid) => invokeWithNumbers('instance_kill', ['pid'], { pid }),
+    restart: (pid) => invokeWithNumbers('instance_restart', ['pid'], { pid }),
     killAll: () => tauriInvoke('instances_kill_all'),
     cleanup: () => tauriInvoke('instances_cleanup'),
     arrange: () => tauriInvoke('instances_arrange'),
@@ -121,7 +141,7 @@ window.fleet = {
     browse: () => tauriInvoke('settings_browse'),
   },
   logs: {
-    get: (limit) => tauriInvoke('logs_get', { limit }),
+    get: (limit) => invokeWithNumbers('logs_get', ['limit'], { limit }),
     clear: () => tauriInvoke('logs_clear'),
     openFolder: () => tauriInvoke('logs_open_folder'),
   },

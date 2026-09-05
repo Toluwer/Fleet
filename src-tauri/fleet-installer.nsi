@@ -319,7 +319,11 @@ Function PageReinstall
       Quit
     ${EndIf}
   !endif
-  StrCpy $UpdateMode 1
+  ; Only a genuine upgrade is an update: same-version repairs keep the full
+  ; install behaviour (shortcuts, run entries) instead of silently skipping them.
+  ${If} $R0 = 1
+    StrCpy $UpdateMode 1
+  ${EndIf}
   ${If} $WixMode = 1
     Call PageLeaveReinstall
   ${EndIf}
@@ -459,7 +463,6 @@ Page custom FleetFinishPage
 Var FleetFontGlyph
 Var FleetDpi
 Var FleetStatusText
-Var FleetProgressTitle
 Var FleetProgressNote
 Var FleetHairline
 Var FleetUninstallButton
@@ -853,8 +856,11 @@ FunctionEnd
 
 Function FleetBeginInstall
   Pop $0
-  GetDlgItem $0 $HWNDPARENT 1
-  SendMessage $0 ${BM_CLICK} 0 0
+  ; Route through the wizard's own command notification, the exact message the
+  ; stock Next button emits (WM_COMMAND, id 1, BN_CLICKED). No detour through
+  ; the hidden stock button's internal click state machine.
+  GetDlgItem $R0 $HWNDPARENT 1
+  SendMessage $HWNDPARENT ${WM_COMMAND} 1 $R0
 FunctionEnd
 
 Function FleetInstallLeave
@@ -875,13 +881,9 @@ Function FleetProgressShow
     Return
   ${EndIf}
 
-  ; claim the whole client area for Fleet's surface
-  System::Call 'USER32::GetClientRect(p$HWNDPARENT,@r0)'
-  System::Call '*$0(i,i,i.r3,i.r4)'
-  System::Call 'USER32::MoveWindow(p$FleetProgressDialog,i0,i0,ir3,ir4,i1)'
-  SetCtlColors $FleetProgressDialog ${FLEET_TEXT} ${FLEET_BG}
-
-  ; drop every stock piece of the MUI instfiles page
+  ; Hide every stock piece of the MUI instfiles page. Fleet's own surface
+  ; below is the only thing the user should see; the stock progress bar is
+  ; adopted, restyled and lifted onto the Fleet surface further down.
   GetDlgItem $0 $FleetProgressDialog 1006
   ${If} $0 != 0
     ShowWindow $0 ${SW_HIDE}
@@ -899,85 +901,81 @@ Function FleetProgressShow
     ShowWindow $0 ${SW_HIDE}
   ${EndIf}
 
-  ; heading and live status, drawn by Fleet
-  IntOp $R6 $3 * 6
-  IntOp $R6 $R6 / 100
-  IntOp $R7 $4 * 16
-  IntOp $R7 $R7 / 100
-  IntOp $R8 $3 * 88
-  IntOp $R8 $R8 / 100
-  IntOp $R9 $4 * 9
-  IntOp $R9 $R9 / 100
-  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"Installing Fleet",i0x50000000,iR6,iR7,iR8,iR9,p$FleetProgressDialog,i0,i0,i0)i.s'
-  Pop $FleetProgressTitle
-  SendMessage $FleetProgressTitle ${WM_SETFONT} $FleetFontTitle 1
-  SetCtlColors $FleetProgressTitle ${FLEET_TEXT} ${FLEET_BG}
+  ; Fleet surface: a LIVE nsDialogs canvas claimed over the whole client area.
+  ; The install sections run on this page while the NSIS message pump keeps
+  ; running, so the full Fleet titlebar (drag / minimize / close, with hover
+  ; states) keeps working during the install - the window behaves exactly like
+  ; every other Fleet page instead of a frozen wizard. nsDialogs hooks the
+  ; wizard's page-change notification, so this canvas is destroyed
+  ; automatically when the install finishes and the page advances.
+  nsDialogs::Create ${IDC_CHILDRECT}
+  Pop $FleetDialog
+  ${If} $FleetDialog == error
+    Return
+  ${EndIf}
+  System::Call 'USER32::GetClientRect(p$HWNDPARENT,@r0)'
+  System::Call '*$0(i,i,i.r3,i.r4)'
+  System::Call 'USER32::MoveWindow(p$FleetDialog,i0,i0,ir3,ir4,i1)'
+  SetCtlColors $FleetDialog ${FLEET_TEXT} ${FLEET_BG}
+  StrCpy $FleetHoverState 0
+  StrCpy $FleetInstallButton ""
+  StrCpy $FleetLaunchButton ""
+  StrCpy $FleetUninstallButton ""
+  Call FleetCreateTitleBar
 
-  IntOp $R7 $4 * 27
-  IntOp $R7 $R7 / 100
-  IntOp $R9 $4 * 6
-  IntOp $R9 $R9 / 100
-  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"Preparing app files and the bundled runtime.",i0x50000000,iR6,iR7,iR8,iR9,p$FleetProgressDialog,i0,i0,i0)i.s'
+  ; Same skeleton as the install page: the surface never flips layouts, the
+  ; form simply becomes progress in the exact slots the controls occupied.
+  ${If} $UpdateMode = 1
+    StrCpy $R9 "Updating Fleet"
+  ${Else}
+    StrCpy $R9 "Installing Fleet"
+  ${EndIf}
+
+  ${NSD_CreateLabel} 6% 11% 70% 5% "FLEET ${VERSION}  -  WINDOWS 10/11"
+  Pop $FleetVersionLabel
+  SetCtlColors $FleetVersionLabel ${FLEET_INK3} ${FLEET_BG}
+  SendMessage $FleetVersionLabel ${WM_SETFONT} $FleetFontSmall 1
+
+  ${NSD_CreateLabel} 6% 17% 88% 9% "$R9"
+  Pop $FleetTitle
+  SetCtlColors $FleetTitle ${FLEET_TEXT} ${FLEET_BG}
+  SendMessage $FleetTitle ${WM_SETFONT} $FleetFontTitle 1
+
+  ${NSD_CreateLabel} 6% 27% 88% 6% "Preparing app files and the bundled runtime."
   Pop $FleetStatusText
-  SendMessage $FleetStatusText ${WM_SETFONT} $FleetFontBody 1
   SetCtlColors $FleetStatusText ${FLEET_INK2} ${FLEET_BG}
+  SendMessage $FleetStatusText ${WM_SETFONT} $FleetFontBody 1
 
-  IntOp $R7 $4 * 52
-  IntOp $R7 $R7 / 100
-  IntOp $R9 $4 * 5
-  IntOp $R9 $R9 / 100
-  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"Fleet only needs a moment. This window advances itself when finished.",i0x50000000,iR6,iR7,iR8,iR9,p$FleetProgressDialog,i0,i0,i0)i.s'
-  Pop $FleetProgressNote
-  SendMessage $FleetProgressNote ${WM_SETFONT} $FleetFontSmall 1
-  SetCtlColors $FleetProgressNote ${FLEET_INK3} ${FLEET_BG}
-
-  ; progress bar: full-width smooth accent bar on a quiet track
+  ; The stock progress bar adopts the install path field's slot. NSIS keeps
+  ; updating this exact control during file extraction, so the bar the user
+  ; watches is the real one - reparented onto Fleet's surface.
   GetDlgItem $FleetProgressBar $FleetProgressDialog 1004
   ${If} $FleetProgressBar != 0
+    System::Call 'USER32::SetParent(p$FleetProgressBar,p$FleetDialog)'
     System::Call 'USER32::GetWindowLong(p$FleetProgressBar,i-16)i.r0'
     IntOp $0 $0 | 1
     System::Call 'USER32::SetWindowLong(p$FleetProgressBar,i-16,ir0)'
     SendMessage $FleetProgressBar ${PBM_SETBARCOLOR} 0 ${FLEET_ACCENT}
     SendMessage $FleetProgressBar ${PBM_SETBKCOLOR} 0 ${FLEET_SURFACE3}
-    IntOp $R7 $4 * 40
+    IntOp $R6 $3 * 6
+    IntOp $R6 $R6 / 100
+    IntOp $R7 $4 * 60
     IntOp $R7 $R7 / 100
+    IntOp $R8 $3 * 88
+    IntOp $R8 $R8 / 100
     IntOp $R9 $FleetDpi * 8
     IntOp $R9 $R9 / 96
     System::Call 'USER32::MoveWindow(p$FleetProgressBar,iR6,iR7,iR8,iR9,i1)'
+    ; lift above the canvas labels (HWND_TOP, keep position + size)
+    System::Call 'USER32::SetWindowPos(p$FleetProgressBar,p0,i0,i0,i0,i0,i0x0043)'
   ${EndIf}
 
-  ; wordmark + hairline so the window still reads as Fleet
-  IntOp $R6 $FleetDpi * 24
-  IntOp $R6 $R6 / 96
-  IntOp $R7 $FleetDpi * 11
-  IntOp $R7 $R7 / 96
-  IntOp $R8 $FleetDpi * 260
-  IntOp $R8 $R8 / 96
-  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"Fleet",i0x50000000,iR6,i0,iR8,iR7,p$HWNDPARENT,i0,i0,i0)i.s'
-  Pop $FleetTitleBarText
-  SendMessage $FleetTitleBarText ${WM_SETFONT} $FleetFontBrand 1
-  SetCtlColors $FleetTitleBarText ${FLEET_TEXT} ${FLEET_BG}
+  ${NSD_CreateLabel} 6% 71% 88% 5% "Keep using your PC - this window finishes by itself."
+  Pop $FleetProgressNote
+  SetCtlColors $FleetProgressNote ${FLEET_INK3} ${FLEET_BG}
+  SendMessage $FleetProgressNote ${WM_SETFONT} $FleetFontSmall 1
 
-  IntOp $R7 $FleetDpi * 44
-  IntOp $R7 $R7 / 96
-  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"",i0x50000000,i0,iR7,ir3,i1,p$HWNDPARENT,i0,i0,i0)i.s'
-  Pop $FleetHairline
-  SetCtlColors $FleetHairline ${FLEET_HAIR} ${FLEET_HAIR}
-
-  ; caption close glyph wired to the wizard's own cancel command (id 2)
-  IntOp $R6 $3 * $FleetDpi
-  IntOp $R6 $R6 / 96
-  IntOp $R7 $FleetDpi * 46
-  IntOp $R7 $R7 / 96
-  IntOp $R6 $R6 - $R7
-  IntOp $R8 $FleetDpi * 44
-  IntOp $R8 $R8 / 96
-  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"",i0x50000301,iR6,i0,iR7,iR8,p$HWNDPARENT,i2,i0,i0)i.s'
-  Pop $FleetWindowCloseButton
-  SendMessage $FleetWindowCloseButton ${WM_SETFONT} $FleetFontGlyph 1
-  SetCtlColors $FleetWindowCloseButton ${FLEET_TEXT} ${FLEET_BG}
-  StrCpy $FleetMinimizeButton ""
-  StrCpy $FleetHoverState 0
+  ${NSD_CreateTimer} FleetHoverPoll 60
 FunctionEnd
 
 
@@ -1335,8 +1333,18 @@ FunctionEnd
 
 Function un.FleetBeginUninstall
   Pop $0
-  GetDlgItem $0 $HWNDPARENT 1
-  SendMessage $0 ${BM_CLICK} 0 0
+  ; the wizard's own Next notification: WM_COMMAND, id 1, BN_CLICKED
+  GetDlgItem $R0 $HWNDPARENT 1
+  SendMessage $HWNDPARENT ${WM_COMMAND} 1 $R0
+FunctionEnd
+
+Function un.FleetStatus
+  Pop $R0
+  ${If} $FleetStatusText != ""
+  ${AndIf} $FleetStatusText != error
+  ${AndIf} $FleetStatusText != 0
+    SendMessage $FleetStatusText ${WM_SETTEXT} 0 "STR:$R0"
+  ${EndIf}
 FunctionEnd
 
 Function un.FleetConfirmPageLeave
@@ -1349,100 +1357,88 @@ FunctionEnd
 Function un.InstFilesShow
   Call un.FleetApplyWindowTheme
   Call un.FleetCreateFonts
-  FindWindow $1 "#32770" "" $HWNDPARENT
-  ${If} $1 == 0
+  FindWindow $FleetProgressDialog "#32770" "" $HWNDPARENT
+  ${If} $FleetProgressDialog == 0
     Return
   ${EndIf}
 
+  ; Hide every stock piece of the MUI uninstall instfiles page.
+  GetDlgItem $0 $FleetProgressDialog 1006
+  ${If} $0 != 0
+    ShowWindow $0 ${SW_HIDE}
+  ${EndIf}
+  GetDlgItem $0 $FleetProgressDialog 1016
+  ${If} $0 != 0
+    ShowWindow $0 ${SW_HIDE}
+  ${EndIf}
+  GetDlgItem $0 $FleetProgressDialog 1018
+  ${If} $0 != 0
+    ShowWindow $0 ${SW_HIDE}
+  ${EndIf}
+  GetDlgItem $0 $FleetProgressDialog 1027
+  ${If} $0 != 0
+    ShowWindow $0 ${SW_HIDE}
+  ${EndIf}
+
+  ; Live nsDialogs canvas over the whole client area, same as the installer's
+  ; progress surface: the titlebar stays interactive while files are removed.
+  nsDialogs::Create ${IDC_CHILDRECT}
+  Pop $FleetDialog
+  ${If} $FleetDialog == error
+    Return
+  ${EndIf}
   System::Call 'USER32::GetClientRect(p$HWNDPARENT,@r0)'
   System::Call '*$0(i,i,i.r3,i.r4)'
-  System::Call 'USER32::MoveWindow(pr1,i0,i0,ir3,ir4,i1)'
-  SetCtlColors $1 ${FLEET_TEXT} ${FLEET_BG}
+  System::Call 'USER32::MoveWindow(p$FleetDialog,i0,i0,ir3,ir4,i1)'
+  SetCtlColors $FleetDialog ${FLEET_TEXT} ${FLEET_BG}
+  StrCpy $FleetHoverState 0
+  StrCpy $FleetInstallButton ""
+  StrCpy $FleetLaunchButton ""
+  StrCpy $FleetUninstallButton ""
+  Call un.FleetCreateTitleBar
 
-  GetDlgItem $0 $1 1006
-  ${If} $0 != 0
-    ShowWindow $0 ${SW_HIDE}
-  ${EndIf}
-  GetDlgItem $0 $1 1016
-  ${If} $0 != 0
-    ShowWindow $0 ${SW_HIDE}
-  ${EndIf}
-  GetDlgItem $0 $1 1018
-  ${If} $0 != 0
-    ShowWindow $0 ${SW_HIDE}
-  ${EndIf}
-  GetDlgItem $0 $1 1027
-  ${If} $0 != 0
-    ShowWindow $0 ${SW_HIDE}
-  ${EndIf}
+  ${NSD_CreateLabel} 6% 24% 70% 8% "FLEET ${VERSION}  -  REMOVING"
+  Pop $FleetVersionLabel
+  SetCtlColors $FleetVersionLabel ${FLEET_INK3} ${FLEET_BG}
+  SendMessage $FleetVersionLabel ${WM_SETFONT} $FleetFontSmall 1
 
-  IntOp $R6 $3 * 6
-  IntOp $R6 $R6 / 100
-  IntOp $R7 $4 * 20
-  IntOp $R7 $R7 / 100
-  IntOp $R8 $3 * 88
-  IntOp $R8 $R8 / 100
-  IntOp $R9 $4 * 11
-  IntOp $R9 $R9 / 100
-  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"Uninstalling Fleet",i0x50000000,iR6,iR7,iR8,iR9,p r1,i0,i0,i0)i.s'
-  Pop $FleetProgressTitle
-  SendMessage $FleetProgressTitle ${WM_SETFONT} $FleetFontTitle 1
-  SetCtlColors $FleetProgressTitle ${FLEET_TEXT} ${FLEET_BG}
+  ${NSD_CreateLabel} 6% 33% 88% 13% "Uninstalling Fleet"
+  Pop $FleetTitle
+  SetCtlColors $FleetTitle ${FLEET_TEXT} ${FLEET_BG}
+  SendMessage $FleetTitle ${WM_SETFONT} $FleetFontTitle 1
 
-  IntOp $R7 $4 * 33
-  IntOp $R7 $R7 / 100
-  IntOp $R9 $4 * 7
-  IntOp $R9 $R9 / 100
-  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"Removing files, shortcuts and registry entries.",i0x50000000,iR6,iR7,iR8,iR9,p r1,i0,i0,i0)i.s'
+  ${NSD_CreateLabel} 6% 49% 88% 8% "Removing files, shortcuts and registry entries."
   Pop $FleetStatusText
-  SendMessage $FleetStatusText ${WM_SETFONT} $FleetFontBody 1
   SetCtlColors $FleetStatusText ${FLEET_INK2} ${FLEET_BG}
+  SendMessage $FleetStatusText ${WM_SETFONT} $FleetFontBody 1
 
-  GetDlgItem $FleetProgressBar $1 1004
+  ; adopt the stock progress bar onto Fleet's surface
+  GetDlgItem $FleetProgressBar $FleetProgressDialog 1004
   ${If} $FleetProgressBar != 0
+    System::Call 'USER32::SetParent(p$FleetProgressBar,p$FleetDialog)'
     System::Call 'USER32::GetWindowLong(p$FleetProgressBar,i-16)i.r0'
     IntOp $0 $0 | 1
     System::Call 'USER32::SetWindowLong(p$FleetProgressBar,i-16,ir0)'
     SendMessage $FleetProgressBar ${PBM_SETBARCOLOR} 0 ${FLEET_ACCENT}
     SendMessage $FleetProgressBar ${PBM_SETBKCOLOR} 0 ${FLEET_SURFACE3}
-    IntOp $R7 $4 * 44
+    IntOp $R6 $3 * 6
+    IntOp $R6 $R6 / 100
+    IntOp $R7 $4 * 60
     IntOp $R7 $R7 / 100
+    IntOp $R8 $3 * 88
+    IntOp $R8 $R8 / 100
     IntOp $R9 $FleetDpi * 8
     IntOp $R9 $R9 / 96
     System::Call 'USER32::MoveWindow(p$FleetProgressBar,iR6,iR7,iR8,iR9,i1)'
+    System::Call 'USER32::SetWindowPos(p$FleetProgressBar,p0,i0,i0,i0,i0,i0x0043)'
   ${EndIf}
 
-  ; wordmark + hairline + close glyph (id 2 = wizard cancel)
-  IntOp $R6 $FleetDpi * 24
-  IntOp $R6 $R6 / 96
-  IntOp $R7 $FleetDpi * 12
-  IntOp $R7 $R7 / 96
-  IntOp $R8 $FleetDpi * 260
-  IntOp $R8 $R8 / 96
-  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"Fleet",i0x50000000,iR6,i0,iR8,iR7,p$HWNDPARENT,i0,i0,i0)i.s'
-  Pop $FleetTitleBarText
-  SendMessage $FleetTitleBarText ${WM_SETFONT} $FleetFontBrand 1
-  SetCtlColors $FleetTitleBarText ${FLEET_TEXT} ${FLEET_BG}
+  ${NSD_CreateLabel} 6% 78% 88% 8% "This window closes by itself when removal finishes."
+  Pop $FleetProgressNote
+  SetCtlColors $FleetProgressNote ${FLEET_INK3} ${FLEET_BG}
+  SendMessage $FleetProgressNote ${WM_SETFONT} $FleetFontSmall 1
 
-  IntOp $R7 $FleetDpi * 48
-  IntOp $R7 $R7 / 96
-  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"",i0x50000000,i0,iR7,ir3,i1,p$HWNDPARENT,i0,i0,i0)i.s'
-  Pop $FleetHairline
-  SetCtlColors $FleetHairline ${FLEET_HAIR} ${FLEET_HAIR}
-
-  IntOp $R6 $3 * $FleetDpi
-  IntOp $R6 $R6 / 96
-  IntOp $R7 $FleetDpi * 46
-  IntOp $R7 $R7 / 96
-  IntOp $R6 $R6 - $R7
-  IntOp $R8 $FleetDpi * 48
-  IntOp $R8 $R8 / 96
-  System::Call 'USER32::CreateWindowEx(i0,w"STATIC",w"",i0x50000301,iR6,i0,iR7,iR8,p$HWNDPARENT,i2,i0,i0)i.s'
-  Pop $FleetWindowCloseButton
-  SendMessage $FleetWindowCloseButton ${WM_SETFONT} $FleetFontGlyph 1
-  SetCtlColors $FleetWindowCloseButton ${FLEET_TEXT} ${FLEET_BG}
-  StrCpy $FleetMinimizeButton ""
-  StrCpy $FleetHoverState 0
+  ${NSD_CreateTimer} un.FleetHoverPoll 60
 FunctionEnd
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW un.InstFilesShow
 !insertmacro MUI_UNPAGE_INSTFILES
@@ -1577,7 +1573,7 @@ Section WebView2
       Goto webview2_done
 
       install_webview2:
-        Push "Installing the WebView2 runtime..."
+        Push "Installing the WebView2 runtime (this can take a minute)..."
         Call FleetStatus
         DetailPrint "$(installingWebview2)"
         ; $6 holds the path to the webview2 installer
@@ -1625,6 +1621,7 @@ Section Install
   SetOutPath $INSTDIR
   Push "Copying Fleet files..."
   Call FleetStatus
+  
 
   !ifmacrodef NSIS_HOOK_PREINSTALL
     !insertmacro NSIS_HOOK_PREINSTALL
@@ -1709,6 +1706,7 @@ Section Install
   ; Create start menu shortcut
   Push "Creating shortcuts..."
   Call FleetStatus
+  
   !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
     Call CreateOrUpdateStartMenuShortcut
   !insertmacro MUI_STARTMENU_WRITE_END
@@ -1765,6 +1763,9 @@ FunctionEnd
 
 Section Uninstall
 
+  Push "Closing Fleet and removing app files..."
+  Call un.FleetStatus
+
   !ifmacrodef NSIS_HOOK_PREUNINSTALL
     !insertmacro NSIS_HOOK_PREUNINSTALL
   !endif
@@ -1808,6 +1809,9 @@ Section Uninstall
   RMDir /REBOOTOK "$INSTDIR\\{{this}}"
   {{/each}}
   RMDir "$INSTDIR"
+
+  Push "Removing shortcuts and registry entries..."
+  Call un.FleetStatus
 
   ; Remove shortcuts if not updating
   ${If} $UpdateMode <> 1

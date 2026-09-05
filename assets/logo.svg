@@ -1,7 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Fleet logo">
-  <rect x="8" y="8" width="240" height="240" rx="46" fill="#ffffff" stroke="#e0e1e4" stroke-width="3"/>
-  <rect x="24" y="104" width="120" height="120" rx="28" fill="#e3e4e7"/>
-  <rect x="68" y="68" width="120" height="120" rx="28" fill="#b7bbc1"/>
-  <rect x="112" y="32" width="120" height="120" rx="28" fill="#14161a"/>
-  <path d="M152 66 L152 118 L198 92 Z" fill="#ffffff"/>
+  <rect x="7" y="7" width="242" height="242" rx="56" fill="#080b12"/>
+  <rect x="7.5" y="7.5" width="241" height="241" rx="55.5" fill="none" stroke="#27364f" stroke-width="8.5"/>
+  <rect x="29" y="103" width="97" height="97" rx="29" fill="#17243a"/>
+  <rect x="67" y="64" width="97" height="97" rx="29" fill="#203a63"/>
+  <rect x="110" y="36.5" width="112" height="112" rx="33" fill="#2563eb"/>
+  <path d="M160 66c0-4.5 5-7.3 8.8-4.8l35.5 24c3.5 2.5 3.5 7.6 0 10l-35.5 24c-3.8 2.5-8.8-.3-8.8-4.8V66z" fill="#ffffff"/>
 </svg>

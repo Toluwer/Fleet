@@ -104,8 +104,9 @@ _up_/node_modules/koffi/...
 
 The Rust launcher supports both the portable layout and this installed layout.
 Node is bundled with Fleet, so installed users do not need a separate Node.js
-setup. WebView2 is downloaded silently only when Windows does not already have
-the required runtime.
+setup. The WebView2 bootstrapper is embedded in the installer and runs silently
+only when Windows does not already have the required runtime, so installing
+never stalls on a bootstrapper download.
 
 ## Publish a Release
 
@@ -122,9 +123,11 @@ and the installer must be generated from the exact same build.
 3. Generate the update feed: `powershell scripts/make-release.ps1`
    (writes `dist/latest.yml` with the installer's sha512 and size).
 4. Create a draft GitHub release for tag `v<version>`, upload
-   `FleetInstaller.exe` and `latest.yml` (plus the optional portable zip and
-   bare `Fleet.exe`), then publish the release. Publishing promotes it to
-   `releases/latest`, which is what existing clients poll.
+   `FleetInstaller.exe` and `latest.yml` (plus the optional portable zip),
+   then publish the release. Publishing promotes it to `releases/latest`,
+   which is what existing clients poll. Do not ship a bare `Fleet.exe` asset -
+   it needs `node.exe` and the bundled resources beside it, so it only works
+   inside the portable zip or an installed copy.
 
 Keep a release in draft until both assets are uploaded: a published release
 without `latest.yml` breaks the update check in currently installed clients.
@@ -144,7 +147,7 @@ without `latest.yml` breaks the update check in currently installed clients.
 GitHub-hosted Windows runner (Actions tab → "Build Windows installer" → Run
 workflow). It runs the selftest, `npm run dist`, `scripts/make-release.ps1`,
 and the portable build, then uploads `FleetInstaller.exe`, `latest.yml`,
-`Fleet.exe`, and `FleetPortable_<version>_x64.zip` as a workflow artifact.
+and `FleetPortable_<version>_x64.zip` as a workflow artifact.
 Download the artifact, verify the `latest.yml` sha512 against the installer,
 and attach the files to the GitHub release as described above. This is useful
 when no Windows machine is available locally.

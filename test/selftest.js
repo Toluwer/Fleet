@@ -249,8 +249,9 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && rendererSource.includes('data-action="join-person"')
     && rendererSource.includes('personCardActions(u)')
     && rendererSource.includes('profileHeroActions(u)'));
-  check('People Join dialog can open before a place id is visible',
-    rendererSource.includes('if (!userId)')
+  check('People Join dialog validates the target id numerically and opens without a place id',
+    rendererSource.includes('const targetId = Number(userId);')
+    && rendererSource.includes('if (!targetId || !Number.isFinite(targetId))')
     && !rendererSource.includes('if (!userId || !placeId)'));
   check('visible people presence refreshes automatically',
     rendererSource.includes('setInterval(refreshVisiblePeoplePresence, 10000)')
@@ -591,7 +592,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   check('Installer is frameless custom NSIS with bundled Node and WebView2 bootstrap',
     tauriConfig.bundle.targets === 'nsis'
     && tauriConfig.bundle.resources.includes('resources/node.exe')
-    && tauriConfig.bundle.windows.webviewInstallMode.type === 'downloadBootstrapper'
+    && tauriConfig.bundle.windows.webviewInstallMode.type === 'embedBootstrapper'
     && nsisConfig.template === 'fleet-installer.nsi'
     && nsisConfig.installMode === 'currentUser'
     && !Object.prototype.hasOwnProperty.call(nsisConfig, 'installerHooks')
@@ -607,11 +608,34 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && installerTemplate.includes('Function FleetHoverPoll')
     && installerTemplate.includes('DarkMode_Explorer')
     && installerTemplate.includes('MUI_CUSTOMFUNCTION_GUIINIT FleetGuiInit'));
+  check('Installer progress page is a live Fleet surface, not a frozen wizard',
+    installerTemplate.includes('nsDialogs::Create ${IDC_CHILDRECT}')
+    && installerTemplate.includes('USER32::SetParent(p$FleetProgressBar,p$FleetDialog)')
+    && installerTemplate.includes('${NSD_CreateTimer} FleetHoverPoll 60')
+    && installerTemplate.includes('Function FleetStatus')
+    && installerTemplate.includes('Call FleetStatus')
+    && installerTemplate.includes('${WM_COMMAND} 1 $R0')
+    && installerTemplate.includes('Keep using your PC - this window finishes by itself.'));
   check('Uninstaller uses the same custom Fleet surface instead of the stock wizard',
     installerTemplate.includes('UninstPage custom un.FleetConfirmPage')
     && installerTemplate.includes('Function un.FleetConfirmPage')
     && installerTemplate.includes('Function un.InstFilesShow')
+    && installerTemplate.includes('Function un.FleetStatus')
     && !installerTemplate.includes('MUI_UNPAGE_CONFIRM'));
+  check('Joining a person passes numeric ids to Tauri (strict i64 deserialization)',
+    tauriBridgeSource.includes('function coerceNumber(value)')
+    && tauriBridgeSource.includes("invokeWithNumbers('launch_join_person_multi', ['targetUserId']")
+    && tauriBridgeSource.includes("invokeWithNumbers('launch_join_person', ['targetUserId']")
+    && rendererSource.includes('const targetId = Number(userId);')
+    && rendererSource.includes('userId: targetId,')
+    && rendererSource.includes('api.launch.joinPersonMulti(ids, join.userId)'));
+  const pkgJson = JSON.parse(packageSource);
+  const cargoTomlVersion = (fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'Cargo.toml'), 'utf8')
+    .match(/^version\s*=\s*"([0-9.]+)"/m) || [])[1];
+  check('Version identifiers stay in sync across package, Tauri config and Cargo',
+    pkgJson.version === tauriConfig.version
+    && pkgJson.version === cargoTomlVersion
+    && rendererSource.includes('Joining\u2026'));
 
   await section('Resilient people search');
   const response = (status, data, headers) => ({
