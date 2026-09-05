@@ -120,10 +120,23 @@ without `latest.yml` breaks the update check in currently installed clients.
 
 > **v1.5.3 note:** this release was published early (at the maintainer's
 > request) with a *transitional* `latest.yml` copied from the 1.5.2 feed, so
-> installed 1.5.2 clients keep reporting "up to date" until the real installer
-> arrives. When uploading the fresh build, **delete the existing `latest.yml`
-> asset first** (GitHub rejects duplicate asset names), then upload the
-> `dist/latest.yml` you generated and the new `FleetInstaller.exe` together.
+> installed 1.5.2 clients kept reporting "up to date" until the real installer
+> arrived. The real assets (built by CI) are now attached, and the same
+> placeholder-swap rule applies to any future early publish: **delete the
+> existing `latest.yml` asset first** (GitHub rejects duplicate asset names),
+> then upload the freshly generated `latest.yml` and `FleetInstaller.exe`
+> together.
+
+## Building in CI
+
+`.github/workflows/build-installer.yml` builds the same Windows artifacts on a
+GitHub-hosted Windows runner (Actions tab → "Build Windows installer" → Run
+workflow). It runs the selftest, `npm run dist`, `scripts/make-release.ps1`,
+and the portable build, then uploads `FleetInstaller.exe`, `latest.yml`,
+`Fleet.exe`, and `FleetPortable_<version>_x64.zip` as a workflow artifact.
+Download the artifact, verify the `latest.yml` sha512 against the installer,
+and attach the files to the GitHub release as described above. This is useful
+when no Windows machine is available locally.
 
 ## Clean Generated Output
 
