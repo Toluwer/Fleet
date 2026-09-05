@@ -118,6 +118,13 @@ and the installer must be generated from the exact same build.
 Keep a release in draft until both assets are uploaded: a published release
 without `latest.yml` breaks the update check in currently installed clients.
 
+> **v1.5.3 note:** this release was published early (at the maintainer's
+> request) with a *transitional* `latest.yml` copied from the 1.5.2 feed, so
+> installed 1.5.2 clients keep reporting "up to date" until the real installer
+> arrives. When uploading the fresh build, **delete the existing `latest.yml`
+> asset first** (GitHub rejects duplicate asset names), then upload the
+> `dist/latest.yml` you generated and the new `FleetInstaller.exe` together.
+
 ## Clean Generated Output
 
 The following paths are generated and ignored:
