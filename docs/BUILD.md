@@ -88,8 +88,10 @@ caption glyphs (Segoe MDL2 Assets) for minimize/close with live hover states
 (driven by an nsDialogs timer), input controls are themed with
 `DarkMode_Explorer`, and the uninstaller renders the same custom surface
 (`un.FleetConfirmPage` + dark progress) instead of the stock MUI wizard.
-`fleet-installer.nsi` compiles as UTF-8 with BOM because of the literal
-caption glyphs — keep that encoding when editing.
+`fleet-installer.nsi` contains literal Segoe MDL2 caption glyphs, so it must
+stay UTF-8 — tauri-bundler writes the rendered script with its own UTF-8 BOM
+(`write_utf8_with_bom`); do not add one to the template or makensis will see
+a double BOM and reject the first line.
 
 Tauri's NSIS bundle installs resources under this layout:
 
