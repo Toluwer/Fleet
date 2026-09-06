@@ -26,7 +26,9 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::SystemInformation::GetTickCount64;
-use windows::Win32::UI::Controls::{InitCommonControlsEx, INITCOMMONCONTROLSEX, PBM_SETMARQUEE};
+use windows::Win32::UI::Controls::{
+    InitCommonControlsEx, INITCOMMONCONTROLSEX, PBM_SETMARQUEE, PBM_SETPOS, PBM_SETRANGE32,
+};
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -899,7 +901,7 @@ fn build_stage(a: &mut App) {
                         font: None,
                     },
                 );
-                let _ = SendMessageW(prog, 0x0406, Some(WPARAM(0)), Some(LPARAM(10000))); // PBM_SETRANGE32
+                let _ = SendMessageW(prog, PBM_SETRANGE32, Some(WPARAM(0)), Some(LPARAM(10000)));
 
                 static_text!(a, "", 0, Some(f.small), 36, 148, 428, 20, IDC_BYTES);
                 static_text!(a, "", 0x4000, Some(f.small), 36, 172, 428, 20, IDC_FILE);
@@ -1202,7 +1204,7 @@ fn set_progress(a: &App, done: u64, total: u64) {
             } else {
                 ((done as f64 / total as f64) * 10000.0).round() as usize
             };
-            let _ = SendMessageW(*ctl, 0x0405, Some(WPARAM(pos)), Some(LPARAM(0))); // PBM_SETPOS
+            let _ = SendMessageW(*ctl, PBM_SETPOS, Some(WPARAM(pos)), Some(LPARAM(0)));
         }
     }
 }
