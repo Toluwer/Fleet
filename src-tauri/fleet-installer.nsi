@@ -458,6 +458,7 @@ Page custom FleetFinishPage
   !insertmacro FleetHideStockCtl 1045
   !insertmacro FleetHideStockCtl 1046
   !insertmacro FleetHideStockCtl 1250
+  !insertmacro FleetHideStockCtl 1256
 !macroend
 
 Var FleetFontGlyph
@@ -881,82 +882,20 @@ Function FleetProgressShow
     Return
   ${EndIf}
 
-  ; Hide every stock piece of the MUI instfiles page. Fleet's own surface
-  ; below is the only thing the user should see; the stock progress bar is
-  ; adopted, restyled and lifted onto the Fleet surface further down.
-  GetDlgItem $0 $FleetProgressDialog 1006
-  ${If} $0 != 0
-    ShowWindow $0 ${SW_HIDE}
-  ${EndIf}
-  GetDlgItem $0 $FleetProgressDialog 1016
-  ${If} $0 != 0
-    ShowWindow $0 ${SW_HIDE}
-  ${EndIf}
-  GetDlgItem $0 $FleetProgressDialog 1018
-  ${If} $0 != 0
-    ShowWindow $0 ${SW_HIDE}
-  ${EndIf}
-  GetDlgItem $0 $FleetProgressDialog 1027
-  ${If} $0 != 0
-    ShowWindow $0 ${SW_HIDE}
-  ${EndIf}
-
-  ; Fleet surface: a LIVE nsDialogs canvas claimed over the whole client area.
-  ; The install sections run on this page while the NSIS message pump keeps
-  ; running, so the full Fleet titlebar (drag / minimize / close, with hover
-  ; states) keeps working during the install - the window behaves exactly like
-  ; every other Fleet page instead of a frozen wizard. nsDialogs hooks the
-  ; wizard's page-change notification, so this canvas is destroyed
-  ; automatically when the install finishes and the page advances.
-  nsDialogs::Create ${IDC_CHILDRECT}
-  Pop $FleetDialog
-  ${If} $FleetDialog == error
-    Return
-  ${EndIf}
-  System::Call 'USER32::GetClientRect(p$HWNDPARENT,@r0)'
-  System::Call '*$0(i,i,i.r3,i.r4)'
-  System::Call 'USER32::MoveWindow(p$FleetDialog,i0,i0,ir3,ir4,i1)'
-  SetCtlColors $FleetDialog ${FLEET_TEXT} ${FLEET_BG}
-  StrCpy $FleetHoverState 0
-  StrCpy $FleetInstallButton ""
-  StrCpy $FleetLaunchButton ""
-  StrCpy $FleetUninstallButton ""
-  Call FleetCreateTitleBar
-
-  ; Same skeleton as the install page: the surface never flips layouts, the
-  ; form simply becomes progress in the exact slots the controls occupied.
-  ${If} $UpdateMode = 1
-    StrCpy $R9 "Updating Fleet"
-  ${Else}
-    StrCpy $R9 "Installing Fleet"
-  ${EndIf}
-
-  ${NSD_CreateLabel} 6% 11% 70% 5% "FLEET ${VERSION}  -  WINDOWS 10/11"
-  Pop $FleetVersionLabel
-  SetCtlColors $FleetVersionLabel ${FLEET_INK3} ${FLEET_BG}
-  SendMessage $FleetVersionLabel ${WM_SETFONT} $FleetFontSmall 1
-
-  ${NSD_CreateLabel} 6% 17% 88% 9% "$R9"
-  Pop $FleetTitle
-  SetCtlColors $FleetTitle ${FLEET_TEXT} ${FLEET_BG}
-  SendMessage $FleetTitle ${WM_SETFONT} $FleetFontTitle 1
-
-  ${NSD_CreateLabel} 6% 27% 88% 6% "Preparing app files and the bundled runtime."
-  Pop $FleetStatusText
-  SetCtlColors $FleetStatusText ${FLEET_INK2} ${FLEET_BG}
-  SendMessage $FleetStatusText ${WM_SETFONT} $FleetFontBody 1
-
-  ; The stock progress bar adopts the install path field's slot. NSIS keeps
-  ; updating this exact control during file extraction, so the bar the user
-  ; watches is the real one - reparented onto Fleet's surface.
+  ; ---- adopt the stock progress bar onto the wizard surface first ----
+  ; NSIS keeps updating this exact control while the sections run, so the
+  ; bar the user watches is the real one - reparented to the outer wizard
+  ; dialog, restyled to the Fleet accent, in the install path field's slot.
   GetDlgItem $FleetProgressBar $FleetProgressDialog 1004
   ${If} $FleetProgressBar != 0
-    System::Call 'USER32::SetParent(p$FleetProgressBar,p$FleetDialog)'
+    System::Call 'USER32::SetParent(p$FleetProgressBar,p$HWNDPARENT)'
     System::Call 'USER32::GetWindowLong(p$FleetProgressBar,i-16)i.r0'
     IntOp $0 $0 | 1
     System::Call 'USER32::SetWindowLong(p$FleetProgressBar,i-16,ir0)'
     SendMessage $FleetProgressBar ${PBM_SETBARCOLOR} 0 ${FLEET_ACCENT}
     SendMessage $FleetProgressBar ${PBM_SETBKCOLOR} 0 ${FLEET_SURFACE3}
+    System::Call 'USER32::GetClientRect(p$HWNDPARENT,@r0)'
+    System::Call '*$0(i,i,i.r3,i.r4)'
     IntOp $R6 $3 * 6
     IntOp $R6 $R6 / 100
     IntOp $R7 $4 * 60
@@ -966,30 +905,179 @@ Function FleetProgressShow
     IntOp $R9 $FleetDpi * 8
     IntOp $R9 $R9 / 96
     System::Call 'USER32::MoveWindow(p$FleetProgressBar,iR6,iR7,iR8,iR9,i1)'
-    ; lift above the canvas labels (HWND_TOP, keep position + size)
     System::Call 'USER32::SetWindowPos(p$FleetProgressBar,p0,i0,i0,i0,i0,i0x0043)'
   ${EndIf}
 
-  ; The stock instfiles surface (white log panel, "Show details" toggle and
-  ; its banner) is fully replaced by Fleet's canvas. The progress bar has
-  ; been reparented out of it above, so the whole inner dialog can go away.
+  ; ---- hide the ENTIRE stock instfiles surface ----
+  ; The white log panel (SysListView32), the "Show details" toggle, the
+  ; banner labels and everything else on the inner dialog are replaced by
+  ; Fleet's surface; the bar was just reparented out of it, so the whole
+  ; inner dialog goes away in one move.
   ShowWindow $FleetProgressDialog ${SW_HIDE}
 
-  ; nsDialogs::Create leaves its canvas hidden on built-in pages (only custom
-  ; pages show it via nsDialogs::Show, which must NOT be called here because
-  ; the instfiles page already runs its own message pump). Show the canvas
-  ; explicitly so the Fleet surface - titlebar, headings, live status and the
-  ; adopted bar - actually renders while the sections run.
-  ShowWindow $FleetDialog 5 ; SW_SHOW
-  System::Call 'USER32::SetWindowPos(p$FleetDialog,p0,i0,i0,i0,i0,i0x0043)' ; HWND_TOP, keep pos/size
+  ; ---- Fleet surface: plain Win32 statics on the wizard dialog ----
+  ; nsDialogs must NOT be used on this built-in page: its canvas is only
+  ; shown by nsDialogs::Show (which must never run inside a page SHOW
+  ; callback), and its page-flow hook blocks the wizard's auto-advance
+  ; after the sections finish - v1.5.4 froze on a blank progress page
+  ; because of exactly that. Raw child statics of $HWNDPARENT keep the
+  ; theme and leave the page flow completely stock, so the finish page
+  ; appears by itself when the install completes.
+  StrCpy $FleetHoverState 0
+  StrCpy $FleetInstallButton ""
+  StrCpy $FleetLaunchButton ""
+  StrCpy $FleetMinimizeButton ""
+  StrCpy $FleetTitleBar ""
+  StrCpy $FleetLogo ""
+  StrCpy $FleetTitleBarText ""
+  StrCpy $FleetHairline ""
+  StrCpy $FleetWindowCloseButton ""
+  StrCpy $FleetVersionLabel ""
+  StrCpy $FleetTitle ""
+  StrCpy $FleetStatusText ""
+  StrCpy $FleetProgressNote ""
 
-  ${NSD_CreateLabel} 6% 71% 88% 5% "Keep using your PC - this window finishes by itself."
+  ${If} $UpdateMode = 1
+    StrCpy $R9 "Updating Fleet"
+  ${Else}
+    StrCpy $R9 "Installing Fleet"
+  ${EndIf}
+
+  ; titlebar wordmark
+  System::Call 'USER32::CreateWindowExW(i0,w"STATIC",w"Fleet",i0x50000200,p$HWNDPARENT,i0,i0,i0,i0,p0,p0,p0,p0) p.s'
+  Pop $FleetTitleBarText
+  SendMessage $FleetTitleBarText ${WM_SETFONT} $FleetFontBrand 1
+  SetCtlColors $FleetTitleBarText ${FLEET_TEXT} ${FLEET_BG}
+  Push 56
+  Push 0
+  Push 260
+  Push 44
+  Push $FleetTitleBarText
+  Call FleetPlacePx
+
+  ; titlebar hairline
+  System::Call 'USER32::CreateWindowExW(i0,w"STATIC",w"",i0x50000000,p$HWNDPARENT,i0,i0,i0,i0,p0,p0,p0,p0) p.s'
+  Pop $FleetHairline
+  SetCtlColors $FleetHairline ${FLEET_HAIR} ${FLEET_HAIR}
+  Push 0
+  Push 44
+  Push 760
+  Push 2
+  Push $FleetHairline
+  Call FleetPlacePx
+
+  ; close glyph, control id 2: STATIC + SS_NOTIFY reports STN_CLICKED
+  ; (== BN_CLICKED) through WM_COMMAND to the wizard = stock cancel flow
+  System::Call 'USER32::CreateWindowExW(i0,w"STATIC",w"",i0x50000301,p$HWNDPARENT,i0,i0,i0,i0,p0,p2,p0,p0) p.s'
+  Pop $FleetWindowCloseButton
+  SendMessage $FleetWindowCloseButton ${WM_SETFONT} $FleetFontGlyph 1
+  SetCtlColors $FleetWindowCloseButton ${FLEET_TEXT} ${FLEET_BG}
+  Push 714
+  Push 0
+  Push 46
+  Push 44
+  Push $FleetWindowCloseButton
+  Call FleetPlacePx
+
+  ; eyebrow
+  System::Call 'USER32::CreateWindowExW(i0,w"STATIC",w"FLEET ${VERSION}  ·   WINDOWS 10/11",i0x50000000,p$HWNDPARENT,i0,i0,i0,i0,p0,p0,p0,p0) p.s'
+  Pop $FleetVersionLabel
+  SendMessage $FleetVersionLabel ${WM_SETFONT} $FleetFontSmall 1
+  SetCtlColors $FleetVersionLabel ${FLEET_INK3} ${FLEET_BG}
+  Push 46
+  Push 59
+  Push 532
+  Push 27
+  Push $FleetVersionLabel
+  Call FleetPlacePx
+
+  ; heading (Installing Fleet / Updating Fleet)
+  System::Call 'USER32::CreateWindowExW(i0,w"STATIC",w"",i0x50000000,p$HWNDPARENT,i0,i0,i0,i0,p0,p0,p0,p0) p.s'
+  Pop $FleetTitle
+  SendMessage $FleetTitle ${WM_SETTEXT} 0 "STR:$R9"
+  SendMessage $FleetTitle ${WM_SETFONT} $FleetFontTitle 1
+  SetCtlColors $FleetTitle ${FLEET_TEXT} ${FLEET_BG}
+  Push 46
+  Push 92
+  Push 669
+  Push 49
+  Push $FleetTitle
+  Call FleetPlacePx
+
+  ; live status line - FleetStatus (called from the sections) WM_SETTEXTs it
+  System::Call 'USER32::CreateWindowExW(i0,w"STATIC",w"Preparing app files and the bundled runtime.",i0x50000000,p$HWNDPARENT,i0,i0,i0,i0,p0,p0,p0,p0) p.s'
+  Pop $FleetStatusText
+  SendMessage $FleetStatusText ${WM_SETFONT} $FleetFontBody 1
+  SetCtlColors $FleetStatusText ${FLEET_INK2} ${FLEET_BG}
+  Push 46
+  Push 146
+  Push 669
+  Push 32
+  Push $FleetStatusText
+  Call FleetPlacePx
+
+  ; footer note
+  System::Call 'USER32::CreateWindowExW(i0,w"STATIC",w"Keep using your PC - this window finishes by itself.",i0x50000000,p$HWNDPARENT,i0,i0,i0,i0,p0,p0,p0,p0) p.s'
   Pop $FleetProgressNote
-  SetCtlColors $FleetProgressNote ${FLEET_INK3} ${FLEET_BG}
   SendMessage $FleetProgressNote ${WM_SETFONT} $FleetFontSmall 1
-
-  ${NSD_CreateTimer} FleetHoverPoll 60
+  SetCtlColors $FleetProgressNote ${FLEET_INK3} ${FLEET_BG}
+  Push 46
+  Push 383
+  Push 669
+  Push 27
+  Push $FleetProgressNote
+  Call FleetPlacePx
 FunctionEnd
+
+; Raw progress statics and the adopted bar are children of the wizard
+; dialog, so they outlive the instfiles page - remove them when the wizard
+; moves on to the finish page.
+Function FleetDestroyProgressSurface
+  ${If} $FleetTitleBarText != ""
+  ${AndIf} $FleetTitleBarText != 0
+    System::Call 'USER32::DestroyWindow(p$FleetTitleBarText)'
+  ${EndIf}
+  ${If} $FleetHairline != ""
+  ${AndIf} $FleetHairline != 0
+    System::Call 'USER32::DestroyWindow(p$FleetHairline)'
+  ${EndIf}
+  ${If} $FleetWindowCloseButton != ""
+  ${AndIf} $FleetWindowCloseButton != 0
+    System::Call 'USER32::DestroyWindow(p$FleetWindowCloseButton)'
+  ${EndIf}
+  ${If} $FleetVersionLabel != ""
+  ${AndIf} $FleetVersionLabel != 0
+    System::Call 'USER32::DestroyWindow(p$FleetVersionLabel)'
+  ${EndIf}
+  ${If} $FleetTitle != ""
+  ${AndIf} $FleetTitle != 0
+    System::Call 'USER32::DestroyWindow(p$FleetTitle)'
+  ${EndIf}
+  ${If} $FleetStatusText != ""
+  ${AndIf} $FleetStatusText != 0
+    System::Call 'USER32::DestroyWindow(p$FleetStatusText)'
+  ${EndIf}
+  ${If} $FleetProgressNote != ""
+  ${AndIf} $FleetProgressNote != 0
+    System::Call 'USER32::DestroyWindow(p$FleetProgressNote)'
+  ${EndIf}
+  ${If} $FleetProgressBar != ""
+  ${AndIf} $FleetProgressBar != 0
+    System::Call 'USER32::DestroyWindow(p$FleetProgressBar)'
+  ${EndIf}
+  StrCpy $FleetTitleBarText ""
+  StrCpy $FleetHairline ""
+  StrCpy $FleetWindowCloseButton ""
+  StrCpy $FleetVersionLabel ""
+  StrCpy $FleetTitle ""
+  StrCpy $FleetStatusText ""
+  StrCpy $FleetProgressNote ""
+  StrCpy $FleetProgressBar ""
+FunctionEnd
+
+; Raw progress statics and the adopted bar are children of the wizard
+; dialog, so they outlive the instfiles page - remove them when the wizard
+; moves on to the finish page.
 
 
 Function FleetFinishPage
@@ -998,6 +1086,7 @@ Function FleetFinishPage
     Abort
   ${EndIf}
 
+  Call FleetDestroyProgressSurface
   Call FleetApplyWindowTheme
   Call FleetCreateFonts
   ${If} $FleetDesktopShortcutState == ${BST_CHECKED}
@@ -1375,65 +1464,17 @@ Function un.InstFilesShow
     Return
   ${EndIf}
 
-  ; Hide every stock piece of the MUI uninstall instfiles page.
-  GetDlgItem $0 $FleetProgressDialog 1006
-  ${If} $0 != 0
-    ShowWindow $0 ${SW_HIDE}
-  ${EndIf}
-  GetDlgItem $0 $FleetProgressDialog 1016
-  ${If} $0 != 0
-    ShowWindow $0 ${SW_HIDE}
-  ${EndIf}
-  GetDlgItem $0 $FleetProgressDialog 1018
-  ${If} $0 != 0
-    ShowWindow $0 ${SW_HIDE}
-  ${EndIf}
-  GetDlgItem $0 $FleetProgressDialog 1027
-  ${If} $0 != 0
-    ShowWindow $0 ${SW_HIDE}
-  ${EndIf}
-
-  ; Live nsDialogs canvas over the whole client area, same as the installer's
-  ; progress surface: the titlebar stays interactive while files are removed.
-  nsDialogs::Create ${IDC_CHILDRECT}
-  Pop $FleetDialog
-  ${If} $FleetDialog == error
-    Return
-  ${EndIf}
-  System::Call 'USER32::GetClientRect(p$HWNDPARENT,@r0)'
-  System::Call '*$0(i,i,i.r3,i.r4)'
-  System::Call 'USER32::MoveWindow(p$FleetDialog,i0,i0,ir3,ir4,i1)'
-  SetCtlColors $FleetDialog ${FLEET_TEXT} ${FLEET_BG}
-  StrCpy $FleetHoverState 0
-  StrCpy $FleetInstallButton ""
-  StrCpy $FleetLaunchButton ""
-  StrCpy $FleetUninstallButton ""
-  Call un.FleetCreateTitleBar
-
-  ${NSD_CreateLabel} 6% 24% 70% 8% "FLEET ${VERSION}  -  REMOVING"
-  Pop $FleetVersionLabel
-  SetCtlColors $FleetVersionLabel ${FLEET_INK3} ${FLEET_BG}
-  SendMessage $FleetVersionLabel ${WM_SETFONT} $FleetFontSmall 1
-
-  ${NSD_CreateLabel} 6% 33% 88% 13% "Uninstalling Fleet"
-  Pop $FleetTitle
-  SetCtlColors $FleetTitle ${FLEET_TEXT} ${FLEET_BG}
-  SendMessage $FleetTitle ${WM_SETFONT} $FleetFontTitle 1
-
-  ${NSD_CreateLabel} 6% 49% 88% 8% "Removing files, shortcuts and registry entries."
-  Pop $FleetStatusText
-  SetCtlColors $FleetStatusText ${FLEET_INK2} ${FLEET_BG}
-  SendMessage $FleetStatusText ${WM_SETFONT} $FleetFontBody 1
-
-  ; adopt the stock progress bar onto Fleet's surface
+  ; ---- adopt the stock progress bar onto the wizard surface first ----
   GetDlgItem $FleetProgressBar $FleetProgressDialog 1004
   ${If} $FleetProgressBar != 0
-    System::Call 'USER32::SetParent(p$FleetProgressBar,p$FleetDialog)'
+    System::Call 'USER32::SetParent(p$FleetProgressBar,p$HWNDPARENT)'
     System::Call 'USER32::GetWindowLong(p$FleetProgressBar,i-16)i.r0'
     IntOp $0 $0 | 1
     System::Call 'USER32::SetWindowLong(p$FleetProgressBar,i-16,ir0)'
     SendMessage $FleetProgressBar ${PBM_SETBARCOLOR} 0 ${FLEET_ACCENT}
     SendMessage $FleetProgressBar ${PBM_SETBKCOLOR} 0 ${FLEET_SURFACE3}
+    System::Call 'USER32::GetClientRect(p$HWNDPARENT,@r0)'
+    System::Call '*$0(i,i,i.r3,i.r4)'
     IntOp $R6 $3 * 6
     IntOp $R6 $R6 / 100
     IntOp $R7 $4 * 60
@@ -1446,12 +1487,109 @@ Function un.InstFilesShow
     System::Call 'USER32::SetWindowPos(p$FleetProgressBar,p0,i0,i0,i0,i0,i0x0043)'
   ${EndIf}
 
-  ${NSD_CreateLabel} 6% 78% 88% 8% "This window closes by itself when removal finishes."
-  Pop $FleetProgressNote
-  SetCtlColors $FleetProgressNote ${FLEET_INK3} ${FLEET_BG}
-  SendMessage $FleetProgressNote ${WM_SETFONT} $FleetFontSmall 1
+  ; ---- hide the ENTIRE stock uninstall instfiles surface ----
+  ShowWindow $FleetProgressDialog ${SW_HIDE}
 
-  ${NSD_CreateTimer} un.FleetHoverPoll 60
+  ; ---- Fleet surface: plain Win32 statics on the wizard dialog ----
+  ; (same rationale as the installer's progress page: nsDialogs canvases
+  ; never render on built-in pages and break the page flow)
+  StrCpy $FleetHoverState 0
+  StrCpy $FleetInstallButton ""
+  StrCpy $FleetLaunchButton ""
+  StrCpy $FleetUninstallButton ""
+  StrCpy $FleetMinimizeButton ""
+  StrCpy $FleetTitleBar ""
+  StrCpy $FleetLogo ""
+  StrCpy $FleetTitleBarText ""
+  StrCpy $FleetHairline ""
+  StrCpy $FleetWindowCloseButton ""
+  StrCpy $FleetVersionLabel ""
+  StrCpy $FleetTitle ""
+  StrCpy $FleetStatusText ""
+  StrCpy $FleetProgressNote ""
+
+  ; titlebar wordmark
+  System::Call 'USER32::CreateWindowExW(i0,w"STATIC",w"Fleet",i0x50000200,p$HWNDPARENT,i0,i0,i0,i0,p0,p0,p0,p0) p.s'
+  Pop $FleetTitleBarText
+  SendMessage $FleetTitleBarText ${WM_SETFONT} $FleetFontBrand 1
+  SetCtlColors $FleetTitleBarText ${FLEET_TEXT} ${FLEET_BG}
+  Push 56
+  Push 0
+  Push 260
+  Push 44
+  Push $FleetTitleBarText
+  Call un.FleetPlacePx
+
+  ; titlebar hairline
+  System::Call 'USER32::CreateWindowExW(i0,w"STATIC",w"",i0x50000000,p$HWNDPARENT,i0,i0,i0,i0,p0,p0,p0,p0) p.s'
+  Pop $FleetHairline
+  SetCtlColors $FleetHairline ${FLEET_HAIR} ${FLEET_HAIR}
+  Push 0
+  Push 44
+  Push 760
+  Push 2
+  Push $FleetHairline
+  Call un.FleetPlacePx
+
+  ; close glyph, control id 2 -> stock uninstall cancel flow
+  System::Call 'USER32::CreateWindowExW(i0,w"STATIC",w"",i0x50000301,p$HWNDPARENT,i0,i0,i0,i0,p0,p2,p0,p0) p.s'
+  Pop $FleetWindowCloseButton
+  SendMessage $FleetWindowCloseButton ${WM_SETFONT} $FleetFontGlyph 1
+  SetCtlColors $FleetWindowCloseButton ${FLEET_TEXT} ${FLEET_BG}
+  Push 714
+  Push 0
+  Push 46
+  Push 44
+  Push $FleetWindowCloseButton
+  Call un.FleetPlacePx
+
+  ; eyebrow
+  System::Call 'USER32::CreateWindowExW(i0,w"STATIC",w"FLEET ${VERSION}  ·   REMOVING",i0x50000000,p$HWNDPARENT,i0,i0,i0,i0,p0,p0,p0,p0) p.s'
+  Pop $FleetVersionLabel
+  SendMessage $FleetVersionLabel ${WM_SETFONT} $FleetFontSmall 1
+  SetCtlColors $FleetVersionLabel ${FLEET_INK3} ${FLEET_BG}
+  Push 46
+  Push 130
+  Push 532
+  Push 27
+  Push $FleetVersionLabel
+  Call un.FleetPlacePx
+
+  ; heading
+  System::Call 'USER32::CreateWindowExW(i0,w"STATIC",w"Uninstalling Fleet",i0x50000000,p$HWNDPARENT,i0,i0,i0,i0,p0,p0,p0,p0) p.s'
+  Pop $FleetTitle
+  SendMessage $FleetTitle ${WM_SETFONT} $FleetFontTitle 1
+  SetCtlColors $FleetTitle ${FLEET_TEXT} ${FLEET_BG}
+  Push 46
+  Push 178
+  Push 669
+  Push 49
+  Push $FleetTitle
+  Call un.FleetPlacePx
+
+  ; live status line - un.FleetStatus WM_SETTEXTs it
+  System::Call 'USER32::CreateWindowExW(i0,w"STATIC",w"Removing files, shortcuts and registry entries.",i0x50000000,p$HWNDPARENT,i0,i0,i0,i0,p0,p0,p0,p0) p.s'
+  Pop $FleetStatusText
+  SendMessage $FleetStatusText ${WM_SETFONT} $FleetFontBody 1
+  SetCtlColors $FleetStatusText ${FLEET_INK2} ${FLEET_BG}
+  Push 46
+  Push 265
+  Push 669
+  Push 32
+  Push $FleetStatusText
+  Call un.FleetPlacePx
+
+  ; footer note
+  System::Call 'USER32::CreateWindowExW(i0,w"STATIC",w"This window closes by itself when removal finishes.",i0x50000000,p$HWNDPARENT,i0,i0,i0,i0,p0,p0,p0,p0) p.s'
+  Pop $FleetProgressNote
+  SendMessage $FleetProgressNote ${WM_SETFONT} $FleetFontSmall 1
+  SetCtlColors $FleetProgressNote ${FLEET_INK3} ${FLEET_BG}
+  Push 46
+  Push 421
+  Push 669
+  Push 27
+  Push $FleetProgressNote
+  Call un.FleetPlacePx
 FunctionEnd
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW un.InstFilesShow
 !insertmacro MUI_UNPAGE_INSTFILES

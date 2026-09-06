@@ -359,7 +359,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && rendererModel.parseRobloxTarget('not a Roblox target').invalid === true
     && rendererModel.parseRobloxTarget('').invalid === false);
   check('Account-less installs can search public profiles without exposing account cookies',
-    peopleSource.includes("'User-Agent': 'Fleet/1.5.3'")
+    peopleSource.includes("'User-Agent': 'Fleet/1.5.5'")
     && peopleSource.includes('search-api/omni-search')
     && peopleSource.includes("verticalType: 'user'")
     && peopleSource.includes("presence: 'Unknown'")
@@ -609,12 +609,17 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && installerTemplate.includes('DarkMode_Explorer')
     && installerTemplate.includes('MUI_CUSTOMFUNCTION_GUIINIT FleetGuiInit'));
   check('Installer progress page is a live Fleet surface, not a frozen wizard',
-    installerTemplate.includes('nsDialogs::Create ${IDC_CHILDRECT}')
-    && installerTemplate.includes('USER32::SetParent(p$FleetProgressBar,p$FleetDialog)')
-    && installerTemplate.includes('${NSD_CreateTimer} FleetHoverPoll 60')
+    // raw Win32 statics on the wizard dialog - nsDialogs canvases never render
+    // on built-in pages and its page hook blocks the auto-advance to the
+    // finish page (v1.5.4 froze on the progress page because of it)
+    installerTemplate.includes('USER32::CreateWindowExW(i0,w"STATIC"')
+    && installerTemplate.includes('USER32::SetParent(p$FleetProgressBar,p$HWNDPARENT)')
+    && installerTemplate.includes('ShowWindow $FleetProgressDialog ${SW_HIDE}')
+    && installerTemplate.includes('Function FleetDestroyProgressSurface')
+    && installerTemplate.includes('Call FleetDestroyProgressSurface')
     && installerTemplate.includes('Function FleetStatus')
     && installerTemplate.includes('Call FleetStatus')
-    && installerTemplate.includes('${WM_COMMAND} 1 $R0')
+    && !installerTemplate.includes('USER32::SetParent(p$FleetProgressBar,p$FleetDialog)')
     && installerTemplate.includes('Keep using your PC - this window finishes by itself.'));
   check('Uninstaller uses the same custom Fleet surface instead of the stock wizard',
     installerTemplate.includes('UninstPage custom un.FleetConfirmPage')

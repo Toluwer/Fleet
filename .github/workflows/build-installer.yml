@@ -55,3 +55,30 @@ jobs:
           name: fleet-windows-assets
           path: release-assets/*
           if-no-files-found: error
+
+  audit:
+    runs-on: windows-latest
+    needs: build
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download built installer
+        uses: actions/download-artifact@v4
+        with:
+          name: fleet-windows-assets
+          path: release-assets
+
+      - name: Run installer UI audit (screenshots every page)
+        shell: powershell
+        run: |
+          ./scripts/audit-installer-ui.ps1 -InstallerPath "release-assets/FleetInstaller.exe" -ExpectedSha512 skip
+
+      - name: Upload audit output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-ui-audit
+          path: audit-output/
+          if-no-files-found: warn

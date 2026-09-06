@@ -9,7 +9,8 @@
 #>
 param(
     [string]$InstallerUrl = 'https://github.com/Toluwer/Fleet/releases/download/v1.5.4/FleetInstaller.exe',
-    [string]$ExpectedSha512 = 'd341ddf6622b434f82220db7d5a2bcfc85107183f7132c840f606a7d1247e43d911803f9f7fff1cdd21c975f6285d7f9e979b4747abc1f1fac3e24d520317e3a'
+    [string]$ExpectedSha512 = 'd341ddf6622b434f82220db7d5a2bcfc85107183f7132c840f606a7d1247e43d911803f9f7fff1cdd21c975f6285d7f9e979b4747abc1f1fac3e24d520317e3a',
+    [string]$InstallerPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -291,13 +292,18 @@ Log "DPI: $($g0.DpiX)x$($g0.DpiY)"; $g0.Dispose()
 $wv2 = Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -ErrorAction SilentlyContinue
 Log "WebView2 runtime: $(if ($wv2) { $wv2.pv } else { 'NOT FOUND (installer may install it)' })"
 
-# ---- 1. download installer & verify hash
-$exe = Join-Path $env:TEMP 'FleetInstaller.exe'
-Log "downloading $InstallerUrl"
-Invoke-WebRequest -Uri $InstallerUrl -OutFile $exe -UseBasicParsing
+# ---- 1. obtain installer (local path or download) & verify hash
+if ($InstallerPath -ne '' -and (Test-Path $InstallerPath)) {
+    $exe = (Resolve-Path $InstallerPath).Path
+    Log "using local installer: $exe"
+} else {
+    $exe = Join-Path $env:TEMP 'FleetInstaller.exe'
+    Log "downloading $InstallerUrl"
+    Invoke-WebRequest -Uri $InstallerUrl -OutFile $exe -UseBasicParsing
+}
 $hash = (Get-FileHash -Algorithm SHA512 $exe).Hash.ToLower()
 Log "sha512: $hash"
-if ($hash -ne $ExpectedSha512) { throw "SHA512 MISMATCH: $hash" }
+if ($ExpectedSha512 -ne '' -and $ExpectedSha512 -ne 'skip' -and $hash -ne $ExpectedSha512) { throw "SHA512 MISMATCH: $hash" }
 Log "hash OK ($($(Get-Item $exe).Length) bytes)"
 
 # ---- 2. launch
