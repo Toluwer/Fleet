@@ -8,12 +8,12 @@
   Output: audit/ directory with PNGs + control dumps + log.
 #>
 param(
-    [string]$InstallerUrl = 'https://github.com/Toluwer/Fleet/releases/download/v1.5.3/FleetInstaller.exe',
-    [string]$ExpectedSha512 = '7701872de722cf311715213c192d8bddf72ada00e94efdd4d65cd0f6a9bed1f016c46aae19b5c7c42742c4ae1960f168d655557063d399dfbd62ab290658d3ec'
+    [string]$InstallerUrl = 'https://github.com/Toluwer/Fleet/releases/download/v1.5.4/FleetInstaller.exe',
+    [string]$ExpectedSha512 = 'd341ddf6622b434f82220db7d5a2bcfc85107183f7132c840f606a7d1247e43d911803f9f7fff1cdd21c975f6285d7f9e979b4747abc1f1fac3e24d520317e3a'
 )
 
 $ErrorActionPreference = 'Stop'
-$Out = Join-Path $PSScriptRoot '..\..\audit-output'
+$Out = Join-Path $PSScriptRoot '..\audit-output'
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 $Out = (Resolve-Path $Out).Path
 function Log($m) { $t = Get-Date -Format 'HH:mm:ss.fff'; Write-Host "[$t] $m"; Add-Content -Path (Join-Path $Out 'audit.log') -Value "[$t] $m" }
@@ -190,8 +190,10 @@ Start-Sleep -Seconds 1
 Capture-FullScreen (Join-Path $Out '01c_fullscreen.png')
 
 # ---- 5. click Install
-$install = Find-Child $main 'Install'
-if ($install -eq [IntPtr]::Zero) { Log 'ERROR: Install control not found'; throw 'Install control not found' }
+$install = Find-Child $main 'Install Fleet'
+if ($install -eq [IntPtr]::Zero) { $install = Find-Child $main 'Install' }
+if ($install -eq [IntPtr]::Zero) { $install = Find-Child $main 'Update Fleet' }
+if ($install -eq [IntPtr]::Zero) { Log 'ERROR: Install control not found'; Dump-Tree $main (Join-Path $Out 'controls_01_install.txt'); throw 'Install control not found' }
 Log "Install control: $install rect=$((Get-WinRect $install).L),$((Get-WinRect $install).T) $((Get-WinRect $install).R - (Get-WinRect $install).L)x$((Get-WinRect $install).B - (Get-WinRect $install).T)"
 Click-Control $install
 
@@ -203,6 +205,7 @@ while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 3
     $p.Refresh()
     if ($p.HasExited) { Log 'installer exited during progress!'; break }
+    if ($progressShots -eq 1) { Dump-Tree $main (Join-Path $Out 'controls_02_progress.txt') }
     if ($progressShots -lt 6) {
         [void](Capture-Window $main (Join-Path $Out ("02_progress_{0:d2}.png" -f $progressShots)))
         $progressShots++
