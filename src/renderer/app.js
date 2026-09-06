@@ -298,6 +298,19 @@ ctxmenu.addEventListener('click', (e) => {
   if (item && item.onClick) item.onClick();
 });
 
+/* Native window feel: Escape closes context menus and dialogs, mirroring
+   how every Windows app dismisses a menu or modal. */
+function cancelModal() {
+  if (state.personJoin) closePersonJoinDialog();
+  else if (state.followTargetId) closeFollowDialog();
+  else { closeModal(); state.servers = null; state.sessionDraft = null; }
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (ctxmenu.style.display === 'block') { hideContextMenu(); hideTip(); e.preventDefault(); return; }
+  if ($('#modal-back').classList.contains('open')) { hideTip(); cancelModal(); e.preventDefault(); }
+});
+
 /* ----------------------------- Tooltips ----------------------------- */
 /* JS-driven so tips never clip at the viewport edge (the old pure-CSS
    translateX(-50%) ::after overflowed near the right/top of the window). */
@@ -2456,11 +2469,7 @@ document.addEventListener('click', async (e) => {
     case 'restart': { const r = await call(() => api.instances.restart(pid)); toast(r && r.ok ? 'Client restarted' : 'Restart failed', r && r.ok ? 'good' : 'bad'); break; }
     case 'end': { const r = await call(() => api.instances.kill(pid)); toast(r && r.ok ? 'Client ended' : 'Could not end client', r && r.ok ? 'good' : 'bad'); break; }
 
-    case 'modal-cancel':
-      if (state.personJoin) closePersonJoinDialog();
-      else if (state.followTargetId) closeFollowDialog();
-      else { closeModal(); state.servers = null; state.sessionDraft = null; }
-      break;
+    case 'modal-cancel': cancelModal(); break;
     case 'confirm-yes': if (confirmResolver) { confirmResolver(true); confirmResolver = null; } closeModal(); break;
     case 'confirm-no': if (confirmResolver) { confirmResolver(false); confirmResolver = null; } closeModal(); break;
 
