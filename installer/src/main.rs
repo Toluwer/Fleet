@@ -538,7 +538,13 @@ unsafe extern "system" fn wnd_proc(
                 drop(Box::from_raw(raw as *mut App));
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            let r = DefWindowProcW(hwnd, msg, wparam, lparam);
+            // The graceful exit path (fade_quit -> DestroyWindow) never posted
+            // WM_QUIT, so the GetMessageW pump blocked forever and the process
+            // lingered as a zombie after its window closed. This proc only
+            // serves the main window, so this runs exactly once per process.
+            PostQuitMessage(0);
+            r
         }
 
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -1000,6 +1006,7 @@ fn build_stage(a: &mut App) {
                 Stage::Ready => 2000,
                 Stage::Done => 3000,
                 Stage::UninstallConfirm => 2000,
+                Stage::Uninstalled => 2500,
                 _ => 0,
             };
             if delay > 0 {

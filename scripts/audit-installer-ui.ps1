@@ -45,8 +45,11 @@ $proc = Start-Process -FilePath $InstallerPath -ArgumentList "--demo", "--path=$
 $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 $shot = 0
 $sw = [Diagnostics.Stopwatch]::StartNew()
-while ($sw.Elapsed.TotalSeconds -lt 30) {
-    if ($proc.HasExited) { break }
+# The real payload (tens of thousands of files) takes minutes to extract, so
+# watch the whole run (up to 10 minutes) instead of cutting it off mid-install.
+# Screenshot fast while the early stages flip by, then every few seconds
+# during the long copy.
+while (-not $proc.HasExited -and $sw.Elapsed.TotalSeconds -lt 600) {
     try {
         $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
         $g = [System.Drawing.Graphics]::FromImage($bmp)
@@ -56,10 +59,11 @@ while ($sw.Elapsed.TotalSeconds -lt 30) {
         $bmp.Dispose()
         $shot++
     } catch { }
-    Start-Sleep -Milliseconds 700
+    $interval = if ($sw.Elapsed.TotalSeconds -lt 30) { 700 } else { 4000 }
+    Start-Sleep -Milliseconds $interval
 }
 if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
-Write-Host "Captured $shot screenshots."
+Write-Host "Captured $shot screenshots (watched for $([int]$sw.Elapsed.TotalSeconds)s)."
 
 # ---- verify the install ----------------------------------------------------
 $problems = @()
@@ -82,7 +86,14 @@ if (-not (Test-Path (Join-Path $programs 'Fleet\Fleet.lnk'))) { $problems += 'St
 # ---- uninstall and verify removal ------------------------------------------
 if (Test-Path (Join-Path $installDir 'uninstall.exe')) {
     # The uninstaller asks first; drive it with --demo so it auto-removes.
-    Start-Process -FilePath (Join-Path $installDir 'uninstall.exe') -ArgumentList '--demo', '--uninstall' -Wait
+    # Bounded wait: never hang the audit even if the uninstaller misbehaves.
+    $up = Start-Process -FilePath (Join-Path $installDir 'uninstall.exe') -ArgumentList '--demo', '--uninstall' -PassThru
+    $usw = [Diagnostics.Stopwatch]::StartNew()
+    while (-not $up.HasExited -and $usw.Elapsed.TotalSeconds -lt 180) { Start-Sleep -Milliseconds 500 }
+    if (-not $up.HasExited) {
+        Stop-Process -Id $up.Id -Force -ErrorAction SilentlyContinue
+        $problems += 'Uninstaller did not exit on its own.'
+    }
     Start-Sleep -Seconds 2
     if (Test-Path $installDir) { $problems += "Install folder still exists after uninstall: $installDir" }
     if (Get-Item $uninstallKey -ErrorAction SilentlyContinue) { $problems += 'Uninstall registry key still exists.' }
