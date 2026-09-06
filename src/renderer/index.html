@@ -47,7 +47,6 @@
     <symbol id="i-broom" viewBox="0 0 24 24"><path d="M19 5l-7 7"/><path d="M5 19c1.5-3 3-4.5 6-6"/><path d="M9 13l2 2"/><path d="M11 21l-4-4 1.5-1.5 4 4z"/></symbol>
     <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></symbol>
     <symbol id="i-contrast" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></symbol>
-    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
     <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
   </svg>
 
@@ -84,10 +83,6 @@
       </nav>
 
       <div class="spacer"></div>
-      <button class="rail-bell" id="rail-bell" type="button" aria-label="Notifications" data-tip="Notifications" aria-expanded="false">
-        <svg class="ico"><use href="#i-bell"/></svg>
-        <span class="bell-badge" id="bell-badge" hidden></span>
-      </button>
       <div class="rail-foot" id="rail-foot" title="Fleet"></div>
     </aside>
 
@@ -115,9 +110,6 @@
 
   <!-- Toasts -->
   <div class="toasts" id="toasts" aria-live="polite" aria-label="Notifications"></div>
-
-  <!-- Notification center -->
-  <div class="notif-panel" id="notif-panel" hidden aria-label="Notification history"></div>
   </div>
 
   <script src="model.js"></script>

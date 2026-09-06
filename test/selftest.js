@@ -858,10 +858,11 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     check('toast text uses --ink-inv', /\.toast\s*{[^}]*color:\s*var\(--ink-inv\)/.test(css));
     check('tooltip text uses --ink-inv', /\.tip\s*{[^}]*color:\s*var\(--ink-inv\)/.test(css));
 
-    // Notification center wiring.
-    check('rail bell + notif panel present in shell', html.includes('id="rail-bell"') && html.includes('id="notif-panel"') && html.includes('i-bell'));
-    check('toast history persisted', js.includes("NOTIF_KEY") && js.includes('notifUnreadCount') && js.includes('updateBell'));
-    check('notif-clear action handled', /case 'notif-clear'/.test(js));
+    // Notification center was removed in v1.5.11 (toasts stay ephemeral).
+    check('no notification center in shell', !html.includes('id="rail-bell"') && !html.includes('id="notif-panel"') && !html.includes('i-bell'));
+    check('no persistent notif store in JS', !js.includes('NOTIF_KEY') && !js.includes('updateBell') && !/case 'notif-clear'/.test(js));
+    check('stale notif history cleared once', js.includes("localStorage.removeItem('fleet-notifs-v1')"));
+    check('toast dismiss + 4-cap kept', js.includes('toast-x') && js.includes('children.length >= 4'));
 
     // Command palette wiring.
     check('palette shell present in HTML', html.includes('id="palette-back"') && html.includes('id="palette-input"'));

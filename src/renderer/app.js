@@ -148,109 +148,10 @@ function fmtNum(n) {
 }
 
 /* ----------------------------- Notifications ----------------------------- */
-/* Toasts stay ephemeral, but every one is also recorded in a persistent
-   notification center (bell at the rail bottom). Unread = newer than the
-   last time the panel was opened. Storage is best-effort: in-memory only
-   when localStorage is unavailable. */
-const NOTIF_KEY = 'fleet-notifs-v1';
-const NOTIF_MAX = 80;
-const notifStore = { list: [], read: 0 };
-function notifLoad() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(NOTIF_KEY) || 'null');
-    if (raw && Array.isArray(raw.list)) {
-      notifStore.list = raw.list.filter(e => e && typeof e.m === 'string' && e.t > 0).slice(-NOTIF_MAX);
-      notifStore.read = Number(raw.read) || 0;
-    }
-  } catch (_) { /* corrupted or unavailable storage: start fresh */ }
-}
-function notifSave() {
-  try { localStorage.setItem(NOTIF_KEY, JSON.stringify(notifStore)); } catch (_) { /* best-effort */ }
-}
-notifLoad();
-
-function notifUnreadCount() {
-  const cut = notifStore.read;
-  return notifStore.list.reduce((n, e) => n + (e.t > cut ? 1 : 0), 0);
-}
-function updateBell() {
-  const badge = $('#bell-badge');
-  if (!badge) return;
-  const n = notifUnreadCount();
-  badge.hidden = n === 0;
-  badge.textContent = n > 9 ? '9+' : String(n);
-}
-function relTime(ts) {
-  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
-  if (s < 10) return 'just now';
-  if (s < 60) return s + 's ago';
-  if (s < 3600) return Math.floor(s / 60) + 'm ago';
-  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
-  return Math.floor(s / 86400) + 'd ago';
-}
-function notifIcon(kind) { return kind === 'bad' ? 'alert-circle' : kind === 'good' ? 'check-circle' : 'box'; }
-
-function positionNotifPanel() {
-  const panel = $('#notif-panel');
-  const bell = $('#rail-bell');
-  if (!panel || !bell) return;
-  const r = bell.getBoundingClientRect();
-  const W = Math.min(360, window.innerWidth - 16);
-  // Anchor above the bell, aligned with the rail's right edge, clamped to the viewport.
-  panel.style.left = Math.max(8, Math.min(r.right - 4, window.innerWidth - W - 8)) + 'px';
-  panel.style.bottom = Math.max(8, window.innerHeight - r.top + 10) + 'px';
-  panel.style.width = W + 'px';
-}
-function renderNotifPanel() {
-  const panel = $('#notif-panel');
-  if (!panel || panel.hidden) return;
-  const items = notifStore.list.slice().reverse();
-  if (!items.length) {
-    panel.innerHTML = `<div class="n-head"><span class="n-title">Notifications</span></div>
-      <div class="n-empty">${icon('bell')}<p>Nothing yet</p><span>Launches, update events and errors will collect here.</span></div>`;
-    return;
-  }
-  panel.innerHTML = `<div class="n-head"><span class="n-title">Notifications</span>
-      <button class="n-clear" type="button" data-action="notif-clear">Clear all</button></div>
-    <div class="n-list">${items.map(e => `
-      <div class="n-item${e.t > notifStore.read ? ' unread' : ''}">
-        <svg class="t-ico ${e.k === 'bad' ? 'bad' : e.k === 'good' ? 'good' : ''}"><use href="#i-${notifIcon(e.k)}"/></svg>
-        <div class="n-body"><span>${esc(e.m)}</span><time>${esc(relTime(e.t))}</time></div>
-      </div>`).join('')}</div>`;
-}
-function openNotifPanel() {
-  const panel = $('#notif-panel');
-  const bell = $('#rail-bell');
-  if (!panel || !bell) return;
-  panel.hidden = false;
-  bell.setAttribute('aria-expanded', 'true');
-  notifStore.read = Date.now();
-  notifSave();
-  updateBell();
-  positionNotifPanel();
-  renderNotifPanel();
-}
-function closeNotifPanel() {
-  const panel = $('#notif-panel');
-  const bell = $('#rail-bell');
-  if (!panel || panel.hidden) return;
-  panel.hidden = true;
-  if (bell) bell.setAttribute('aria-expanded', 'false');
-}
-function toggleNotifPanel() {
-  const panel = $('#notif-panel');
-  if (panel && panel.hidden) openNotifPanel(); else closeNotifPanel();
-}
-$('#rail-bell').addEventListener('click', (e) => { e.stopPropagation(); toggleNotifPanel(); });
-// Click anywhere outside the panel (and outside the bell) closes it.
-document.addEventListener('mousedown', (e) => {
-  const panel = $('#notif-panel');
-  if (panel && !panel.hidden && !panel.contains(e.target) && !e.target.closest('#rail-bell')) closeNotifPanel();
-});
-window.addEventListener('resize', () => { if (!$('#notif-panel').hidden) positionNotifPanel(); });
-// Keep relative times honest while the panel is open.
-setInterval(() => { if (!$('#notif-panel').hidden) renderNotifPanel(); }, 30000);
-updateBell();
+/* Toasts are ephemeral: shown, dismissible, auto-expiring. v1.5.9 briefly
+   added a persistent notification center; removed in v1.5.11 - clear its
+   stored history once so nothing lingers. */
+try { localStorage.removeItem('fleet-notifs-v1'); } catch (_) { /* best-effort */ }
 
 function toast(message, type) {
   const wrap = $('#toasts');
@@ -273,15 +174,6 @@ function toast(message, type) {
     wrap.appendChild(t);
     setTimeout(dismiss, 3400);
   }
-  // Record in the notification center (dedup identical back-to-back events).
-  const m = String(message);
-  const last = notifStore.list[notifStore.list.length - 1];
-  if (last && last.m === m && Date.now() - last.t < 2000) { last.t = Date.now(); }
-  else notifStore.list.push({ m, t: Date.now(), k: type === 'bad' ? 'bad' : type === 'good' ? 'good' : '' });
-  if (notifStore.list.length > NOTIF_MAX) notifStore.list.splice(0, notifStore.list.length - NOTIF_MAX);
-  notifSave();
-  updateBell();
-  if (!$('#notif-panel').hidden) renderNotifPanel();
 }
 
 /* ----------------------------- Command palette ----------------------------- */
@@ -337,7 +229,6 @@ function paletteActions() {
     { icon: 'x', label: 'End all clients', hint: 'Danger zone', danger: true, run: paletteEndAll },
     { icon: 'broom', label: 'Cleanup clients and crash handlers', hint: 'Danger zone', danger: true, run: paletteCleanup },
     { icon: 'contrast', label: 'Toggle theme', hint: 'System / Graphite / Obsidian', run: paletteCycleTheme },
-    { icon: 'bell', label: 'Open notification center', hint: 'History', run: () => openNotifPanel() },
     { icon: 'copy', label: 'Copy diagnostics', hint: 'Clipboard', run: () => copyDiagnostics() },
     { icon: 'folder', label: 'Open data folder', hint: 'Local files', run: async () => { await call(() => api.openUserData()); } },
   ];
@@ -627,8 +518,6 @@ document.addEventListener('keydown', (e) => {
   if (ctxmenu.style.display === 'block') { hideContextMenu(); hideTip(); e.preventDefault(); return; }
   const pal = $('#palette-back');
   if (pal && !pal.hidden) { closePalette(); e.preventDefault(); return; }
-  const notif = $('#notif-panel');
-  if (notif && !notif.hidden) { closeNotifPanel(); e.preventDefault(); return; }
   if ($('#modal-back').classList.contains('open')) { hideTip(); cancelModal(); e.preventDefault(); }
 });
 
@@ -787,10 +676,9 @@ function gameByPlaceId(placeId) {
 
 /* ----------------------------- Activity watcher ----------------------------- */
 /* Watch up to 20 people across views; a background poll (works while the
-   window is hidden) toasts and records a notification the moment one of
-   them joins a game or switches games. The People home shows a live card
-   with one-click Join. Persisted locally; Roblox is only polled, never
-   written to. */
+   window is hidden) toasts the moment one of them joins a game or switches
+   games. The People home shows a live card with one-click Join. Persisted
+   locally; Roblox is only polled, never written to. */
 const WATCH_KEY = 'fleet-watch-v1';
 const WATCH_MAX = 20;
 const WATCH_POLL_MS = 60000;
@@ -2490,8 +2378,8 @@ views.help = function () {
       <h2>Accounts</h2>
       <p>Accounts appear with avatar, name and presence. Fleet stores sessions locally and uses them for launch, follow, People search and join flows.</p>
 
-      <h2>Notifications and the command palette</h2>
-      <p>Every toast is kept in the <b>notification center</b> - the bell at the bottom of the rail shows an unread count and opens recent events with timestamps. Press <b>Ctrl+K</b> for the <b>command palette</b>: type to fuzzy-search sections, accounts, favorites, recent games, watched people and power actions (update check, arrange, end all, cleanup, theme, diagnostics), then run one with <b>Enter</b> or its <b>1-9</b> digit.</p>
+      <h2>The command palette</h2>
+      <p>Press <b>Ctrl+K</b> for the <b>command palette</b>: type to fuzzy-search sections, accounts, favorites, recent games, watched people and power actions (update check, arrange, end all, cleanup, theme, diagnostics), then run one with <b>Enter</b> or its <b>1-9</b> digit.</p>
 
       <h2>Watch people</h2>
       <p>On <b>People</b>, the eye button on any card or profile watches that person. A background poll (it works while the window is hidden) toasts the moment they join or switch games, and the People home shows a Watching card with a one-click <b>Join</b>. Up to 20 people, stored locally.</p>
@@ -2556,15 +2444,6 @@ document.addEventListener('click', async (e) => {
         if (btn.classList.contains('icon')) btn.setAttribute('data-tip', on ? 'Stop watching' : 'Watch for game activity');
         else { btn.innerHTML = `${icon('eye')} ${on ? 'Watching' : 'Watch'}`; }
       });
-      break;
-    }
-
-    case 'notif-clear': {
-      notifStore.list = [];
-      notifStore.read = Date.now();
-      notifSave();
-      updateBell();
-      renderNotifPanel();
       break;
     }
 

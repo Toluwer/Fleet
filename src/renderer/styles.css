@@ -658,45 +658,6 @@ textarea { resize: vertical; min-height: 70px; }
 .toast.bad .t-ico { color: #ffd0d0; }
 @keyframes toastIn { from { opacity: 0; transform: translateY(14px) scale(.96); } to { opacity: 1; transform: none; } }
 
-/* ----------------------------- Notification center ----------------------------- */
-.rail-bell { position: relative; display: flex; align-items: center; justify-content: center; width: 34px; height: 32px;
-  margin: 0 6px 8px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--ink-3);
-  cursor: pointer; transition: background .16s var(--ease), color .16s var(--ease); }
-.rail-bell:hover { background: var(--surface-2); color: var(--ink); }
-.rail-bell:focus-visible { outline: 2px solid var(--accent-2); outline-offset: -2px; }
-.rail-bell .ico { width: 18px; height: 18px; }
-.bell-badge { position: absolute; top: 2px; right: 2px; min-width: 15px; height: 15px; padding: 0 4px;
-  border-radius: var(--r-pill); background: var(--danger); color: #fff; font-size: 9.5px; font-weight: 700; line-height: 15px;
-  text-align: center; font-variant-numeric: tabular-nums; box-shadow: 0 0 0 2px var(--rail); }
-.bell-badge[hidden] { display: none; }
-
-.notif-panel { position: fixed; z-index: 150; display: flex; flex-direction: column; max-height: min(56vh, 460px);
-  background: var(--surface); border: 1px solid var(--hair); border-radius: var(--r-lg); box-shadow: var(--sh-lg);
-  overflow: hidden; animation: toastIn .22s var(--ease); }
-.notif-panel[hidden] { display: none; }
-.n-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px 10px;
-  border-bottom: 1px solid var(--hair); flex: none; }
-.n-title { font-size: 13px; font-weight: 650; color: var(--ink); }
-.n-clear { border: 0; background: transparent; color: var(--ink-3); font: inherit; font-size: 11.5px; font-weight: 550;
-  padding: 4px 8px; border-radius: var(--r-sm); cursor: pointer; transition: color .14s, background .14s; }
-.n-clear:hover { color: var(--danger); background: var(--danger-bg); }
-.n-list { overflow: auto; padding: 6px; }
-.n-item { display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px; border-radius: var(--r-sm); }
-.n-item + .n-item { margin-top: 2px; }
-.n-item:hover { background: var(--surface-2); }
-.n-item .t-ico { width: 16px; height: 16px; flex: none; margin-top: 1px; color: var(--ink-3); }
-.n-item .t-ico.good { color: var(--accent); }
-.n-item .t-ico.bad { color: var(--danger); }
-.n-item.unread { background: var(--accent-soft); }
-.n-item.unread .n-body span { color: var(--ink); }
-.n-body { flex: 1; min-width: 0; display: grid; gap: 2px; }
-.n-body span { font-size: 12.5px; color: var(--ink-2); line-height: 1.35; overflow-wrap: anywhere; }
-.n-body time { font-size: 10.5px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
-.n-empty { display: grid; justify-items: center; gap: 6px; padding: 30px 20px 34px; color: var(--ink-3); text-align: center; }
-.n-empty .ico { width: 22px; height: 22px; color: var(--ink-4); }
-.n-empty p { margin: 0; font-size: 13px; font-weight: 600; color: var(--ink-2); }
-.n-empty span { font-size: 11.5px; }
-
 /* ----------------------------- Command palette ----------------------------- */
 .palette-back { position: fixed; inset: 0; z-index: 180; background: rgba(14,15,18,.44); backdrop-filter: blur(2px);
   display: flex; justify-content: center; align-items: flex-start; animation: fadeIn .14s ease; }
