@@ -201,37 +201,41 @@ function Read-ListView([IntPtr]$lv, [uint32]$procId) {
     $LVM_GETITEMCOUNT = 0x1004
     $LVM_GETITEMTEXTW = 0x1073
     $lines = New-Object System.Collections.Generic.List[string]
-    $proc = [LVRead]::OpenProcess(0x8 -bor 0x10 -bor 0x20 -bor 0x400, $false, $procId)
-    if ($proc -eq [IntPtr]::Zero) { return ,@('<OpenProcess failed>') }
     try {
-        $count = [int][WinCap]::SendMessage($lv, $LVM_GETITEMCOUNT, [IntPtr]::Zero, [IntPtr]::Zero)
-        Log "details listview items: $count"
-        if ($count -le 0) { return ,$lines }
-        $lvMem = [LVRead]::VirtualAllocEx($proc, [IntPtr]::Zero, [UIntPtr]40, 0x1000 -bor 0x2000, 0x40)
-        $txMem = [LVRead]::VirtualAllocEx($proc, [IntPtr]::Zero, [UIntPtr]2048, 0x1000 -bor 0x2000, 0x40)
-        if ($lvMem -eq [IntPtr]::Zero -or $txMem -eq [IntPtr]::Zero) { return ,@('<VirtualAllocEx failed>') }
+        $proc = [LVRead]::OpenProcess(0x8 -bor 0x10 -bor 0x20 -bor 0x400, $false, $procId)
+        if ($proc -eq [IntPtr]::Zero) { return ,@('<OpenProcess failed>') }
         try {
-            for ($i = 0; $i -lt $count; $i++) {
-                $lvItem = New-Object byte[] 40
-                [BitConverter]::GetBytes([uint32]1).CopyTo($lvItem, 0)          # LVIF_TEXT
-                [BitConverter]::GetBytes([int32]$i).CopyTo($lvItem, 4)           # iItem
-                [BitConverter]::GetBytes([int32]$txMem.ToInt64()).CopyTo($lvItem, 20)  # pszText (32-bit ptr)
-                [BitConverter]::GetBytes([int32]1024).CopyTo($lvItem, 24)        # cchTextMax
-                $wr = [UIntPtr]::Zero
-                [void][LVRead]::WriteProcessMemory($proc, $lvMem, $lvItem, [UIntPtr]40, [ref]$wr)
-                [void][WinCap]::SendMessage($lv, $LVM_GETITEMTEXTW, [IntPtr]$i, $lvMem)
-                $buf = New-Object byte[] 2048
-                $rd = [UIntPtr]::Zero
-                [void][LVRead]::ReadProcessMemory($proc, $txMem, $buf, [UIntPtr]2048, [ref]$rd)
-                $txt = [System.Text.Encoding]::Unicode.GetString($buf).TrimEnd([char]0)
-                if ($txt) { $lines.Add($txt) }
-                if ($lines.Count -ge 400) { break }
+            $count = [int][WinCap]::SendMessage($lv, $LVM_GETITEMCOUNT, [IntPtr]::Zero, [IntPtr]::Zero)
+            Log "details listview items: $count"
+            if ($count -le 0) { return ,$lines }
+            $sz40 = [UIntPtr]::new([uint64]40)
+            $sz2048 = [UIntPtr]::new([uint64]2048)
+            $lvMem = [LVRead]::VirtualAllocEx($proc, [IntPtr]::Zero, $sz40, [uint32](0x1000 -bor 0x2000), [uint32]0x40)
+            $txMem = [LVRead]::VirtualAllocEx($proc, [IntPtr]::Zero, $sz2048, [uint32](0x1000 -bor 0x2000), [uint32]0x40)
+            if ($lvMem -eq [IntPtr]::Zero -or $txMem -eq [IntPtr]::Zero) { return ,@('<VirtualAllocEx failed>') }
+            try {
+                for ($i = 0; $i -lt $count; $i++) {
+                    $lvItem = New-Object byte[] 40
+                    [BitConverter]::GetBytes([uint32]1).CopyTo($lvItem, 0)          # LVIF_TEXT
+                    [BitConverter]::GetBytes([int32]$i).CopyTo($lvItem, 4)           # iItem
+                    [BitConverter]::GetBytes([int32]$txMem.ToInt64()).CopyTo($lvItem, 20)  # pszText (32-bit ptr)
+                    [BitConverter]::GetBytes([int32]1024).CopyTo($lvItem, 24)        # cchTextMax
+                    $wr = [UIntPtr]::Zero
+                    [void][LVRead]::WriteProcessMemory($proc, $lvMem, $lvItem, $sz40, [ref]$wr)
+                    [void][WinCap]::SendMessage($lv, $LVM_GETITEMTEXTW, [IntPtr]$i, $lvMem)
+                    $buf = New-Object byte[] 2048
+                    $rd = [UIntPtr]::Zero
+                    [void][LVRead]::ReadProcessMemory($proc, $txMem, $buf, $sz2048, [ref]$rd)
+                    $txt = [System.Text.Encoding]::Unicode.GetString($buf).TrimEnd([char]0)
+                    if ($txt) { $lines.Add($txt) }
+                    if ($lines.Count -ge 400) { break }
+                }
+            } finally {
+                [void][LVRead]::VirtualFreeEx($proc, $lvMem, [UIntPtr]::Zero, 0x8000)
+                [void][LVRead]::VirtualFreeEx($proc, $txMem, [UIntPtr]::Zero, 0x8000)
             }
-        } finally {
-            [void][LVRead]::VirtualFreeEx($proc, $lvMem, [UIntPtr]::Zero, 0x8000)
-            [void][LVRead]::VirtualFreeEx($proc, $txMem, [UIntPtr]::Zero, 0x8000)
-        }
-    } finally { [void][LVRead]::CloseHandle($proc) }
+        } finally { [void][LVRead]::CloseHandle($proc) }
+    } catch { Log "listview read failed: $($_.Exception.Message)" }
     return ,$lines
 }
 
@@ -244,10 +248,20 @@ function Dump-Diagnostics([IntPtr]$main, $p, [string]$tag) {
             [math]::Round($p.TotalProcessorTime.TotalSeconds, 1), [math]::Round($p.WorkingSet64 / 1MB), $p.HandleCount, $p.Threads.Count, $p.Responding)
     } catch { Log "process info failed: $($_.Exception.Message)" }
     try {
+        $thr = Get-CimInstance Win32_Thread -Filter "ProcessHandle=$($p.Id)" -ErrorAction SilentlyContinue
+        foreach ($t in $thr) {
+            Log ("  thread {0}: state={1} wait={2} base_prio={3}" -f $t.Handle, $t.ThreadState, $t.ThreadWaitReason, $t.BasePriority)
+        }
+    } catch { Log "thread query failed: $($_.Exception.Message)" }
+    try {
         $kids = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($p.Id)" -ErrorAction SilentlyContinue
         if ($kids) { foreach ($k in $kids) { Log ("child proc: {0} pid={1} cmd={2}" -f $k.Name, $k.ProcessId, $k.CommandLine) } }
         else { Log 'child processes: none' }
     } catch { Log "child query failed: $($_.Exception.Message)" }
+    try {
+        $def = Get-WinEvent -LogName 'Microsoft-Windows-Windows Defender/Operational' -MaxEvents 12 -ErrorAction SilentlyContinue
+        if ($def) { foreach ($e in $def) { Log ("  Defender {0} [{1}] {2}" -f $e.TimeCreated.ToString('HH:mm:ss'), $e.Id, ($e.Message -replace "`r`n", ' ' -replace "`n", ' ').Substring(0, [Math]::Min(160, $e.Message.Length))) } }
+    } catch { Log "defender log read failed: $($_.Exception.Message)" }
     $inst = Join-Path $env:LOCALAPPDATA 'Fleet'
     if (Test-Path $inst) {
         $m = Get-ChildItem $inst -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum
@@ -350,6 +364,13 @@ while ((Get-Date) -lt $deadline) {
             Log 'progress page active'
             Start-Sleep -Milliseconds 700
             Dump-Tree $main (Join-Path $Out 'controls_02_progress.txt')
+            # early listview snapshot (in case later stages fail)
+            $lv0 = Find-ClassChild $main 'SysListView32'
+            if ($lv0 -ne [IntPtr]::Zero) {
+                $items0 = Read-ListView $lv0 ([uint32]$p.Id)
+                $items0 | Set-Content -Path (Join-Path $Out 'details_listview_early.txt') -Encoding UTF8
+                Log ("early listview snapshot: {0} lines" -f $items0.Count)
+            }
         } else { continue }
     }
     if ($progressShots -lt 10) {
