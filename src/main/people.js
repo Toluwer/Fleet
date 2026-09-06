@@ -110,7 +110,7 @@ async function keywordSearch(query, cursor) {
         Accept: 'application/json',
         Origin: 'https://www.roblox.com',
         Referer: 'https://www.roblox.com/',
-        'User-Agent': 'Fleet/1.5.6',
+        'User-Agent': 'Fleet/1.5.7',
       },
     };
 

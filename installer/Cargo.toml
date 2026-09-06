@@ -1,6 +1,6 @@
 [package]
 name = "fleet-setup"
-version = "1.5.6"
+version = "1.5.7"
 edition = "2021"
 description = "Fleet's custom installer app - a real Win32 application, not a wizard."
 license = "MIT"
