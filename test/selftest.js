@@ -843,7 +843,40 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     global.fetch = originalFetch;
   }
 
-  /* 10. Live launch (opt-in) */
+  /* 10. Renderer static checks (cross-platform: no WebView needed) */
+  {
+    await section('Renderer static checks');
+    const css = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/styles.css'), 'utf8');
+    const html = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/index.html'), 'utf8');
+    const js = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/app.js'), 'utf8');
+
+    // White-on-white regression: a light --ink surface must never carry light --on-ink text.
+    const invertedPairs = (css.match(/background:\s*var\(--ink\)[^;}]*;\s*color:\s*var\(--on-ink\)/g) || [])
+      .concat(css.match(/color:\s*var\(--on-ink\)[^;}]*;\s*background:\s*var\(--ink\)/g) || []);
+    check('no white-on-white inverted surfaces remain', invertedPairs.length === 0, invertedPairs.join(' | '));
+    check('--ink-inv defined in both themes', (css.match(/--ink-inv:/g) || []).length >= 2);
+    check('toast text uses --ink-inv', /\.toast\s*{[^}]*color:\s*var\(--ink-inv\)/.test(css));
+    check('tooltip text uses --ink-inv', /\.tip\s*{[^}]*color:\s*var\(--ink-inv\)/.test(css));
+
+    // Notification center wiring.
+    check('rail bell + notif panel present in shell', html.includes('id="rail-bell"') && html.includes('id="notif-panel"') && html.includes('i-bell'));
+    check('toast history persisted', js.includes("NOTIF_KEY") && js.includes('notifUnreadCount') && js.includes('updateBell'));
+    check('notif-clear action handled', /case 'notif-clear'/.test(js));
+
+    // Command palette wiring.
+    check('palette shell present in HTML', html.includes('id="palette-back"') && html.includes('id="palette-input"'));
+    check('palette open/close/search implemented', /function openPalette/.test(js) && /function closePalette/.test(js) && /function paletteSearch/.test(js));
+    check('Ctrl+K toggles palette', /e\.key === 'k'/.test(js) && /openPalette\(\)/.test(js));
+    check('palette runs indexed items', /function paletteRunIndex/.test(js));
+    const paletteEvents = (js.match(/paletteRunIndex\(/g) || []).length;
+    check('palette triggered from keyboard, digits and clicks', paletteEvents >= 3, paletteEvents + ' call sites');
+
+    // Preserved behaviors.
+    check('Escape still closes modal first when palette closed', /cancelModal\(\); e\.preventDefault\(\); \}/.test(js.replace(/\n/g, ' ')));
+    check('toast cap of 4 stacked cards kept', /wrap\.children\.length >= 4/.test(js));
+  }
+
+  /* 11. Live launch (opt-in) */
   if (process.env.FLEET_LIVE === '1' && loc.found) {
     await section('LIVE launch + detect + cleanup');
     const before = (await processes.list()).map(r => r.pid);
