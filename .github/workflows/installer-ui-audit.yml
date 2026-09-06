@@ -5,7 +5,7 @@ on:
     inputs:
       installer_url:
         description: 'FleetInstaller.exe URL to audit'
-        default: 'https://github.com/Toluwer/Fleet/releases/download/v1.5.7/FleetInstaller.exe'
+        default: 'https://github.com/Toluwer/Fleet/releases/download/v1.5.8/FleetInstaller.exe'
         required: false
       expected_sha512:
         description: 'Expected SHA-512 (optional integrity gate)'
