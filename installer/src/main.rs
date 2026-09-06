@@ -258,12 +258,14 @@ fn run_install(dest: &PathBuf, desktop: bool, version: &str, tx: &Sender<Msg>) -
         let _ = tx2.send(Msg::File(p.file.to_string()));
     })?;
 
-    // Optional WebView2 runtime (bundled bootstrapper, silent).
-    let bootstrapper = std::env::temp_dir().join("Fleet_WebView2Setup.exe");
+    // Optional WebView2 runtime (bundled bootstrapper, silent). It runs from
+    // the install folder - never from temp - and is removed either way.
+    let bootstrapper = dest.join("WebView2Setup.exe");
     if !shell::webview2_installed() && bootstrapper.exists() {
         let _ = tx.send(Msg::Note("Setting up the WebView2 runtime - one time only…".into()));
         shell::install_webview2(&bootstrapper)?;
     }
+    let _ = std::fs::remove_file(&bootstrapper);
 
     let _ = tx.send(Msg::Note("Finishing up…".into()));
     unsafe {

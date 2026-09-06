@@ -7,6 +7,10 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 60
+    env:
+      # Set CODESIGNING_PFX (base64 of a .pfx) + CODESIGNING_PFX_PASSWORD as
+      # repo secrets to have the installer signed automatically.
+      HAS_PFX: ${{ secrets.CODESIGNING_PFX != '' }}
 
     steps:
       - name: Checkout
@@ -33,6 +37,38 @@ jobs:
       - name: Build installer (portable dist + custom Win32 installer)
         run: npm run dist
 
+      # build.rs silently falls back to "no embedded resources" when no rc.exe
+      # is found - fail loudly if icon/manifest/VERSIONINFO did not make it in.
+      - name: Verify installer PE metadata
+        shell: pwsh
+        run: |
+          $vi = (Get-Item dist/FleetInstaller.exe).VersionInfo
+          if ([string]::IsNullOrWhiteSpace($vi.FileVersion)) { throw 'FleetInstaller.exe has no VERSIONINFO resource.' }
+          if ($vi.ProductName -ne 'Fleet') { throw "ProductName wrong: '$($vi.ProductName)'" }
+          if ([string]::IsNullOrWhiteSpace($vi.CompanyName)) { throw 'CompanyName missing.' }
+          Write-Host "PE metadata OK: FileVersion=$($vi.FileVersion) ProductName=$($vi.ProductName) Company=$($vi.CompanyName)"
+
+      # Signs before latest.yml/checksums are generated so every published
+      # digest matches the signed exe. Skipped entirely without the secrets.
+      - name: Sign installer (optional, when cert secrets exist)
+        if: env.HAS_PFX == 'true'
+        env:
+          PFX: ${{ secrets.CODESIGNING_PFX }}
+          PFX_PASSWORD: ${{ secrets.CODESIGNING_PFX_PASSWORD }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe `
+            | Where-Object { $_.FullName -match '\\x64\\' } `
+            | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw 'signtool.exe not found in Windows Kits.' }
+          $pfxPath = Join-Path $env:TEMP 'fleet-codesign.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:PFX))
+          & $signtool.FullName sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+            /f $pfxPath /p $env:PFX_PASSWORD dist/FleetInstaller.exe
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed ($LASTEXITCODE)." }
+          Remove-Item $pfxPath -Force
+
       - name: Generate update feed (latest.yml with sha512)
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make-release.ps1
 
@@ -46,6 +82,12 @@ jobs:
           Copy-Item dist/latest.yml $out -Force
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           Compress-Archive -Path dist/Fleet -DestinationPath "release-assets/FleetPortable_${version}_x64.zip" -Force
+          # SHA-256 manifest so users (and antivirus false-positive reports)
+          # can verify exactly what CI built.
+          Get-ChildItem $out -File | ForEach-Object {
+            $h = Get-FileHash $_.FullName -Algorithm SHA256
+            '{0}  {1}' -f $h.Hash.ToLower(), $_.Name
+          } | Set-Content (Join-Path $out 'checksums.txt') -Encoding ascii
           Get-ChildItem $out | Select-Object Name, Length
 
       - name: Upload artifacts

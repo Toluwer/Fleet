@@ -428,24 +428,22 @@ pub fn clean_rotated(dir: &Path) {
     }
 }
 
-/// Best-effort self-delete for the uninstaller: move the running exe to temp,
-/// then let a detached `cmd` remove it once this process has exited.
+/// Best-effort self-delete for the uninstaller. A running executable can be
+/// renamed on Windows, so we move ourselves into the temp folder and sweep any
+/// stale copy left by an earlier uninstall. No helper `cmd /c ping & del`
+/// process is spawned - that exact self-delete recipe is a well-known malware
+/// TTP and antivirus engines score it heavily; one small stray file in temp
+/// (reclaimed by Windows storage sense) is the safer trade.
 pub fn self_delete() {
-    use std::os::windows::process::CommandExt;
     let exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(_) => return,
     };
     let tmp = std::env::temp_dir().join("FleetUninstall.exe");
+    let _ = std::fs::remove_file(&tmp); // stale copy from a previous uninstall
     if std::fs::rename(&exe, &tmp).is_err() {
+        // Rename failed (e.g. cross-volume): copy out so the folder sweep below
+        // can still delete the original.
         let _ = std::fs::copy(&exe, &tmp);
     }
-    let script = format!(
-        "/c ping -n 3 127.0.0.1 >nul & del /f /q \"{}\"",
-        tmp.to_string_lossy()
-    );
-    let _ = std::process::Command::new("cmd.exe")
-        .arg(script)
-        .creation_flags(0x0000_0008) // DETACHED_PROCESS
-        .spawn();
 }

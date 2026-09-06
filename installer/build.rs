@@ -70,7 +70,55 @@ fn main() {
     let src_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     fs::copy(src_dir.join("icon.ico"), out_dir.join("icon.ico")).expect("copy icon.ico");
 
-    let rc = "1 ICON \"icon.ico\"\r\n1 24 \"app.manifest\"\r\n";
+    // A proper VERSIONINFO lowers antivirus heuristic scores (unsigned exes
+    // with no version resource look like malware to ML models) and shows real
+    // details in Explorer / Defender dialogs instead of raw size+hash.
+    let nums = version
+        .split('.')
+        .map(|p| p.parse::<u32>().unwrap_or(0))
+        .collect::<Vec<_>>();
+    let (maj, min, pat) = match nums.as_slice() {
+        [a] => (*a, 0, 0),
+        [a, b] => (*a, *b, 0),
+        [a, b, c, ..] => (*a, *b, *c),
+        _ => (0, 0, 0),
+    };
+    let versioninfo = format!(
+        r#"1 VERSIONINFO
+FILEVERSION {maj},{min},{pat},0
+PRODUCTVERSION {maj},{min},{pat},0
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "Toluwa"
+      VALUE "FileDescription", "Fleet Setup"
+      VALUE "FileVersion", "{version}"
+      VALUE "InternalName", "fleet-setup.exe"
+      VALUE "LegalCopyright", "Copyright (c) Toluwa. MIT License."
+      VALUE "OriginalFilename", "FleetInstaller.exe"
+      VALUE "ProductName", "Fleet"
+      VALUE "ProductVersion", "{version}"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
+"#,
+        maj = maj,
+        min = min,
+        pat = pat
+    );
+
+    let rc = format!(
+        "1 ICON \"icon.ico\"\r\n1 24 \"app.manifest\"\r\n{}\r\n",
+        versioninfo.replace('\n', "\r\n")
+    );
     fs::write(out_dir.join("resources.rc"), rc).expect("write resources.rc");
 
     let is_gnu = target.contains("windows-gnu");

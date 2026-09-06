@@ -188,8 +188,10 @@ impl Package {
         }
     }
 
-    /// Extracts everything into `dest`. The WebView2 bootstrapper (optional
-    /// top-level member) is diverted to the temp directory instead.
+    /// Extracts everything into `dest`. Every file - including the optional
+    /// WebView2 bootstrapper - lands in the destination folder; nothing is ever
+    /// written to or executed from the temp directory (a classic dropper
+    /// heuristic antivirus engines score heavily).
     pub fn extract(
         &self,
         entries: &[Entry],
@@ -198,7 +200,6 @@ impl Package {
     ) -> Result<(), String> {
         let total: u64 = entries.iter().map(|e| e.raw_size).sum();
         let mut done: u64 = 0;
-        let tmp = std::env::temp_dir();
 
         for e in entries {
             if e.is_dir {
@@ -209,11 +210,7 @@ impl Package {
                 continue;
             }
             let data = self.entry_bytes(e)?;
-            let target = if e.name.eq_ignore_ascii_case("WebView2Setup.exe") {
-                tmp.join("Fleet_WebView2Setup.exe")
-            } else {
-                safe_join(dest, &e.name)?
-            };
+            let target = safe_join(dest, &e.name)?;
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent).map_err(|err| {
                     format!("could not create folder {}\n{}", parent.display(), err)
