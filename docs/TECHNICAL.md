@@ -1,137 +1,59 @@
 # Fleet Technical Notes
 
-## Goals
-
-- Launch and manage multiple Roblox desktop clients on Windows.
-- Keep the renderer simple, local, and Node-free.
-- Keep OS access behind a narrow backend API.
-- Ship portable and installed builds from the same source tree.
-
 ## Stack
 
-| Concern | Choice | Notes |
-|---------|--------|-------|
-| Desktop shell | Tauri 2 | Rust app shell, native WebView2 renderer. |
-| Renderer | Vanilla HTML/CSS/JS | Loaded from `src/renderer`; talks through `window.fleet`. |
-| Backend bridge | Rust Tauri commands | Commands in `src-tauri/src/lib.rs` proxy requests to the Node service host. |
-| Transitional service layer | Node.js | Existing service modules live in `src/main`. |
-| Win32 access | `koffi` | FFI for handle enumeration, process listing, and window focus. |
-| Storage | JSON files | Atomic writes through the Node service layer. |
+| Concern | Choice |
+|---------|--------|
+| Desktop shell | Tauri 2 (Rust, WebView2) |
+| Renderer | Vanilla HTML/CSS/JS, talks through `window.fleet` |
+| Backend | Rust Tauri commands proxy to Node service layer (`src/main`) |
+| Win32 access | `koffi` FFI |
+| Storage | JSON files, atomic writes |
 
-## Runtime Architecture
-
-```text
-src/renderer
-  index.html
-  app.js
-  model.js
-  styles.css
-  tauri-bridge.js
-      |
-      | window.__TAURI__.core.invoke(...)
-      v
-src-tauri/src/lib.rs
-  Tauri commands
-  NodeBackend RPC client
-      |
-      | newline-delimited JSON over child stdin/stdout
-      v
-src/main/tauri-node-host.js
-  tauri-backend.js
-  accounts.js / launcher.js / native.js / processes.js / ...
-```
-
-The Rust shell starts the Node host during Tauri setup. The host is loaded from `src/main` next to `Fleet.exe` - the portable and installed layouts are identical (the custom installer extracts the portable distribution as-is). `node.exe` sits side-by-side with `Fleet.exe`.
-
-## Packaging Layouts
-
-Portable build:
+## Architecture
 
 ```text
-Fleet.exe
-node.exe
-src/main/tauri-node-host.js
-node_modules/koffi/...
+src/renderer  --window.__TAURI__.core.invoke-->  src-tauri/src/lib.rs
+                                                  |
+                                                  | newline JSON over stdio
+                                                  v
+                                            src/main/tauri-node-host.js
+                                            accounts / launcher / native / processes / ...
 ```
 
-Installed build (identical to portable - the custom installer extracts the
-portable distribution as-is, plus `uninstall.exe`):
+The Rust shell starts the Node host at setup. `node.exe` sits beside `Fleet.exe`; portable and installed layouts are identical (installed adds `uninstall.exe`).
+
+## Multi-instance mechanism
+
+Roblox enforces one client via named kernel objects:
 
 ```text
-Fleet.exe
-node.exe
-src/main/tauri-node-host.js
-node_modules/koffi/...
-uninstall.exe
+Event/Mutex  \Sessions\N\BaseNamedObjects\ROBLOX_singletonEvent / _Mutex
+Mutex        \Sessions\N\BaseNamedObjects\<path-derived>.mtx
 ```
 
-The app must keep this layout working until the remaining Node service layer is ported to Rust.
+Fleet's approach:
 
-## Multi-Instance Mechanism
+1. Each client launches through its own junction under `%APPDATA%/fleet/clones/instance-N` → unique path → unique path-derived mutex.
+2. `guard.js` closes only the shared `ROBLOX_singleton*` objects as they reappear, leaving per-path mutexes intact.
 
-Roblox enforces a single client with named Windows kernel objects:
-
-```text
-Event  \Sessions\N\BaseNamedObjects\ROBLOX_singletonEvent
-Mutex  \Sessions\N\BaseNamedObjects\ROBLOX_singletonMutex
-Mutex  \Sessions\N\BaseNamedObjects\<path-derived>.mtx
-```
-
-The path-derived mutex is the important modern guard. Fleet uses two complementary techniques:
-
-1. Path isolation: each client launches through its own directory junction under `%APPDATA%/fleet/clones/instance-N`, pointing at the real Roblox version folder. Each instance therefore has a unique executable path and a unique path-derived mutex.
-2. Global guard cleanup: `guard.js` closes only the shared `ROBLOX_singletonEvent` and `ROBLOX_singletonMutex` handles as they reappear. It leaves each client's path-derived mutex alone.
-
-`native.js` handles the Win32 work through `koffi`: process enumeration, object type discovery, handle duplication, object-name reads, and targeted close operations.
+`native.js` does the Win32 work (enumeration, handle duplication, close) via koffi.
 
 ## Accounts
 
-Account sign-in opens a Tauri WebView pointed at Roblox's official login page. Fleet watches that isolated WebView for `.ROBLOSECURITY`, stores account records through the backend, and strips secret cookie data from all renderer responses.
+Sign-in opens a Tauri WebView on Roblox's login page; Fleet watches for `.ROBLOSECURITY`, stores records via the backend, and strips cookies from all renderer responses. Launches mint an auth ticket and build the `roblox-player:` deep link.
 
-Launches mint a short-lived Roblox authentication ticket and build the `roblox-player:` deep link for the selected place/server. Multiple accounts still use the same path-isolation mechanism as signed-out clients.
-
-## Renderer Bridge
-
-The renderer calls `window.fleet`, defined by `src/renderer/tauri-bridge.js`. The bridge wraps Tauri command invocation and exposes stable domains:
-
-```text
-app
-roblox
-launch
-accounts
-games
-people
-instances
-playtime
-history
-settings
-logs
-diag
-```
-
-Backend events are emitted from Rust to the WebView and surfaced to the renderer through the same bridge.
-
-## Data Paths
+## Data paths
 
 | Path | Contents |
 |------|----------|
-| `%APPDATA%/com.toluwa.fleet` | Tauri app data root. |
-| backend user data arg | Passed from Rust into `tauri-node-host.js`. |
-| `settings.json` | Settings. |
-| `accounts.json` | Saved account records. |
-| `history.json` | Launch history. |
-| `logs/fleet-YYYY-MM-DD.log` | Daily log files. |
-| `clones/instance-N` | Per-instance Roblox junctions. |
+| `%APPDATA%/com.toluwa.fleet` | App data root |
+| `settings.json`, `accounts.json`, `history.json` | State |
+| `logs/fleet-YYYY-MM-DD.log` | Daily logs |
+| `clones/instance-N` | Per-instance junctions |
 
-## Failure Handling
-
-- Tauri commands return structured `{ ok: false, error }` values through the Node backend where possible.
-- The renderer uses API timeouts so app boot cannot hang forever on a backend call.
-- `native.js` degrades when `koffi` cannot load; single-client launch paths remain usable.
-- Generated build folders are disposable and ignored by Git.
-
-## Known Limits
+## Known limits
 
 - Windows only.
-- Roblox can change its singleton mechanism, which would require updates in `native.js`, `guard.js`, or `clones.js`.
-- The Node service layer is transitional. The long-term cleanup path is moving service modules into Rust and removing bundled `node.exe`.
+- Roblox may change its singleton mechanism — updates would land in `native.js` / `guard.js` / `clones.js`.
+- Node service layer is transitional; long-term it moves to Rust.
