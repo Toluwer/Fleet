@@ -329,6 +329,60 @@ function makeBackend(ctx) {
     return Object.assign({ ok: true }, updateState);
   }
 
+  /** Starts the downloaded installer. Resolves { ok } or { ok:false, error }.
+   * Every failure mode reaches updateState.state = 'error' with a real
+   * message - the updater must never sit on "Starting the installer…". */
+  function startInstaller() {
+    return new Promise((resolve) => {
+      const exe = updateState.downloadedPath;
+      if (!exe || !fs.existsSync(exe)) {
+        resolve({ ok: false, error: 'The downloaded installer is gone - your antivirus likely quarantined it. Check Protection history, allow Fleet, then use "Download in browser".' });
+        return;
+      }
+      try {
+        const size = fs.statSync(exe).size;
+        if (updateState.size && size !== Number(updateState.size)) {
+          resolve({ ok: false, error: `The downloaded installer changed size on disk (${size} vs ${updateState.size} bytes) - it may have been tampered with or partly quarantined. Please download it again.` });
+          return;
+        }
+      } catch (err) {
+        resolve({ ok: false, error: `Could not read the downloaded installer: ${err.message}` });
+        return;
+      }
+
+      let child;
+      try {
+        child = spawn(exe, [], { detached: true, stdio: 'ignore', windowsHide: true });
+      } catch (err) {
+        resolve({ ok: false, error: `Could not start the installer: ${err.message}` });
+        return;
+      }
+
+      let settled = false;
+      const done = (result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(failTimer);
+        resolve(result);
+      };
+      // Without this listener a failed spawn (file quarantined, execution
+      // blocked) raises an uncaught 'error' event instead of reporting back -
+      // exactly the stuck-on-"Starting the installer" bug.
+      child.once('error', (err) => {
+        const code = err.code || '';
+        let msg = `Could not start the installer: ${err.message}`;
+        if (code === 'ENOENT') msg = 'The installer file vanished before starting - your antivirus likely quarantined it. Check Protection history, allow Fleet, then use "Download in browser".';
+        else if (code === 'EACCES' || code === 'EPERM') msg = 'Windows blocked the installer from starting - your antivirus or SmartScreen may be holding it. Allow Fleet in Protection history, then retry.';
+        done({ ok: false, error: msg });
+      });
+      // 'spawn' fires once the process actually exists - success signal.
+      child.once('spawn', () => { child.unref(); done({ ok: true }); });
+      // Safety net: if neither event arrives quickly, unref and assume OK
+      // (a GUI app may take a moment; we must not block the update flow).
+      const failTimer = setTimeout(() => { child.unref(); done({ ok: true }); }, 8000);
+    });
+  }
+
   /** Runs the whole update flow and reports every step via updater:status. */
   async function installUpdate() {
     try {
@@ -342,8 +396,10 @@ function makeBackend(ctx) {
       updateState.downloadedPath = await downloadUpdate(updateState);
       updateState.state = 'installing';
       emitUpdate();
-      const child = spawn(updateState.downloadedPath, [], { detached: true, stdio: 'ignore', windowsHide: true });
-      child.unref();
+      const started = await startInstaller();
+      if (!started.ok) throw new Error(started.error);
+      updateState.state = 'launched';
+      emitUpdate();
     } catch (err) {
       updateState.state = 'error';
       updateState.error = (err && err.message) || String(err);

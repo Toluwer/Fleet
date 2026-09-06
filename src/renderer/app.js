@@ -2336,6 +2336,7 @@ function updaterStatusText(up, appVersion) {
     return 'Downloading update…';
   }
   if (up.state === 'installing') return 'Starting the installer…';
+  if (up.state === 'launched') return 'The installer window is open - finish the update there';
   if (up.state === 'checking') return 'Checking for updates…';
   if (up.state === 'error') return `Update failed: ${up.error || 'unknown error'}`;
   if (up.state === 'disabled') return 'Automatic updates activate in the installed version';
@@ -3055,8 +3056,9 @@ if (api) {
       }
     }
     if (state.view === 'settings') views.settings();
+    if (status && status.state === 'launched') toast('Installer started - finish the update in its window', 'good');
     if (status && status.state === 'ready') toast(`Fleet ${status.availableVersion || 'update'} is ready`, 'good');
-    if (status && status.state === 'error' && (prev === 'downloading' || prev === 'installing' || prev === 'checking')) {
+    if (status && status.state === 'error' && (prev === 'downloading' || prev === 'installing' || prev === 'launched' || prev === 'checking')) {
       toast('Update failed - see Settings for details', 'bad');
     }
   });

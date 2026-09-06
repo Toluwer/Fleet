@@ -585,6 +585,34 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && ipcSource.includes("state = 'available'")
     && ipcSource.includes("state = 'installing'"));
 
+  check('Updater never wedges on "Starting the installer" (guarded spawn)',
+    ipcSource.includes('function startInstaller')
+    && ipcSource.includes("child.once('error'")
+    && ipcSource.includes("child.once('spawn'")
+    && ipcSource.includes("state = 'launched'")
+    && ipcSource.includes('fs.existsSync(exe)'));
+
+  // Behavioral proof of the same guard: a quarantined/missing exe must surface
+  // ENOENT as a handled error (previously: uncaught 'error' event, stuck UI),
+  // and a real spawn must report success via the 'spawn' event.
+  {
+    const { spawn } = require('child_process');
+    const guardSpawn = (cmd, args, opts) => new Promise((resolve) => {
+      let child;
+      try { child = spawn(cmd, args, opts); }
+      catch (err) { resolve({ ok: false, code: err.code }); return; }
+      let settled = false;
+      const done = (r) => { if (!settled) { settled = true; clearTimeout(t); resolve(r); } };
+      const t = setTimeout(() => { child.unref(); done({ ok: true, late: true }); }, 8000);
+      child.once('error', (err) => done({ ok: false, code: err.code }));
+      child.once('spawn', () => { child.unref(); done({ ok: true }); });
+    });
+    const missing = await guardSpawn(path.join(os.tmpdir(), 'fleet-definitely-not-here-928374.exe'), [], { detached: true, stdio: 'ignore' });
+    check('Guarded spawn reports a missing installer as ENOENT (no crash, no wedge)', !missing.ok && missing.code === 'ENOENT', JSON.stringify(missing));
+    const okSpawn = await guardSpawn(process.execPath, ['-e', ''], { detached: true, stdio: 'ignore' });
+    check('Guarded spawn confirms a healthy installer start', okSpawn.ok, JSON.stringify(okSpawn));
+  }
+
   await section('Update downloader');
   const download = require('../src/main/download');
   const http = require('http');
