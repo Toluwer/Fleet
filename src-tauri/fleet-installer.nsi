@@ -948,10 +948,11 @@ Function FleetProgressShow
   StrCpy $FleetStatusText ""
   StrCpy $FleetProgressNote ""
 
+  ; NOTE: $R5-$R9 are clobbered by FleetPlacePx, keep the title text in $R0
   ${If} $UpdateMode = 1
-    StrCpy $R9 "Updating Fleet"
+    StrCpy $R0 "Updating Fleet"
   ${Else}
-    StrCpy $R9 "Installing Fleet"
+    StrCpy $R0 "Installing Fleet"
   ${EndIf}
 
   ; titlebar wordmark
@@ -1005,7 +1006,7 @@ Function FleetProgressShow
   ; heading (Installing Fleet / Updating Fleet)
   System::Call 'USER32::CreateWindowExW(i0,w"STATIC",w"",i0x50000000,i0,i0,i0,i0,p$HWNDPARENT,p0,p0,p0,p0) p.s'
   Pop $FleetTitle
-  SendMessage $FleetTitle ${WM_SETTEXT} 0 "STR:$R9"
+  SendMessage $FleetTitle ${WM_SETTEXT} 0 "STR:$R0"
   SendMessage $FleetTitle ${WM_SETFONT} $FleetFontTitle 1
   SetCtlColors $FleetTitle ${FLEET_TEXT} ${FLEET_BG}
   Push 46
@@ -1910,16 +1911,16 @@ Function .onInstSuccess
       nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" "$R0"
     ${EndIf}
   ${Else}
-    ; The stock MUI2 instfiles page never advances by itself: its leave
-    ; callback only updates the header text and then it waits for a click
-    ; on the stock Next button - which Fleet's chrome hides, so the wizard
-    ; parked on the completed log page forever ("it just sits there when it
-    ; says its installing"). Drive the wizard forward ourselves: hide the
-    ; stock log panel NSIS just re-showed on completion, then queue the
-    ; exact message the Next button emits (WM_COMMAND, id 1, BN_CLICKED).
+    ; NSIS parks the wizard on the PWP_COMPLETED pseudo-page after the
+    ; sections finish (Ui.c: "PWP_COMPLETED always follows PWP_INSTFILES")
+    ; and only advances to the next page when autoclose is set - otherwise
+    ; it waits for a click on the stock Next button, which Fleet's chrome
+    ; hides. That is the actual "installer just sits there" bug since the
+    ; custom chrome shipped. SetAutoClose makes the page manager walk
+    ; straight into FleetFinishPage; the stock log panel it would show in
+    ; between gets hidden again first.
     Call FleetHideStockProgress
-    GetDlgItem $R0 $HWNDPARENT 1
-    System::Call 'USER32::PostMessageW(p$HWNDPARENT,i${WM_COMMAND},i1,p$R0)'
+    SetAutoClose true
   ${EndIf}
 FunctionEnd
 
