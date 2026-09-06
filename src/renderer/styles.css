@@ -103,10 +103,20 @@ body {
 }
 .window-shell {
   width: 100%; height: 100%; position: relative; overflow: hidden;
-  background: var(--bg); border-radius: 16px;
-  clip-path: inset(0 round 16px);
+  background: var(--bg); border-radius: 8px;
+  clip-path: inset(0 round 8px);
 }
 body.window-maximized .window-shell { border-radius: 0; clip-path: none; }
+
+/* Keyboard focus rings: every interactive element gets a visible ring,
+   matching the .btn ring. Controls with their own focus styling (.btn,
+   inputs) are excluded. */
+.nav button:focus-visible, .window-controls button:focus-visible, .chip:focus-visible,
+.cat-chip:focus-visible, .seg-chip:focus-visible, .people-entry:focus-visible, .join-account-choice:focus-visible,
+.ctxmenu button:focus-visible, .toast-x:focus-visible, .server-copy:focus-visible, .server-reset:focus-visible,
+.back-link:focus-visible, .faq summary:focus-visible, .stepper button:focus-visible {
+  outline: 2px solid var(--accent-2); outline-offset: -2px; border-radius: var(--r-sm); }
+.toggle input:focus-visible + .track { box-shadow: 0 0 0 3px var(--accent-ring); }
 svg.ico, svg.b-ico, svg.t-ico {
   fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round;
 }
@@ -215,6 +225,9 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 .btn.ghost:hover { background: var(--surface-2); }
 .btn.sm { min-height: var(--control-h-sm); padding: 0 11px; font-size: 12.5px; }
 .btn.icon { width: var(--icon-btn); min-height: var(--icon-btn); padding: 0; }
+/* Icon buttons shrink to the sm height when used in sm rows (session rows,
+   instance rows) so text buttons and icon buttons align. */
+.btn.sm.icon { width: var(--control-h-sm); min-height: var(--control-h-sm); }
 .btn.lg { min-height: 42px; padding: 0 20px; font-size: 14px; }
 .btn[disabled] { opacity: .45; cursor: not-allowed; transform: none; }
 
@@ -247,7 +260,7 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 .irow .title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
 .irow .mem, .irow .when { font-variant-numeric: tabular-nums; color: var(--ink-2); font-size: 12.5px; }
 .irow .actions { display: flex; gap: 5px; justify-content: flex-end; opacity: .4; transition: opacity .16s var(--ease); }
-.irow:hover .actions { opacity: 1; }
+.irow:hover .actions, .irow:focus-within .actions { opacity: 1; }
 
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-3); position: relative; }
 .dot.running { background: var(--success); }
@@ -565,7 +578,7 @@ textarea { resize: vertical; min-height: 70px; }
 .tip.wide { white-space: normal; width: 230px; text-align: center; }
 
 /* ----------------------------- Context menu ----------------------------- */
-.ctxmenu { position: fixed; z-index: 100; min-width: 192px; background: var(--surface); border: 1px solid var(--hair-2);
+.ctxmenu { position: fixed; z-index: 150; min-width: 192px; background: var(--surface); border: 1px solid var(--hair-2);
   border-radius: var(--r); box-shadow: var(--sh-lg); padding: 6px; display: none; animation: menuIn .14s var(--ease); }
 @keyframes menuIn { from { opacity: 0; transform: scale(.97) translateY(-3px); } to { opacity: 1; transform: none; } }
 .ctxmenu button { display: flex; align-items: center; gap: 11px; width: 100%; text-align: left; border: 0; background: transparent;
