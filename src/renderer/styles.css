@@ -27,6 +27,9 @@
   --info: #3578ea;    --info-text: #a9c9ff;    --info-bg: #111f3a;
 
   --on-ink: #f8fbff;
+  /* Dark ink for text/icons sitting on light --ink surfaces (toasts, tooltips,
+     selected chips). --on-ink stays light because it is also used on --accent. */
+  --ink-inv: #1c1c22;
   --scroll: #34343d; --scroll-hover: #484852; --toggle-track: #3c3c45;
 
   --r-lg: 16px; --r: 13px; --r-sm: 9px; --r-pill: 999px;
@@ -84,6 +87,7 @@
   --info: #3478ec;    --info-text: #9fc5ff;    --info-bg: #0d1b33;
 
   --on-ink: #f8fbff;
+  --ink-inv: #14141a;
   --scroll: #2c2d34; --scroll-hover: #3d3e47; --toggle-track: #34353d;
 
   --sh-sm: 0 1px 2px rgba(0,0,0,.4);
@@ -362,7 +366,7 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
   font-variant-numeric: tabular-nums; }
 .robux-chip .ico { width: 13px; height: 13px; color: var(--ink-3); }
 .robux-chip .prem, .robux-total .prem { display: inline-grid; place-items: center; width: 14px; height: 14px; border-radius: 4px;
-  background: var(--ink); color: var(--on-ink); font-size: 9.5px; font-weight: 700; }
+  background: var(--ink); color: var(--ink-inv); font-size: 9.5px; font-weight: 700; }
 .robux-total { display: inline-flex; align-items: center; gap: 5px; margin-left: 10px; font-size: 12.5px; font-weight: 600;
   color: var(--ink-2); font-variant-numeric: tabular-nums; vertical-align: 1px; }
 .robux-total .ico { width: 13px; height: 13px; color: var(--ink-3); }
@@ -384,9 +388,9 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
   border-radius: 999px; background: var(--surface); color: var(--ink-2); font: inherit; font-size: 12.5px; font-weight: 500;
   cursor: pointer; white-space: nowrap; transition: border-color .14s var(--ease), color .14s var(--ease), background .14s var(--ease); }
 .cat-chip:hover { border-color: var(--ink-3); color: var(--ink); }
-.cat-chip.on { border-color: var(--ink); background: var(--ink); color: var(--on-ink); }
+.cat-chip.on { border-color: var(--ink); background: var(--ink); color: var(--ink-inv); }
 .cat-chip .cat-n { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: var(--surface-2); color: var(--ink-3); }
-.cat-chip.on .cat-n { background: color-mix(in srgb, var(--on-ink) 15%, transparent); color: var(--on-ink); }
+.cat-chip.on .cat-n { background: color-mix(in srgb, var(--ink-inv) 14%, transparent); color: var(--ink-inv); }
 .games-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(234px, 1fr)); gap: var(--space-grid); }
 .game { border: 1px solid var(--hair); border-radius: var(--r-lg); overflow: hidden; background: var(--surface);
   box-shadow: var(--sh-sm); display: flex; flex-direction: column; animation: rowIn .3s var(--ease);
@@ -423,7 +427,7 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
   color: var(--ink-2); font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer; white-space: nowrap;
   transition: border-color .14s var(--ease), color .14s var(--ease), background .14s var(--ease); }
 .seg-chip:hover { border-color: var(--ink-3); color: var(--ink); }
-.seg-chip.on { border-color: var(--ink); background: var(--ink); color: var(--on-ink); }
+.seg-chip.on { border-color: var(--ink); background: var(--ink); color: var(--ink-inv); }
 .server-filters { display: grid; grid-template-columns: repeat(4, minmax(92px, 1fr)) auto; gap: 8px; margin-top: 12px; align-items: end; }
 .server-filter { display: grid; gap: 5px; min-width: 0; }
 .server-filter span { color: var(--ink-3); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
@@ -539,7 +543,7 @@ textarea { resize: vertical; min-height: 70px; }
 .help li { margin: 6px 0; }
 .help code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); border: 1px solid var(--hair); border-radius: 5px; padding: 1px 5px; color: var(--ink); }
 .help .step { display: flex; gap: 14px; margin: 12px 0; }
-.help .step .n { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--ink); color: var(--on-ink);
+.help .step .n { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--ink); color: var(--ink-inv);
   display: grid; place-items: center; font-size: 12px; font-weight: 600; }
 .faq { border: 1px solid var(--hair); border-radius: var(--r-lg); overflow: hidden; box-shadow: var(--sh-sm); }
 .faq details { border-bottom: 1px solid var(--hair); padding: 2px 18px; }
@@ -569,7 +573,7 @@ textarea { resize: vertical; min-height: 70px; }
 /* ----------------------------- Tooltip ----------------------------- */
 /* JS-positioned tooltip (see positionTip in app.js) — fixed-position so it
    clamps to the viewport instead of clipping like the old CSS ::after. */
-.tip { position: fixed; left: 0; top: 0; z-index: 200; pointer-events: none; background: var(--ink); color: var(--on-ink);
+.tip { position: fixed; left: 0; top: 0; z-index: 200; pointer-events: none; background: var(--ink); color: var(--ink-inv);
   font-size: 11.5px; font-weight: 400; line-height: 1.4; padding: 6px 10px; border-radius: 7px; white-space: nowrap;
   box-shadow: var(--sh-lg); opacity: 0; visibility: hidden; transform: translateY(3px);
   transition: opacity .13s var(--ease), transform .13s var(--ease); max-width: min(280px, calc(100vw - 16px)); }
@@ -627,7 +631,7 @@ textarea { resize: vertical; min-height: 70px; }
 
 /* ----------------------------- Toast ----------------------------- */
 .toasts { position: fixed; bottom: 22px; right: 22px; z-index: 140; display: flex; flex-direction: column; gap: 11px; }
-.toast { background: var(--ink); color: var(--on-ink); padding: 13px 15px 13px 17px; border-radius: var(--r); box-shadow: var(--sh-lg);
+.toast { background: var(--ink); color: var(--ink-inv); padding: 13px 15px 13px 17px; border-radius: var(--r); box-shadow: var(--sh-lg);
   font-size: 13px; display: flex; align-items: center; gap: 11px; min-width: 240px; max-width: 380px; animation: toastIn .26s var(--ease); }
 .toast .t-ico { width: 17px; height: 17px; flex: none; }
 .toast > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
@@ -635,7 +639,7 @@ textarea { resize: vertical; min-height: 70px; }
   display: grid; place-items: center; border-radius: 7px; cursor: pointer; transition: opacity .14s, background .14s; }
 .toast-x:hover { opacity: 1; background: color-mix(in srgb, currentColor 16%, transparent); }
 .toast-x .tx-ico { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
-.toast.good .t-ico { color: var(--success-text); }
+.toast.good .t-ico { color: var(--accent); }
 .toast.bad { background: #7a1c1c; color: #fff; }
 .toast.bad .t-ico { color: #ffd0d0; }
 @keyframes toastIn { from { opacity: 0; transform: translateY(14px) scale(.96); } to { opacity: 1; transform: none; } }
