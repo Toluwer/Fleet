@@ -1,6 +1,6 @@
 [package]
 name = "fleet"
-version = "1.5.10"
+version = "1.5.11"
 description = "Fleet - a clean, minimalist multi-instance launcher for Roblox"
 authors = ["Toluwa"]
 license = "MIT"
