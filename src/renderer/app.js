@@ -334,6 +334,18 @@ document.addEventListener('keydown', (e) => {
   setView(target.dataset.view);
 });
 
+/* '/' focuses the search box on Games and People, like Win11 lists. */
+document.addEventListener('keydown', (e) => {
+  if (e.key !== '/' || e.ctrlKey || e.altKey || e.metaKey) return;
+  const active = document.activeElement;
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT' || active.isContentEditable)) return;
+  const search = (state.view === 'games' && $('#games-search')) || (state.view === 'people' && $('#people-search'));
+  if (!search) return;
+  e.preventDefault();
+  search.focus();
+  if (typeof search.select === 'function') search.select();
+});
+
 /* ----------------------------- Tooltips ----------------------------- */
 /* JS-driven so tips never clip at the viewport edge (the old pure-CSS
    translateX(-50%) ::after overflowed near the right/top of the window). */
@@ -407,6 +419,7 @@ const views = {};
 let renderedView = null;
 function setView(name) {
   state.view = name;
+  try { localStorage.setItem('fleet-last-view', name); } catch (_) { /* storage is best-effort */ }
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   (views[name] || views.instances)();
   renderedView = name;
@@ -2050,7 +2063,7 @@ views.help = function () {
         <li><b>Focus</b> brings a client's window to the front. <b>Restart</b> relaunches it. <b>End</b> closes it.</li>
         <li><b>End all</b> closes every client; <b>Cleanup</b> also clears leftover Roblox crash-handler processes.</li>
         <li>Right-click any client for the same actions plus <b>Copy PID</b>.</li>
-        <li>Keyboard: <b>Ctrl+1</b> through <b>Ctrl+9</b> jump straight to a section, and <b>Esc</b> closes any dialog.</li>
+        <li>Keyboard: <b>Ctrl+1</b> through <b>Ctrl+9</b> jump straight to a section, <b>/</b> focuses search on Games and People, and <b>Esc</b> closes any dialog. Fleet reopens the section you last used.</li>
       </ul>
 
       <h2>Troubleshooting</h2>
@@ -2709,6 +2722,12 @@ setInterval(refreshVisiblePeoplePresence, 10000);
   // subsystem can no longer leave users staring at the splash forever.
   await Promise.all([refreshStatus(), loadInstances(), loadAccounts()]);
   state.launchMode = state.accounts.length ? 'account' : 'plain';
-  setView('instances');
+  // Reopen the section the user last visited (validated against the nav).
+  let startView = 'instances';
+  try {
+    const saved = localStorage.getItem('fleet-last-view');
+    if (saved && document.querySelector(`#nav button[data-view="${saved}"]`)) startView = saved;
+  } catch (_) { /* fresh profile */ }
+  setView(startView);
 })();
 

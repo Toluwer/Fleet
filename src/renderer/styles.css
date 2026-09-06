@@ -393,6 +393,7 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
   transition: border-color .16s var(--ease), box-shadow .16s var(--ease), transform .16s var(--ease); }
 .game:hover { border-color: var(--hair-2); box-shadow: var(--sh); transform: translateY(-2px); }
 .game-thumb { position: relative; aspect-ratio: 16 / 9; background: var(--surface-2); overflow: hidden; }
+.game-thumb img, .person img.avatar { animation: fadeIn .28s ease; }
 .game-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .game-thumb .ph { width: 100%; height: 100%; display: grid; place-items: center; color: var(--ink-4); }
 .game-thumb .ph svg { width: 30px; height: 30px; }
