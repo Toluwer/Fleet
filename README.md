@@ -31,7 +31,7 @@ Roblox normally lets you run only **one** client at a time. Fleet works around t
 - **Light, dark, or system theme** — including matching native Windows window controls and readable semantic status colors in both palettes.
 - **Launch history**, **Diagnostics** with a live log, **Settings** that persist, and a built-in **Help** page.
 
-A clean custom top bar with the **native** Windows minimize / maximize / close buttons (no title-bar logo), an animated intro splash, smooth transitions, refined typography, and a light/dark monochrome aesthetic throughout.
+A clean custom top bar with the **native** Windows minimize / maximize / close buttons at true 46×32 caption metrics (no title-bar logo), an animated intro splash, smooth transitions, refined typography, and a light/dark monochrome aesthetic throughout. Keyboard-first touches: **Ctrl+1–9** jump between sections, **/** focuses search, **Esc** closes any dialog, and Fleet reopens the section you last used.
 
 The installer is Fleet's own app too: it says **Hello!**, fades away, asks *where Fleet should live*, and installs with a real progress bar - all with genuine native Windows controls. No wizard pages, no fake drawn buttons.
 
