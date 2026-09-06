@@ -970,6 +970,19 @@ Function FleetProgressShow
     System::Call 'USER32::SetWindowPos(p$FleetProgressBar,p0,i0,i0,i0,i0,i0x0043)'
   ${EndIf}
 
+  ; The stock instfiles surface (white log panel, "Show details" toggle and
+  ; its banner) is fully replaced by Fleet's canvas. The progress bar has
+  ; been reparented out of it above, so the whole inner dialog can go away.
+  ShowWindow $FleetProgressDialog ${SW_HIDE}
+
+  ; nsDialogs::Create leaves its canvas hidden on built-in pages (only custom
+  ; pages show it via nsDialogs::Show, which must NOT be called here because
+  ; the instfiles page already runs its own message pump). Show the canvas
+  ; explicitly so the Fleet surface - titlebar, headings, live status and the
+  ; adopted bar - actually renders while the sections run.
+  ShowWindow $FleetDialog 5 ; SW_SHOW
+  System::Call 'USER32::SetWindowPos(p$FleetDialog,p0,i0,i0,i0,i0,i0x0043)' ; HWND_TOP, keep pos/size
+
   ${NSD_CreateLabel} 6% 71% 88% 5% "Keep using your PC - this window finishes by itself."
   Pop $FleetProgressNote
   SetCtlColors $FleetProgressNote ${FLEET_INK3} ${FLEET_BG}

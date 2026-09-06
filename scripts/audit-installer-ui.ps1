@@ -35,11 +35,21 @@ public class WinCap {
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll")] public static extern IntPtr PostMessage(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
+    [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern bool GetWindowPlacement(IntPtr h, out WINDOWPLACEMENT wp);
+    [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int index);
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
     [StructLayout(LayoutKind.Sequential)] public struct WINDOWPLACEMENT { public int len, flags, showCmd; public POINT ptMin, ptMax; public RECT rcNormal; }
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+}
+public class LVRead {
+    [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll")] public static extern IntPtr VirtualAllocEx(IntPtr proc, IntPtr addr, UIntPtr size, uint type, uint protect);
+    [DllImport("kernel32.dll")] public static extern bool VirtualFreeEx(IntPtr proc, IntPtr addr, UIntPtr size, uint type);
+    [DllImport("kernel32.dll")] public static extern bool WriteProcessMemory(IntPtr proc, IntPtr addr, byte[] buf, UIntPtr size, out UIntPtr written);
+    [DllImport("kernel32.dll")] public static extern bool ReadProcessMemory(IntPtr proc, IntPtr addr, byte[] buf, UIntPtr size, out UIntPtr read);
+    [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
 }
 "@
 
@@ -155,6 +165,111 @@ function Click-Control([IntPtr]$h) {
     Log "posted click to $h at client $cx,$cy"
 }
 
+# ---- find descendant by window class
+function Find-ClassChild([IntPtr]$root, [string]$classMatch) {
+    $script:classHit = [IntPtr]::Zero
+    $cb = {
+        param([IntPtr]$h, [IntPtr]$lp)
+        if ($script:classHit -eq [IntPtr]::Zero) {
+            if ((Get-WinClass $h) -eq $classMatch) { $script:classHit = $h }
+        }
+        return $true
+    }
+    [void][WinCap]::EnumChildWindows($root, $cb, [IntPtr]::Zero)
+    return $script:classHit
+}
+
+# ---- all visible-state static texts (diagnostic helper)
+function Get-StaticTexts([IntPtr]$root) {
+    $script:txts = @()
+    $cb = {
+        param([IntPtr]$h, [IntPtr]$lp)
+        if ((Get-WinClass $h) -eq 'Static') {
+            $t = (Get-WinText $h)
+            $vis = [WinCap]::IsWindowVisible($h)
+            $r = Get-WinRect $h
+            if ($t -and $t.Trim().Length -gt 0) { $script:txts += ("vis={0} y={1,4} '{2}'" -f $vis, $r.T, $t.Trim()) }
+        }
+        return $true
+    }
+    [void][WinCap]::EnumChildWindows($root, $cb, [IntPtr]::Zero)
+    return $script:txts
+}
+
+# ---- cross-process read of the NSIS details SysListView32 (installer is 32-bit)
+function Read-ListView([IntPtr]$lv, [uint32]$procId) {
+    $LVM_GETITEMCOUNT = 0x1004
+    $LVM_GETITEMTEXTW = 0x1073
+    $lines = New-Object System.Collections.Generic.List[string]
+    $proc = [LVRead]::OpenProcess(0x8 -bor 0x10 -bor 0x20 -bor 0x400, $false, $procId)
+    if ($proc -eq [IntPtr]::Zero) { return ,@('<OpenProcess failed>') }
+    try {
+        $count = [int][WinCap]::SendMessage($lv, $LVM_GETITEMCOUNT, [IntPtr]::Zero, [IntPtr]::Zero)
+        Log "details listview items: $count"
+        if ($count -le 0) { return ,$lines }
+        $lvMem = [LVRead]::VirtualAllocEx($proc, [IntPtr]::Zero, [UIntPtr]40, 0x1000 -bor 0x2000, 0x40)
+        $txMem = [LVRead]::VirtualAllocEx($proc, [IntPtr]::Zero, [UIntPtr]2048, 0x1000 -bor 0x2000, 0x40)
+        if ($lvMem -eq [IntPtr]::Zero -or $txMem -eq [IntPtr]::Zero) { return ,@('<VirtualAllocEx failed>') }
+        try {
+            for ($i = 0; $i -lt $count; $i++) {
+                $lvItem = New-Object byte[] 40
+                [BitConverter]::GetBytes([uint32]1).CopyTo($lvItem, 0)          # LVIF_TEXT
+                [BitConverter]::GetBytes([int32]$i).CopyTo($lvItem, 4)           # iItem
+                [BitConverter]::GetBytes([int32]$txMem.ToInt64()).CopyTo($lvItem, 20)  # pszText (32-bit ptr)
+                [BitConverter]::GetBytes([int32]1024).CopyTo($lvItem, 24)        # cchTextMax
+                $wr = [UIntPtr]::Zero
+                [void][LVRead]::WriteProcessMemory($proc, $lvMem, $lvItem, [UIntPtr]40, [ref]$wr)
+                [void][WinCap]::SendMessage($lv, $LVM_GETITEMTEXTW, [IntPtr]$i, $lvMem)
+                $buf = New-Object byte[] 2048
+                $rd = [UIntPtr]::Zero
+                [void][LVRead]::ReadProcessMemory($proc, $txMem, $buf, [UIntPtr]2048, [ref]$rd)
+                $txt = [System.Text.Encoding]::Unicode.GetString($buf).TrimEnd([char]0)
+                if ($txt) { $lines.Add($txt) }
+                if ($lines.Count -ge 400) { break }
+            }
+        } finally {
+            [void][LVRead]::VirtualFreeEx($proc, $lvMem, [UIntPtr]::Zero, 0x8000)
+            [void][LVRead]::VirtualFreeEx($proc, $txMem, [UIntPtr]::Zero, 0x8000)
+        }
+    } finally { [void][LVRead]::CloseHandle($proc) }
+    return ,$lines
+}
+
+# ---- stall diagnostics: what is the installer doing?
+function Dump-Diagnostics([IntPtr]$main, $p, [string]$tag) {
+    Log "=== DIAGNOSTICS ($tag) ==="
+    try {
+        $p.Refresh()
+        Log ("installer: CPU={0}s WS={1}MB Handles={2} Threads={3} Responding={4}" -f `
+            [math]::Round($p.TotalProcessorTime.TotalSeconds, 1), [math]::Round($p.WorkingSet64 / 1MB), $p.HandleCount, $p.Threads.Count, $p.Responding)
+    } catch { Log "process info failed: $($_.Exception.Message)" }
+    try {
+        $kids = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($p.Id)" -ErrorAction SilentlyContinue
+        if ($kids) { foreach ($k in $kids) { Log ("child proc: {0} pid={1} cmd={2}" -f $k.Name, $k.ProcessId, $k.CommandLine) } }
+        else { Log 'child processes: none' }
+    } catch { Log "child query failed: $($_.Exception.Message)" }
+    $inst = Join-Path $env:LOCALAPPDATA 'Fleet'
+    if (Test-Path $inst) {
+        $m = Get-ChildItem $inst -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum
+        Log ("INSTDIR {0}: {1} files, {2} MB" -f $inst, $m.Count, [math]::Round($m.Sum / 1MB, 1))
+        $m2 = Get-ChildItem $inst -Recurse -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 5
+        foreach ($f in $m2) { Log ("  newest: {0}  ({1})" -f $f.FullName.Substring($inst.Length), $f.LastWriteTime.ToString('HH:mm:ss.fff')) }
+    } else { Log "INSTDIR $inst does not exist yet" }
+    $bar = Find-ClassChild $main 'msctls_progress32'
+    if ($bar -ne [IntPtr]::Zero) {
+        $pos = [int][WinCap]::SendMessage($bar, 0x408, [IntPtr]::Zero, [IntPtr]::Zero)  # PBM_GETPOS
+        Log "progress bar pos: $pos"
+    }
+    $lv = Find-ClassChild $main 'SysListView32'
+    if ($lv -ne [IntPtr]::Zero) {
+        $items = Read-ListView $lv ([uint32]$p.Id)
+        $items | Select-Object -Last 30 | ForEach-Object { Log ("  LV: {0}" -f $_) }
+        $items | Set-Content -Path (Join-Path $Out "details_listview_$tag.txt") -Encoding UTF8
+    }
+    Get-StaticTexts $main | ForEach-Object { Log ("  STATIC: {0}" -f $_) }
+    Log "=== END DIAGNOSTICS ==="
+}
+
 # ---- 0. environment info
 Log "OS: $([System.Environment]::OSVersion.VersionString)"
 $g0 = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero)
@@ -217,17 +332,19 @@ if ($install -eq [IntPtr]::Zero) { Log 'ERROR: Install control not found'; Dump-
 Log "Install control: $install rect=$((Get-WinRect $install).L),$((Get-WinRect $install).T) $((Get-WinRect $install).R - (Get-WinRect $install).L)x$((Get-WinRect $install).B - (Get-WinRect $install).T)"
 Click-Control $install
 
-# ---- 6. progress: poll & capture (fast poll so we catch the install page transition)
+# ---- 6. progress: poll & capture with stall diagnostics
 $finish = $false
 $progressShots = 0
 $pageChanged = $false
-$deadline = (Get-Date).AddSeconds(150)
+$stallTag = 0
+$lastSig = ''
+$lastSigSince = Get-Date
+$deadline = (Get-Date).AddSeconds(280)
 while ((Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds 900
     $p.Refresh()
     if ($p.HasExited) { Log 'installer exited during progress!'; break }
     if (-not $pageChanged) {
-        # the install page still shows the Browse button; once gone we are on progress
         if ((Find-Child $main 'Browse') -eq [IntPtr]::Zero) {
             $pageChanged = $true
             Log 'progress page active'
@@ -241,7 +358,20 @@ while ((Get-Date) -lt $deadline) {
     }
     if ((Find-Child $main 'Launch Fleet') -ne [IntPtr]::Zero) { $finish = $true; Log 'finish page detected'; break }
     if ((Find-Child $main 'Fleet is ready') -ne [IntPtr]::Zero) { $finish = $true; Log 'finish page detected (label)'; break }
+    # --- stall detector: progress signature = bar position + first 'Extract:' status line
+    $sig = ''
+    $bar = Find-ClassChild $main 'msctls_progress32'
+    if ($bar -ne [IntPtr]::Zero) { $sig += 'bar=' + [int][WinCap]::SendMessage($bar, 0x408, [IntPtr]::Zero, [IntPtr]::Zero) }
+    foreach ($t in (Get-StaticTexts $main)) { if ($t -match 'Extract:|Copying|Creating|Installing') { $sig += '|' + $t; break } }
+    if ($sig -ne $lastSig) { $lastSig = $sig; $lastSigSince = Get-Date }
+    elseif (((Get-Date) - $lastSigSince).TotalSeconds -gt 45 -and $stallTag -lt 3) {
+        $stallTag++
+        Log "STALL detected (unchanged for 45s): $sig"
+        Dump-Diagnostics $main $p ("stall$stallTag")
+        Start-Sleep -Seconds 10
+    }
 }
+if ($stallTag -gt 0 -or -not $finish) { Dump-Diagnostics $main $p 'final' }
 
 # ---- 7. finish page
 if ($finish) {
