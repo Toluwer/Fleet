@@ -147,26 +147,141 @@ function fmtNum(n) {
   return String(n);
 }
 
-/* ----------------------------- Toasts ----------------------------- */
+/* ----------------------------- Notifications ----------------------------- */
+/* Toasts stay ephemeral, but every one is also recorded in a persistent
+   notification center (bell at the rail bottom). Unread = newer than the
+   last time the panel was opened. Storage is best-effort: in-memory only
+   when localStorage is unavailable. */
+const NOTIF_KEY = 'fleet-notifs-v1';
+const NOTIF_MAX = 80;
+const notifStore = { list: [], read: 0 };
+function notifLoad() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(NOTIF_KEY) || 'null');
+    if (raw && Array.isArray(raw.list)) {
+      notifStore.list = raw.list.filter(e => e && typeof e.m === 'string' && e.t > 0).slice(-NOTIF_MAX);
+      notifStore.read = Number(raw.read) || 0;
+    }
+  } catch (_) { /* corrupted or unavailable storage: start fresh */ }
+}
+function notifSave() {
+  try { localStorage.setItem(NOTIF_KEY, JSON.stringify(notifStore)); } catch (_) { /* best-effort */ }
+}
+notifLoad();
+
+function notifUnreadCount() {
+  const cut = notifStore.read;
+  return notifStore.list.reduce((n, e) => n + (e.t > cut ? 1 : 0), 0);
+}
+function updateBell() {
+  const badge = $('#bell-badge');
+  if (!badge) return;
+  const n = notifUnreadCount();
+  badge.hidden = n === 0;
+  badge.textContent = n > 9 ? '9+' : String(n);
+}
+function relTime(ts) {
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 10) return 'just now';
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+function notifIcon(kind) { return kind === 'bad' ? 'alert-circle' : kind === 'good' ? 'check-circle' : 'box'; }
+
+function positionNotifPanel() {
+  const panel = $('#notif-panel');
+  const bell = $('#rail-bell');
+  if (!panel || !bell) return;
+  const r = bell.getBoundingClientRect();
+  const W = Math.min(360, window.innerWidth - 16);
+  // Anchor above the bell, aligned with the rail's right edge, clamped to the viewport.
+  panel.style.left = Math.max(8, Math.min(r.right - 4, window.innerWidth - W - 8)) + 'px';
+  panel.style.bottom = Math.max(8, window.innerHeight - r.top + 10) + 'px';
+  panel.style.width = W + 'px';
+}
+function renderNotifPanel() {
+  const panel = $('#notif-panel');
+  if (!panel || panel.hidden) return;
+  const items = notifStore.list.slice().reverse();
+  if (!items.length) {
+    panel.innerHTML = `<div class="n-head"><span class="n-title">Notifications</span></div>
+      <div class="n-empty">${icon('bell')}<p>Nothing yet</p><span>Launches, update events and errors will collect here.</span></div>`;
+    return;
+  }
+  panel.innerHTML = `<div class="n-head"><span class="n-title">Notifications</span>
+      <button class="n-clear" type="button" data-action="notif-clear">Clear all</button></div>
+    <div class="n-list">${items.map(e => `
+      <div class="n-item${e.t > notifStore.read ? ' unread' : ''}">
+        <svg class="t-ico ${e.k === 'bad' ? 'bad' : e.k === 'good' ? 'good' : ''}"><use href="#i-${notifIcon(e.k)}"/></svg>
+        <div class="n-body"><span>${esc(e.m)}</span><time>${esc(relTime(e.t))}</time></div>
+      </div>`).join('')}</div>`;
+}
+function openNotifPanel() {
+  const panel = $('#notif-panel');
+  const bell = $('#rail-bell');
+  if (!panel || !bell) return;
+  panel.hidden = false;
+  bell.setAttribute('aria-expanded', 'true');
+  notifStore.read = Date.now();
+  notifSave();
+  updateBell();
+  positionNotifPanel();
+  renderNotifPanel();
+}
+function closeNotifPanel() {
+  const panel = $('#notif-panel');
+  const bell = $('#rail-bell');
+  if (!panel || panel.hidden) return;
+  panel.hidden = true;
+  if (bell) bell.setAttribute('aria-expanded', 'false');
+}
+function toggleNotifPanel() {
+  const panel = $('#notif-panel');
+  if (panel && panel.hidden) openNotifPanel(); else closeNotifPanel();
+}
+$('#rail-bell').addEventListener('click', (e) => { e.stopPropagation(); toggleNotifPanel(); });
+// Click anywhere outside the panel (and outside the bell) closes it.
+document.addEventListener('mousedown', (e) => {
+  const panel = $('#notif-panel');
+  if (panel && !panel.hidden && !panel.contains(e.target) && !e.target.closest('#rail-bell')) closeNotifPanel();
+});
+window.addEventListener('resize', () => { if (!$('#notif-panel').hidden) positionNotifPanel(); });
+// Keep relative times honest while the panel is open.
+setInterval(() => { if (!$('#notif-panel').hidden) renderNotifPanel(); }, 30000);
+updateBell();
+
 function toast(message, type) {
   const wrap = $('#toasts');
-  // Keep at most four stacked toasts so a burst of events can't pile up.
-  while (wrap.children.length >= 4) wrap.firstElementChild.remove();
-  const t = document.createElement('div');
-  t.className = 'toast ' + (type === 'bad' ? 'bad' : type === 'good' ? 'good' : '');
-  const ic = type === 'bad' ? 'alert-circle' : type === 'good' ? 'check-circle' : 'box';
-  t.innerHTML = `<svg class="t-ico"><use href="#i-${ic}"/></svg><span>${esc(message)}</span>`
-    + `<button class="toast-x" type="button" aria-label="Dismiss notification" data-tip="Dismiss"><svg class="tx-ico"><use href="#i-x"/></svg></button>`;
-  const dismiss = () => {
-    if (!t.isConnected) return;
-    t.style.transition = 'opacity .25s, transform .25s';
-    t.style.opacity = '0';
-    t.style.transform = 'translateY(8px)';
-    setTimeout(() => t.remove(), 260);
-  };
-  t.querySelector('.toast-x').addEventListener('click', dismiss);
-  wrap.appendChild(t);
-  setTimeout(dismiss, 3400);
+  if (wrap) {
+    // Keep at most four stacked toasts so a burst of events can't pile up.
+    while (wrap.children.length >= 4) wrap.firstElementChild.remove();
+    const t = document.createElement('div');
+    t.className = 'toast ' + (type === 'bad' ? 'bad' : type === 'good' ? 'good' : '');
+    const ic = type === 'bad' ? 'alert-circle' : type === 'good' ? 'check-circle' : 'box';
+    t.innerHTML = `<svg class="t-ico"><use href="#i-${ic}"/></svg><span>${esc(message)}</span>`
+      + `<button class="toast-x" type="button" aria-label="Dismiss notification" data-tip="Dismiss"><svg class="tx-ico"><use href="#i-x"/></svg></button>`;
+    const dismiss = () => {
+      if (!t.isConnected) return;
+      t.style.transition = 'opacity .25s, transform .25s';
+      t.style.opacity = '0';
+      t.style.transform = 'translateY(8px)';
+      setTimeout(() => t.remove(), 260);
+    };
+    t.querySelector('.toast-x').addEventListener('click', dismiss);
+    wrap.appendChild(t);
+    setTimeout(dismiss, 3400);
+  }
+  // Record in the notification center (dedup identical back-to-back events).
+  const m = String(message);
+  const last = notifStore.list[notifStore.list.length - 1];
+  if (last && last.m === m && Date.now() - last.t < 2000) { last.t = Date.now(); }
+  else notifStore.list.push({ m, t: Date.now(), k: type === 'bad' ? 'bad' : type === 'good' ? 'good' : '' });
+  if (notifStore.list.length > NOTIF_MAX) notifStore.list.splice(0, notifStore.list.length - NOTIF_MAX);
+  notifSave();
+  updateBell();
+  if (!$('#notif-panel').hidden) renderNotifPanel();
 }
 
 /* ----------------------------- Modal ----------------------------- */
@@ -319,6 +434,8 @@ function cancelModal() {
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (ctxmenu.style.display === 'block') { hideContextMenu(); hideTip(); e.preventDefault(); return; }
+  const notif = $('#notif-panel');
+  if (notif && !notif.hidden) { closeNotifPanel(); e.preventDefault(); return; }
   if ($('#modal-back').classList.contains('open')) { hideTip(); cancelModal(); e.preventDefault(); }
 });
 
@@ -2116,6 +2233,15 @@ document.addEventListener('click', async (e) => {
     }
     case 'goto-settings': setView('settings'); break;
     case 'goto-accounts': setView('accounts'); break;
+
+    case 'notif-clear': {
+      notifStore.list = [];
+      notifStore.read = Date.now();
+      notifSave();
+      updateBell();
+      renderNotifPanel();
+      break;
+    }
 
     case 'launch-mode': {
       state.launchMode = elAction.dataset.mode;
