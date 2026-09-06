@@ -584,6 +584,101 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && ipcSource.includes('FleetInstaller.exe')
     && ipcSource.includes("state = 'available'")
     && ipcSource.includes("state = 'installing'"));
+
+  await section('Update downloader');
+  const download = require('../src/main/download');
+  const http = require('http');
+  {
+    // Local origin: /a -> /b -> /c (200), /c honors Range, /nope 404, /flaky 500-then-200.
+    let flakyHits = 0;
+    let sawRange = '';
+    const origin = http.createServer((req, res) => {
+      if (req.url === '/a') { res.writeHead(302, { location: '/b' }); return res.end(); }
+      if (req.url === '/b') { res.writeHead(301, { location: '/c' }); return res.end(); }
+      if (req.url === '/c') {
+        sawRange = req.headers.range || '';
+        if (sawRange) {
+          const from = Number(sawRange.replace(/[^0-9]/g, ''));
+          res.writeHead(206, { 'content-length': String(10 - from) });
+          return res.end('0123456789'.slice(from));
+        }
+        res.writeHead(200, { 'content-length': '10' });
+        return res.end('0123456789');
+      }
+      if (req.url === '/nope') { res.writeHead(404); return res.end('missing'); }
+      if (req.url === '/flaky') {
+        flakyHits++;
+        if (flakyHits === 1) { res.writeHead(500); return res.end('boom'); }
+        res.writeHead(200, { 'content-length': '4' });
+        return res.end('pong');
+      }
+      res.writeHead(404); res.end();
+    });
+    // Mock proxy: absolute-URI forwarding for plain http targets.
+    const proxy = http.createServer((req, res) => {
+      const target = new URL(req.url);
+      const up = http.request({ hostname: target.hostname, port: target.port, path: target.pathname, method: 'GET' }, (ur) => {
+        res.writeHead(ur.statusCode, ur.headers);
+        ur.pipe(res);
+      });
+      up.on('error', () => { res.writeHead(502); res.end(); });
+      req.pipe(up);
+    });
+    await new Promise((resolve) => origin.listen(0, '127.0.0.1', resolve));
+    await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${origin.address().port}`;
+    try {
+      const redirected = await download.getToBuffer(`${base}/a`, { retries: 0 });
+      check('Downloader follows redirect chains',
+        redirected.status === 200 && redirected.body.toString() === '0123456789');
+
+      const resumed = path.join(os.tmpdir(), 'fleet-selftest-resume.bin');
+      fs.writeFileSync(resumed, Buffer.from('012'));
+      await download.downloadToFile(`${base}/c`, resumed, { retries: 0 });
+      check('Downloader resumes partial files via Range',
+        fs.readFileSync(resumed).toString() === '0123456789' && sawRange === 'bytes=3-');
+
+      let failed404 = null;
+      try { await download.getToBuffer(`${base}/nope`, { retries: 3 }); }
+      catch (err) { failed404 = err; }
+      check('4xx responses fail fast without burning retries',
+        !!failed404 && /HTTP 404/.test(failed404.message) && !/attempts/.test(failed404.message));
+
+      const retried = await download.getToBuffer(`${base}/flaky`, { retries: 2, retryDelayMs: 1 });
+      check('5xx responses are retried transparently',
+        flakyHits === 2 && retried.body.toString() === 'pong');
+
+      const viaProxy = await download.getToBuffer(`${base}/c`,
+        { retries: 0, proxy: new URL(`http://127.0.0.1:${proxy.address().port}`) });
+      check('Proxy env/config requests reach the origin',
+        viaProxy.body.toString() === '0123456789');
+
+      check('Proxy settings are read from HTTPS_PROXY/ALL_PROXY env vars',
+        download.proxyFromEnv({ HTTPS_PROXY: 'proxy.local:8080' }).hostname === 'proxy.local'
+        && download.proxyFromEnv({ ALL_PROXY: 'http://proxy.local:3128' }).port === '3128'
+        && download.proxyFromEnv({}) === null);
+
+      const described = download.describeError(
+        new Error('outer', { cause: Object.assign(new Error('reset by peer'), { code: 'ECONNRESET' }) }));
+      check('Error causes are unwrapped into readable messages',
+        described.indexOf('outer') >= 0 && described.indexOf('ECONNRESET') >= 0);
+    } finally {
+      origin.close();
+      proxy.close();
+    }
+    check('Updater downloads stream to a .part file, verify, then rename',
+      ipcSource.includes(".part")
+      && ipcSource.includes('renameSync(part, target)')
+      && ipcSource.includes('downloadToFile'));
+    check('Renderer offers a browser download fallback when the updater cannot fetch',
+      rendererSource.includes('update-open-web')
+      && rendererSource.includes('releases/latest')
+      && rendererSource.includes('update-status-line'));
+    check('Update install is event-driven so the renderer never times out on it',
+      rendererSource.includes('case \'update-install\': await call(() => api.updater.install()); break;')
+      && ipcSource.includes('installUpdate();'));
+  }
+
   const installerMain = fs.readFileSync(
     path.join(__dirname, '..', 'installer', 'src', 'main.rs'),
     'utf8',

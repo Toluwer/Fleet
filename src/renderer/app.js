@@ -1939,13 +1939,16 @@ views.settings = async function () {
     state.updater = up && up.state ? up : { state: 'disabled' };
   }
   const up = state.updater || { state: 'disabled' };
-  const updateText = up.state === 'ready' || up.state === 'available' ? `Version ${up.latestVersion || up.availableVersion || 'update'} is available - download and install`
-    : up.state === 'downloading' ? 'Downloading update…'
-      : up.state === 'installing' ? 'Starting the installer…'
-        : up.state === 'checking' ? 'Checking for updates…'
-          : up.state === 'error' ? `Update check failed: ${up.error || 'unknown error'}`
-            : up.state === 'disabled' ? 'Automatic updates activate in the installed version'
-              : `Fleet ${st.appVersion || ''} is up to date`;
+  const updateText = updaterStatusText(up, st.appVersion);
+  const busy = up.state === 'checking' || up.state === 'downloading' || up.state === 'installing';
+  const updateActions = up.state === 'ready' || up.state === 'available'
+    ? `<button class="btn primary" data-action="update-install">${icon('refresh')} Download and install</button>`
+    : up.state === 'error'
+      ? `<div class="inline" style="flex-direction:column; align-items:flex-end; gap:8px">
+          <button class="btn" data-action="update-check">${icon('refresh')} Retry</button>
+          <button class="btn" data-action="update-open-web" data-tip="Download the installer with your browser instead">${icon('download')} Download in browser</button>
+        </div>`
+      : `<button class="btn" data-action="update-check" ${busy ? 'disabled' : ''}>${icon('refresh')} Check now</button>`;
   const auto = s.autoDetect !== false;
   mount(`
     <div class="page-head"><h1>Settings</h1><p>Everything is saved to your user profile and persists between sessions.</p></div>
@@ -1998,10 +2001,7 @@ views.settings = async function () {
     </div>
     <div class="section-title">Updates</div>
     <div class="card pad">
-      ${settingRow('Automatic updates', updateText,
-        up.state === 'ready' || up.state === 'available'
-          ? `<button class="btn primary" data-action="update-install" ${up.state === 'downloading' ? 'disabled' : ''}>${icon('refresh')} Download and install</button>`
-          : `<button class="btn" data-action="update-check" ${up.state === 'checking' || up.state === 'downloading' ? 'disabled' : ''}>${icon('refresh')} Check now</button>`)}
+      ${settingRow('Automatic updates', updateText, updateActions, 'update-status-line')}
     </div>
     <div class="inline" style="margin-top:20px">
       <button class="btn primary" data-action="settings-save">${icon('check')} Save settings</button>
@@ -2010,10 +2010,26 @@ views.settings = async function () {
       <button class="btn ghost" data-action="open-userdata">${icon('folder')} Open data folder</button>
     </div>
   `);
+  const statusLine = document.getElementById('update-status-line');
+  if (statusLine) statusLine.dataset.upstate = up.state;
 };
-function settingRow(label, desc, control) {
-  return `<div class="setting"><div><div class="s-label">${esc(label)}</div><div class="s-desc">${esc(desc)}</div></div>
+function settingRow(label, desc, control, descId) {
+  return `<div class="setting"><div><div class="s-label">${esc(label)}</div><div class="s-desc" ${descId ? `id="${descId}"` : ''}>${esc(desc)}</div></div>
     <div class="s-control">${control}</div></div>`;
+}
+
+/* Updater status line — shared by the settings render and live progress patches. */
+function updaterStatusText(up, appVersion) {
+  if (up.state === 'ready' || up.state === 'available') return `Version ${up.latestVersion || up.availableVersion || 'update'} is available - download and install`;
+  if (up.state === 'downloading') {
+    if (up.total) return `Downloading update - ${fmtBytes(up.received)} of ${fmtBytes(up.total)}${up.percent != null ? ` (${up.percent}%)` : ''}`;
+    return 'Downloading update…';
+  }
+  if (up.state === 'installing') return 'Starting the installer…';
+  if (up.state === 'checking') return 'Checking for updates…';
+  if (up.state === 'error') return `Update failed: ${up.error || 'unknown error'}`;
+  if (up.state === 'disabled') return 'Automatic updates activate in the installed version';
+  return `Fleet ${appVersion || ''} is up to date`;
 }
 function currentSettingsDraft() {
   const auto = $('#set-detect').dataset.auto === 'true';
@@ -2571,6 +2587,10 @@ document.addEventListener('click', async (e) => {
       break;
     }
     case 'update-install': await call(() => api.updater.install()); break;
+    case 'update-open-web':
+      await call(() => api.openExternal('https://github.com/Toluwer/Fleet/releases/latest'));
+      toast('Opening the Fleet releases page in your browser');
+      break;
     case 'settings-save': saveSettings(); break;
     case 'settings-reset': {
       const ok = await confirmDialog({ title: 'Reset settings?', body: 'Restore all settings to their defaults.', confirmText: 'Reset', danger: true });
@@ -2692,10 +2712,23 @@ if (api) {
   // Re-authenticated (or new account added in background): reload the list.
   api.onAccountAdded(async () => { await loadAccounts(); if (state.view === 'accounts') views.accounts(); });
   api.onUpdaterStatus((status) => {
+    const prev = state.updater && state.updater.state;
     state.updater = status;
     updateRailFoot();
+    // Progress ticks patch the one status line in place; re-rendering the
+    // whole page every 300 ms would drop any settings the user is editing.
+    if (status && status.state === 'downloading') {
+      const line = document.getElementById('update-status-line');
+      if (line && line.dataset.upstate === 'downloading') {
+        line.textContent = updaterStatusText(status, (state.status && state.status.appVersion) || '');
+        return;
+      }
+    }
     if (state.view === 'settings') views.settings();
     if (status && status.state === 'ready') toast(`Fleet ${status.availableVersion || 'update'} is ready`, 'good');
+    if (status && status.state === 'error' && (prev === 'downloading' || prev === 'installing' || prev === 'checking')) {
+      toast('Update failed - see Settings for details', 'bad');
+    }
   });
 }
 setInterval(refreshInstanceElapsedTimes, 5000);

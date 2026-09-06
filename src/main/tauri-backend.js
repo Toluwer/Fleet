@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
+const downloader = require('./download');
 
 const logger = require('./logger');
 const store = require('./store');
@@ -158,6 +159,9 @@ function makeBackend(ctx) {
     downloadedPath: null,
     error: null,
     checkedAt: null,
+    received: null,
+    total: null,
+    percent: null,
   };
 
   function parseVersion(v) {
@@ -190,29 +194,86 @@ function makeBackend(ctx) {
     emit('updater:status', Object.assign({ ok: true }, updateState));
   }
 
+  const FEED_URL = 'https://github.com/Toluwer/Fleet/releases/latest/download/latest.yml';
+
+  async function fetchFeed() {
+    try {
+      const res = await downloader.getToBuffer(FEED_URL, { retries: 2 });
+      return res.body.toString('utf8');
+    } catch (httpsErr) {
+      // Some networks behave differently per stack; the small file also works
+      // through the platform fetch, so try it before giving up.
+      const res = await fetch(FEED_URL, { headers: { 'User-Agent': 'Fleet-Updater' } });
+      if (!res.ok) {
+        throw new Error(`Update feed unavailable (HTTP ${res.status}) — caused by: ${downloader.describeError(httpsErr)}`);
+      }
+      return res.text();
+    }
+  }
+
+  /** Stream-hash a file without loading it into memory. */
+  function hashFile(file, algo) {
+    return new Promise((resolve, reject) => {
+      const hash = crypto.createHash(algo || 'sha512');
+      const stream = fs.createReadStream(file);
+      stream.on('data', (c) => hash.update(c));
+      stream.on('error', reject);
+      stream.on('end', () => resolve(hash.digest('base64')));
+    });
+  }
+
   async function downloadUpdate(latest) {
     const asset = latest.url || latest.path || 'FleetInstaller.exe';
     const url = /^https?:\/\//i.test(asset)
       ? asset
       : `https://github.com/Toluwer/Fleet/releases/latest/download/${asset}`;
-    const target = path.join(userData, 'updates', 'FleetInstaller.exe');
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    const res = await fetch(url, { headers: { 'User-Agent': 'Fleet-Updater' } });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (latest.size && buf.length !== Number(latest.size)) throw new Error('Downloaded installer size did not match latest.yml.');
-    // Verify the signed digest published in latest.yml BEFORE writing anything
-    // to disk or executing it — a mismatched download is never run.
-    const expected = normalizeDigest(latest.sha512);
-    if (expected) {
-      const actual = crypto.createHash('sha512').update(buf).digest('base64');
+    const dir = path.join(userData, 'updates');
+    fs.mkdirSync(dir, { recursive: true });
+    const target = path.join(dir, 'FleetInstaller.exe');
+    const part = target + '.part';
+
+    updateState.received = null;
+    updateState.total = null;
+    updateState.percent = null;
+    let lastEmit = 0;
+    const onProgress = (p) => {
+      updateState.received = p.received;
+      updateState.total = p.total;
+      updateState.percent = p.percent;
+      const now = Date.now();
+      if (now - lastEmit >= 300 || p.percent === 100) { lastEmit = now; emitUpdate(); }
+    };
+
+    // Resilient download: streams to disk, resumes interrupted partials via
+    // Range, retries transient failures, honors HTTPS_PROXY, and cannot be
+    // killed by a whole-body timeout the way the old fetch path was.
+    try {
+      await downloader.downloadToFile(url, part, { onProgress });
+    } catch (err) {
+      updateState.received = null;
+      updateState.total = null;
+      updateState.percent = null;
+      throw new Error(`${err && err.message ? err.message : String(err)}. The download can also be finished in your browser from the releases page.`);
+    }
+
+    // Verify the signed digest published in latest.yml BEFORE writing the
+    // final file or executing anything — a mismatched download is never run.
+    try {
+      const size = fs.statSync(part).size;
+      if (latest.size && size !== Number(latest.size)) {
+        throw new Error('Downloaded installer size did not match latest.yml.');
+      }
+      const expected = normalizeDigest(latest.sha512);
+      if (!expected) throw new Error('Update feed did not publish a checksum for the installer, so it cannot be verified.');
+      const actual = await hashFile(part);
       if (normalizeDigest(actual) !== expected) {
         throw new Error('Downloaded installer failed checksum verification and was discarded.');
       }
-    } else {
-      throw new Error('Update feed did not publish a checksum for the installer, so it cannot be verified.');
+      fs.renameSync(part, target);
+    } catch (err) {
+      try { fs.unlinkSync(part); } catch (_) { /* already gone */ }
+      throw err;
     }
-    fs.writeFileSync(target, buf);
     return target;
   }
 
@@ -233,10 +294,11 @@ function makeBackend(ctx) {
   async function checkForUpdate() {
     updateState.state = 'checking';
     updateState.error = null;
+    updateState.received = null;
+    updateState.total = null;
+    updateState.percent = null;
     emitUpdate();
-    const res = await fetch('https://github.com/Toluwer/Fleet/releases/latest/download/latest.yml', { headers: { 'User-Agent': 'Fleet-Updater' } });
-    if (!res.ok) throw new Error('Update feed unavailable (HTTP ' + res.status + ').');
-    const latest = readLatestYml(await res.text());
+    const latest = readLatestYml(await fetchFeed());
     updateState.checkedAt = new Date().toISOString();
     updateState.latestVersion = latest.version || null;
     updateState.url = latest.url || latest.path || 'FleetInstaller.exe';
@@ -254,6 +316,31 @@ function makeBackend(ctx) {
     return Object.assign({ ok: true }, updateState);
   }
 
+  /** Runs the whole update flow and reports every step via updater:status. */
+  async function installUpdate() {
+    try {
+      if (updateState.state !== 'available' && updateState.state !== 'downloaded') {
+        await checkForUpdate();
+        if (updateState.state !== 'available' && updateState.state !== 'downloaded') return; // current / nothing to do
+      }
+      updateState.state = 'downloading';
+      updateState.error = null;
+      emitUpdate();
+      updateState.downloadedPath = await downloadUpdate(updateState);
+      updateState.state = 'installing';
+      emitUpdate();
+      const child = spawn(updateState.downloadedPath, [], { detached: true, stdio: 'ignore', windowsHide: true });
+      child.unref();
+    } catch (err) {
+      updateState.state = 'error';
+      updateState.error = (err && err.message) || String(err);
+      updateState.received = null;
+      updateState.total = null;
+      updateState.percent = null;
+      emitUpdate();
+    }
+  }
+
   const handlers = {
     async app_status() { return buildStatus(); },
     async updater_status() { return Object.assign({ ok: true }, updateState); },
@@ -262,18 +349,14 @@ function makeBackend(ctx) {
       catch (err) { updateState.state = 'error'; updateState.error = (err && err.message) || String(err); emitUpdate(); return Object.assign({ ok: false }, updateState); }
     },
     async updater_install() {
-      try {
-        if (updateState.state !== 'available' && updateState.state !== 'downloaded') await checkForUpdate();
-        if (updateState.state === 'current') return Object.assign({ ok: false, error: 'Fleet is already up to date.' }, updateState);
-        updateState.state = 'downloading'; updateState.error = null; emitUpdate();
-        updateState.downloadedPath = await downloadUpdate(updateState);
-        updateState.state = 'installing'; emitUpdate();
-        const child = spawn(updateState.downloadedPath, [], { detached: true, stdio: 'ignore', windowsHide: true });
-        child.unref();
-        return Object.assign({ ok: true }, updateState);
-      } catch (err) {
-        updateState.state = 'error'; updateState.error = (err && err.message) || String(err); emitUpdate(); return Object.assign({ ok: false }, updateState);
+      if (updateState.state === 'downloading' || updateState.state === 'installing') {
+        return Object.assign({ ok: false, error: 'An update is already in progress.' }, updateState);
       }
+      // Fire and forget: the download can take minutes, so the IPC call must
+      // not hold the renderer's API timeout hostage. Progress and completion
+      // arrive through updater:status events instead.
+      installUpdate();
+      return Object.assign({ ok: true }, updateState);
     },
     async roblox_detect() {
       const settings = store.getSettings();
