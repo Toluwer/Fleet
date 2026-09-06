@@ -20,3 +20,4 @@ test/*.png
 # OS
 Thumbs.db
 Desktop.ini
+audit-output/

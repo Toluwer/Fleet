@@ -1,0 +1,41 @@
+name: Installer UI Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      installer_url:
+        description: 'FleetInstaller.exe URL to audit'
+        default: 'https://github.com/Toluwer/Fleet/releases/download/v1.5.3/FleetInstaller.exe'
+        required: false
+      expected_sha512:
+        description: 'Expected SHA-512 (optional integrity gate)'
+        default: ''
+        required: false
+
+jobs:
+  audit:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run installer UI audit
+        shell: powershell
+        run: |
+          $url = '${{ github.event.inputs.installer_url }}'
+          $hash = '${{ github.event.inputs.expected_sha512 }}'
+          if ([string]::IsNullOrWhiteSpace($url)) {
+            ./scripts/audit-installer-ui.ps1
+          } elseif ([string]::IsNullOrWhiteSpace($hash)) {
+            ./scripts/audit-installer-ui.ps1 -InstallerUrl $url
+          } else {
+            ./scripts/audit-installer-ui.ps1 -InstallerUrl $url -ExpectedSha512 $hash
+          }
+
+      - name: Upload audit output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-ui-audit
+          path: audit-output/
+          if-no-files-found: warn
