@@ -150,12 +150,23 @@ function fmtNum(n) {
 /* ----------------------------- Toasts ----------------------------- */
 function toast(message, type) {
   const wrap = $('#toasts');
+  // Keep at most four stacked toasts so a burst of events can't pile up.
+  while (wrap.children.length >= 4) wrap.firstElementChild.remove();
   const t = document.createElement('div');
   t.className = 'toast ' + (type === 'bad' ? 'bad' : type === 'good' ? 'good' : '');
   const ic = type === 'bad' ? 'alert-circle' : type === 'good' ? 'check-circle' : 'box';
-  t.innerHTML = `<svg class="t-ico"><use href="#i-${ic}"/></svg><span>${esc(message)}</span>`;
+  t.innerHTML = `<svg class="t-ico"><use href="#i-${ic}"/></svg><span>${esc(message)}</span>`
+    + `<button class="toast-x" type="button" aria-label="Dismiss notification" data-tip="Dismiss"><svg class="tx-ico"><use href="#i-x"/></svg></button>`;
+  const dismiss = () => {
+    if (!t.isConnected) return;
+    t.style.transition = 'opacity .25s, transform .25s';
+    t.style.opacity = '0';
+    t.style.transform = 'translateY(8px)';
+    setTimeout(() => t.remove(), 260);
+  };
+  t.querySelector('.toast-x').addEventListener('click', dismiss);
   wrap.appendChild(t);
-  setTimeout(() => { t.style.transition = 'opacity .25s, transform .25s'; t.style.opacity = '0'; t.style.transform = 'translateY(8px)'; setTimeout(() => t.remove(), 260); }, 3400);
+  setTimeout(dismiss, 3400);
 }
 
 /* ----------------------------- Modal ----------------------------- */
@@ -309,6 +320,18 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (ctxmenu.style.display === 'block') { hideContextMenu(); hideTip(); e.preventDefault(); return; }
   if ($('#modal-back').classList.contains('open')) { hideTip(); cancelModal(); e.preventDefault(); }
+});
+
+/* Ctrl+1..9 jumps straight to a rail section, numbered top to bottom. */
+document.addEventListener('keydown', (e) => {
+  if (!e.ctrlKey || e.altKey || e.shiftKey || e.metaKey) return;
+  const n = parseInt(e.key, 10);
+  if (!(n >= 1 && n <= 9)) return;
+  const target = document.querySelectorAll('#nav button[data-view]')[n - 1];
+  if (!target) return;
+  e.preventDefault();
+  if (target.dataset.view === 'people') state.people.route = 'home';
+  setView(target.dataset.view);
 });
 
 /* ----------------------------- Tooltips ----------------------------- */
@@ -2027,6 +2050,7 @@ views.help = function () {
         <li><b>Focus</b> brings a client's window to the front. <b>Restart</b> relaunches it. <b>End</b> closes it.</li>
         <li><b>End all</b> closes every client; <b>Cleanup</b> also clears leftover Roblox crash-handler processes.</li>
         <li>Right-click any client for the same actions plus <b>Copy PID</b>.</li>
+        <li>Keyboard: <b>Ctrl+1</b> through <b>Ctrl+9</b> jump straight to a section, and <b>Esc</b> closes any dialog.</li>
       </ul>
 
       <h2>Troubleshooting</h2>

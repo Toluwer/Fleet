@@ -606,9 +606,14 @@ textarea { resize: vertical; min-height: 70px; }
 
 /* ----------------------------- Toast ----------------------------- */
 .toasts { position: fixed; bottom: 22px; right: 22px; z-index: 140; display: flex; flex-direction: column; gap: 11px; }
-.toast { background: var(--ink); color: var(--on-ink); padding: 13px 17px; border-radius: var(--r); box-shadow: var(--sh-lg);
+.toast { background: var(--ink); color: var(--on-ink); padding: 13px 15px 13px 17px; border-radius: var(--r); box-shadow: var(--sh-lg);
   font-size: 13px; display: flex; align-items: center; gap: 11px; min-width: 240px; max-width: 380px; animation: toastIn .26s var(--ease); }
 .toast .t-ico { width: 17px; height: 17px; flex: none; }
+.toast > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.toast-x { border: 0; background: transparent; color: inherit; opacity: .6; width: 24px; height: 24px; flex: none;
+  display: grid; place-items: center; border-radius: 7px; cursor: pointer; transition: opacity .14s, background .14s; }
+.toast-x:hover { opacity: 1; background: color-mix(in srgb, currentColor 16%, transparent); }
+.toast-x .tx-ico { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
 .toast.good .t-ico { color: var(--success-text); }
 .toast.bad { background: #7a1c1c; color: #fff; }
 .toast.bad .t-ico { color: #ffd0d0; }
