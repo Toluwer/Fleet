@@ -1894,10 +1894,11 @@ Section Install
     !insertmacro NSIS_HOOK_POSTINSTALL
   !endif
 
-  ; Auto close this page for passive mode
-  ${If} $PassiveMode = 1
-    SetAutoClose true
-  ${EndIf}
+  ; Fleet has no visible stock Next button, and the NSIS page manager only
+  ; walks from the PWP_COMPLETED pseudo-page into the finish page when
+  ; autoclose is set - it reads the flag on page entry, so it must be set
+  ; before the sections end, not from .onInstSuccess (too late).
+  SetAutoClose true
 SectionEnd
 
 Function .onInstSuccess
