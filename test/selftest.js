@@ -323,7 +323,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && tauriConfig.app.windows.some(w => w.decorations === false && w.transparent === true && w.shadow === false && w.backgroundColor === '#00000000')
     && !tauriLibSource.includes('DWMWA_WINDOW_CORNER_PREFERENCE')
     && !tauriLibSource.includes('CreateRoundRectRgn')
-    && cssSource.includes('clip-path: inset(0 round 16px)')
+    && cssSource.includes('clip-path: inset(0 round 8px)')
     && indexSource.includes('class="window-shell"')
     && tauriBridgeSource.includes("toggleMaximize: () => windowCall('toggleMaximize')")
     && indexSource.includes('data-window-action="close"')
