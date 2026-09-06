@@ -258,21 +258,34 @@ function makeBackend(ctx) {
 
     // Verify the signed digest published in latest.yml BEFORE writing the
     // final file or executing anything — a mismatched download is never run.
-    try {
-      const size = fs.statSync(part).size;
-      if (latest.size && size !== Number(latest.size)) {
-        throw new Error('Downloaded installer size did not match latest.yml.');
+    // A corrupt partial can still resume "successfully" (sizes add up) and
+    // only fail verification, so a failed check retries once from scratch.
+    let verified = false;
+    for (let verifyAttempt = 0; verifyAttempt < 2 && !verified; verifyAttempt++) {
+      try {
+        if (verifyAttempt > 0) {
+          try { fs.unlinkSync(part); } catch (_) { /* already gone */ }
+          await downloader.downloadToFile(url, part, { onProgress });
+        }
+        const size = fs.statSync(part).size;
+        if (latest.size && size !== Number(latest.size)) {
+          throw new Error('Downloaded installer size did not match latest.yml.');
+        }
+        const expected = normalizeDigest(latest.sha512);
+        if (!expected) throw new Error('Update feed did not publish a checksum for the installer, so it cannot be verified.');
+        const actual = await hashFile(part);
+        if (normalizeDigest(actual) !== expected) {
+          throw new Error('Downloaded installer failed checksum verification and was discarded.');
+        }
+        verified = true;
+        fs.renameSync(part, target);
+      } catch (err) {
+        if (verifyAttempt > 0) {
+          try { fs.unlinkSync(part); } catch (_) { /* already gone */ }
+          throw err;
+        }
+        logger.warn('Update verification failed, retrying from scratch:', err && err.message);
       }
-      const expected = normalizeDigest(latest.sha512);
-      if (!expected) throw new Error('Update feed did not publish a checksum for the installer, so it cannot be verified.');
-      const actual = await hashFile(part);
-      if (normalizeDigest(actual) !== expected) {
-        throw new Error('Downloaded installer failed checksum verification and was discarded.');
-      }
-      fs.renameSync(part, target);
-    } catch (err) {
-      try { fs.unlinkSync(part); } catch (_) { /* already gone */ }
-      throw err;
     }
     return target;
   }
