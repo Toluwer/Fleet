@@ -838,6 +838,9 @@ textarea { resize: vertical; min-height: 70px; }
   :root { --space-page-x: 18px; --space-page-y: 22px; --space-page-bottom: 34px; --space-card-x: 18px; }
   .content { padding-left: var(--space-page-x); padding-right: var(--space-page-x); }
   .toolbar, .row-split, .inline, .acct .acct-actions, .game-actions { flex-wrap: wrap; }
+  .p-foot, .watch-row { flex-wrap: wrap; }
+  .w-game { flex: 1 1 120px; }
+  .p-item .p-hint { display: none; }
   .acct-grid, .games-grid, .people-grid, .stat-grid { grid-template-columns: 1fr; }
   .profile-hero, .now-playing { align-items: flex-start; flex-direction: column; }
   .profile-side { grid-template-columns: 1fr; }

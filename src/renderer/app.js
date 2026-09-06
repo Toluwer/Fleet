@@ -379,7 +379,7 @@ function paletteItems(query) {
     if (!gm || !gm.placeId) return;
     items.push({ icon: 'clock', label: 'Join ' + (gm.name || 'game'), hint: 'Recent', run: () => joinPlace(String(gm.placeId), gm.name) });
   });
-  // 4) Power actions.
+  // 5) Power actions.
   paletteActions().forEach(a => items.push(a));
   if (!query) return items.slice(0, 16);
   return items
