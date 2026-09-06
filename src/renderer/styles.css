@@ -118,8 +118,9 @@ svg.ico, svg.b-ico, svg.t-ico {
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ----------------------------- Layout ----------------------------- */
-/* The drag region spans the full bar behind the caption buttons (native
-   Win32 hit-testing), so only the buttons themselves are excluded. */
+/* Integrated frameless titlebar. The drag region spans the full bar behind
+   the caption buttons (like native Win32 hit-testing), so only the buttons
+   themselves are excluded from dragging. */
 .titlebar { height: 44px; display: grid; grid-template-columns: 1fr auto; align-items: start;
   background: transparent; border-bottom: 1px solid var(--hair); user-select: none; }
 .titlebar-drag { grid-column: 1 / -1; grid-row: 1; height: 100%; min-width: 0; display: flex; align-items: center; padding: 0 18px; cursor: default; }
@@ -137,6 +138,11 @@ body.window-maximized .window-controls .maximize-glyph { display: none; }
 body.window-maximized .window-controls .restore-glyph { display: block; }
 
 .app { display: grid; grid-template-columns: var(--rail-w) 1fr; height: calc(100% - 44px); }
+
+/* Rail footer - subtle version line where the app identity used to sit. */
+.rail-foot { padding: 10px 12px 2px; display: flex; align-items: center; gap: 8px;
+  color: var(--ink-4); font-size: 11px; font-weight: 550; letter-spacing: .02em; user-select: none; }
+.rail-foot .dot-live { width: 6px; height: 6px; border-radius: 50%; background: var(--warning); flex: none; }
 
 .rail {
   background: var(--rail); border-right: 1px solid var(--hair);
@@ -709,7 +715,7 @@ textarea { resize: vertical; min-height: 70px; }
 }
 @media (max-width: 940px) {
   :root { --rail-w: 72px; --space-page-x: 24px; --view-max-w: 100%; }
-  .brand .name, .nav .label, .nav .count { display: none; }
+  .nav .label, .nav .count, .rail-foot { display: none; }
   .nav button { justify-content: center; padding: 11px; }
   .profile-layout { grid-template-columns: 1fr; }
   .profile-side { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }

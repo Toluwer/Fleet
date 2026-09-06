@@ -2588,9 +2588,18 @@ async function copyDiagnostics() {
 }
 
 /* ----------------------------- Data + live updates ----------------------------- */
+function updateRailFoot() {
+  const el = $('#rail-foot');
+  if (!el) return;
+  const version = (state.status && state.status.appVersion) || '';
+  const updateReady = state.updater && (state.updater.state === 'ready' || state.updater.state === 'available');
+  el.title = updateReady ? `Fleet ${version} - update available` : `Fleet ${version}`;
+  el.innerHTML = `${updateReady ? '<span class="dot-live"></span>' : ''}<span>Fleet ${esc(version)}</span>`;
+}
 async function refreshStatus() {
   const r = await call(() => api.status(), null);
   if (r && r.ok) { state.status = r; state.settings = r.settings; }
+  updateRailFoot();
 }
 async function loadInstances() {
   const r = await call(() => api.instances.get(), { instances: [] });
@@ -2638,6 +2647,7 @@ if (api) {
   api.onAccountAdded(async () => { await loadAccounts(); if (state.view === 'accounts') views.accounts(); });
   api.onUpdaterStatus((status) => {
     state.updater = status;
+    updateRailFoot();
     if (state.view === 'settings') views.settings();
     if (status && status.state === 'ready') toast(`Fleet ${status.availableVersion || 'update'} is ready`, 'good');
   });
