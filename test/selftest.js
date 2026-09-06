@@ -871,6 +871,13 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     const paletteEvents = (js.match(/paletteRunIndex\(/g) || []).length;
     check('palette triggered from keyboard, digits and clicks', paletteEvents >= 3, paletteEvents + ' call sites');
 
+    // Activity watcher wiring.
+    check('eye icon in sprite and watch card rendered', html.includes('id="i-eye"') && js.includes('id="watch-card"') && /function renderWatchCard/.test(js));
+    check('watch list persisted with a cap', /WATCH_KEY/.test(js) && /WATCH_MAX = 20/.test(js));
+    check('watch poll detects join/switch via place change', /function watchJoinedGame/.test(js) && /prev\.pl/.test(js));
+    check('watch-toggle action handled', /case 'watch-toggle'/.test(js));
+    check('eye buttons on person cards and profiles', /btn sm icon watch/.test(js) && /profileHeroActions/.test(js));
+
     // Preserved behaviors.
     check('Escape still closes modal first when palette closed', /cancelModal\(\); e\.preventDefault\(\); \}/.test(js.replace(/\n/g, ' ')));
     check('toast cap of 4 stacked cards kept', /wrap\.children\.length >= 4/.test(js));

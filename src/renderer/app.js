@@ -360,7 +360,17 @@ function paletteItems(query) {
       updateLaunchCount();
     } });
   });
-  // 3) Favorite then recent games: Enter joins with the current selection.
+  // 3) Watched people: join straight in when they are in a game.
+  state.watch.list.forEach(w => {
+    const s = watchSnap[String(w.id)] || {};
+    const ingame = String(s.p || '').toLowerCase().includes('game');
+    if (ingame && s.pl) {
+      items.push({ icon: 'eye', label: 'Join ' + w.name, hint: 'Watching' + (s.gn ? ' — ' + s.gn : ''), run: () => openPersonJoinDialog(w.id, s.pl, s.gid, w.name) });
+    } else {
+      items.push({ icon: 'eye', label: w.name, hint: 'Watching — ' + (s.p || 'checking'), run: () => openPerson(String(w.id)) });
+    }
+  });
+  // 4) Favorite then recent games: Enter joins with the current selection.
   favGames().slice(0, 10).forEach(gm => {
     if (!gm || !gm.placeId) return;
     items.push({ icon: 'bookmark', label: 'Join ' + (gm.name || 'game'), hint: 'Favorite', run: () => joinPlace(String(gm.placeId), gm.name) });
@@ -773,6 +783,110 @@ function gameByPlaceId(placeId) {
     || favGames().find(g => String(g.placeId) === String(placeId))
     || recentGames().find(g => String(g.placeId) === String(placeId))
     || null;
+}
+
+/* ----------------------------- Activity watcher ----------------------------- */
+/* Watch up to 20 people across views; a background poll (works while the
+   window is hidden) toasts and records a notification the moment one of
+   them joins a game or switches games. The People home shows a live card
+   with one-click Join. Persisted locally; Roblox is only polled, never
+   written to. */
+const WATCH_KEY = 'fleet-watch-v1';
+const WATCH_MAX = 20;
+const WATCH_POLL_MS = 60000;
+state.watch = { list: [] };        // [{ id, name }]
+const watchSnap = {};              // id -> { p, gn, pl, gid } last known presence
+let watchBusy = false;
+function watchLoad() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(WATCH_KEY) || 'null');
+    if (raw && Array.isArray(raw)) {
+      state.watch.list = raw
+        .filter(w => w && (w.id || w.id === 0) && typeof w.name === 'string')
+        .map(w => ({ id: w.id, name: w.name })).slice(0, WATCH_MAX);
+    }
+  } catch (_) { /* start fresh */ }
+}
+function watchSave() {
+  try { localStorage.setItem(WATCH_KEY, JSON.stringify(state.watch.list)); } catch (_) { /* best-effort */ }
+}
+watchLoad();
+function isWatched(userId) { return state.watch.list.some(w => String(w.id) === String(userId)); }
+function toggleWatch(userId, name) {
+  const label = (name || 'User').trim() || 'User';
+  const idx = state.watch.list.findIndex(w => String(w.id) === String(userId));
+  let watching;
+  if (idx >= 0) { state.watch.list.splice(idx, 1); delete watchSnap[String(userId)]; watching = false; }
+  else {
+    if (state.watch.list.length >= WATCH_MAX) { toast(`Watch list is full (${WATCH_MAX})`, 'bad'); return null; }
+    state.watch.list.push({ id: userId, name: label });
+    watchSnap[String(userId)] = { p: 'Unknown', gn: '', pl: '', gid: '' };
+    watching = true;
+  }
+  watchSave();
+  renderWatchCard();
+  if (watching) watchTick();
+  return watching;
+}
+function watchSnapshot(p) {
+  return {
+    p: String(p && p.presence || 'Offline'),
+    gn: String(p && p.game && p.game.name || ''),
+    pl: String(p && p.game && p.game.placeId || ''),
+    gid: String(p && p.game && p.game.gameId || ''),
+  };
+}
+function watchJoinedGame(prev, next) {
+  const wasIn = String(prev.p || '').toLowerCase().includes('game');
+  const nowIn = String(next.p || '').toLowerCase().includes('game');
+  if (!nowIn) return false;
+  return !wasIn || String(prev.pl || '') !== String(next.pl || '');
+}
+async function watchTick() {
+  if (!api || watchBusy || !state.watch.list.length) return;
+  watchBusy = true;
+  const ids = state.watch.list.map(w => Number(w.id)).filter(n => Number.isFinite(n) && n > 0);
+  const r = ids.length ? await call(() => api.people.presence(ids), null, 12000) : null;
+  watchBusy = false;
+  if (!r || !r.ok || !Array.isArray(r.people)) return;
+  const byId = new Map(r.people.map(p => [String(p.userId), watchSnapshot(p)]));
+  state.watch.list.forEach(w => {
+    const snap = byId.get(String(w.id));
+    if (!snap) return;                       // Roblox did not report this user this round
+    const prev = watchSnap[String(w.id)];
+    watchSnap[String(w.id)] = snap;
+    if (prev && watchJoinedGame(prev, snap)) {
+      toast(`${w.name} is playing ${snap.gn || 'a game'}`, 'good');
+    }
+  });
+  renderWatchCard();
+}
+setInterval(watchTick, WATCH_POLL_MS);
+if (api && state.watch.list.length) setTimeout(watchTick, 5000);
+
+function renderWatchCard() {
+  const el = $('#watch-card');
+  if (!el) return;
+  const list = state.watch.list;
+  if (!list.length) { el.hidden = true; el.innerHTML = ''; return; }
+  el.hidden = false;
+  el.innerHTML = `
+    <div class="row-split" style="margin-bottom:10px">
+      <div style="font-weight:600;font-size:14px;display:flex;align-items:center;gap:8px">${icon('eye')} Watching <span class="nav count" style="background:var(--surface-3);color:var(--ink-3)">${list.length}</span></div>
+      <span class="hint">Alerts the moment they join a game</span>
+    </div>
+    <div class="watch-list">${list.map(w => {
+      const s = watchSnap[String(w.id)] || {};
+      const ingame = String(s.p || '').toLowerCase().includes('game');
+      const presenceText = ingame ? 'In game' : (s.p || 'Unknown');
+      return `<div class="watch-row">
+        <span class="presence ${presenceClass(s.p || '')}"><span class="pd"></span></span>
+        <button class="w-name" type="button" data-action="open-person" data-user="${esc(String(w.id))}" data-tip="Open profile">${esc(w.name)}</button>
+        <span class="w-game">${ingame && s.gn ? esc(s.gn) : esc(presenceText)}</span>
+        ${ingame && s.pl ? `<button class="btn sm primary" data-action="join-person" data-user="${esc(String(w.id))}" data-place="${esc(s.pl)}" data-game="${esc(s.gid)}" data-name="${esc(w.name)}">${icon('play')} Join</button>` : ''}
+        <button class="btn sm icon" data-action="watch-toggle" data-user="${esc(String(w.id))}" data-name="${esc(w.name)}" data-tip="Stop watching">${icon('x')}</button>
+      </div>`;
+    }).join('')}</div>`;
 }
 
 /* ----------------------------- Clipboard quick-join ----------------------------- */
@@ -1669,6 +1783,7 @@ function renderPeopleHome() {
       <button class="btn primary" data-action="people-search" ${search.loading ? 'disabled' : ''}>${search.loading ? '<span class="spinner"></span>' : icon('search')} Search</button>
     </div>
     <div class="section-title">Browse</div>
+    <div class="card pad watch-card" id="watch-card" hidden></div>
     <button class="people-entry" data-action="open-friends">
       <span class="people-entry-icon">${icon('users-group')}</span>
       <span><strong>Friends</strong><small>${pp.loaded ? `${fmtNum(pp.total)} unique friend${pp.total === 1 ? '' : 's'}` : 'Across all saved accounts'}</small></span>
@@ -1682,6 +1797,7 @@ function renderPeopleHome() {
     input.focus();
   }
   renderPeopleSearchResults();
+  renderWatchCard();
 }
 
 function personMatchesFilter(u) {
@@ -1736,7 +1852,9 @@ function personJoinButton(u, className) {
 }
 
 function personCardActions(u) {
+  const watched = isWatched(u.userId);
   return `${personJoinButton(u)}
+    <button class="btn sm icon watch${watched ? ' on' : ''}" data-action="watch-toggle" data-user="${esc(u.userId)}" data-name="${esc(u.displayName || u.username || '')}" data-tip="${watched ? 'Stop watching' : 'Watch for game activity'}">${icon('eye')}</button>
     <button class="btn sm icon" data-action="copy-user-id" data-user="${esc(u.userId)}" data-tip="Copy user ID">${icon('copy')}</button>
     <button class="btn sm" data-action="open-person" data-user="${esc(u.userId)}">View</button>`;
 }
@@ -1920,7 +2038,9 @@ function presenceChanged(before, after) {
 }
 
 function profileHeroActions(u) {
+  const watched = isWatched(u.userId);
   return `${personJoinButton(u, 'btn primary')}
+    <button class="btn${watched ? ' on' : ''}" data-action="watch-toggle" data-user="${esc(u.userId)}" data-name="${esc(u.displayName || u.username || '')}">${icon('eye')} ${watched ? 'Watching' : 'Watch'}</button>
     <button class="btn" data-action="ext-link" data-url="${esc(u.profileUrl || `https://www.roblox.com/users/${u.userId}/profile`)}">Open on Roblox</button>`;
 }
 
@@ -2370,6 +2490,12 @@ views.help = function () {
       <h2>Accounts</h2>
       <p>Accounts appear with avatar, name and presence. Fleet stores sessions locally and uses them for launch, follow, People search and join flows.</p>
 
+      <h2>Notifications and the command palette</h2>
+      <p>Every toast is kept in the <b>notification center</b> - the bell at the bottom of the rail shows an unread count and opens recent events with timestamps. Press <b>Ctrl+K</b> for the <b>command palette</b>: type to fuzzy-search sections, accounts, favorites, recent games, watched people and power actions (update check, arrange, end all, cleanup, theme, diagnostics), then run one with <b>Enter</b> or its <b>1-9</b> digit.</p>
+
+      <h2>Watch people</h2>
+      <p>On <b>People</b>, the eye button on any card or profile watches that person. A background poll (it works while the window is hidden) toasts the moment they join or switch games, and the People home shows a Watching card with a one-click <b>Join</b>. Up to 20 people, stored locally.</p>
+
       <h2>Sessions and appearance</h2>
       <p>On <b>Instances</b>, <b>Save current setup</b> stores the selected accounts, game/server target, and optional window arrangement for one-click reuse. In <b>Settings · Appearance</b>, choose System, Light, or Dark.</p>
 
@@ -2381,7 +2507,7 @@ views.help = function () {
         <li><b>Focus</b> brings a client's window to the front. <b>Restart</b> relaunches it. <b>End</b> closes it.</li>
         <li><b>End all</b> closes every client; <b>Cleanup</b> also clears leftover Roblox crash-handler processes.</li>
         <li>Right-click any client for the same actions plus <b>Copy PID</b>.</li>
-        <li>Keyboard: <b>Ctrl+1</b> through <b>Ctrl+9</b> jump straight to a section, <b>/</b> focuses search on Games and People, and <b>Esc</b> closes any dialog. Fleet reopens the section you last used.</li>
+        <li>Keyboard: <b>Ctrl+K</b> opens the command palette, <b>Ctrl+1</b> through <b>Ctrl+9</b> jump straight to a section, <b>/</b> focuses search on Games and People, and <b>Esc</b> closes any dialog. Fleet reopens the section you last used.</li>
       </ul>
 
       <h2>Troubleshooting</h2>
@@ -2418,6 +2544,20 @@ document.addEventListener('click', async (e) => {
     }
     case 'goto-settings': setView('settings'); break;
     case 'goto-accounts': setView('accounts'); break;
+
+    case 'watch-toggle': {
+      const watching = toggleWatch(elAction.dataset.user, elAction.dataset.name);
+      if (watching === true) toast(`Watching ${elAction.dataset.name} for game activity`, 'good');
+      else if (watching === false) toast('Stopped watching ' + (elAction.dataset.name || 'user'));
+      // Refresh eye buttons in place (cards + profile hero) without a re-render.
+      document.querySelectorAll(`[data-action="watch-toggle"][data-user="${CSS.escape(String(elAction.dataset.user))}"]`).forEach(btn => {
+        const on = watching === true;
+        btn.classList.toggle('on', on);
+        if (btn.classList.contains('icon')) btn.setAttribute('data-tip', on ? 'Stop watching' : 'Watch for game activity');
+        else { btn.innerHTML = `${icon('eye')} ${on ? 'Watching' : 'Watch'}`; }
+      });
+      break;
+    }
 
     case 'notif-clear': {
       notifStore.list = [];
