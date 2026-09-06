@@ -28,14 +28,13 @@ jobs:
       - name: Run selftest
         run: npm run selftest
 
-      - name: Build installer (tauri build + NSIS)
+      # Builds the custom installer app + packs the portable distribution
+      # into it: dist/FleetInstaller.exe (self-extracting Win32 app).
+      - name: Build installer (portable dist + custom Win32 installer)
         run: npm run dist
 
       - name: Generate update feed (latest.yml with sha512)
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make-release.ps1
-
-      - name: Build portable zip
-        run: npm run build
 
       - name: Collect release assets
         shell: pwsh
@@ -70,10 +69,10 @@ jobs:
           name: fleet-windows-assets
           path: release-assets
 
-      - name: Run installer UI audit (screenshots every page)
+      - name: Run installer UI audit (real install + uninstall + screenshots)
         shell: powershell
         run: |
-          ./scripts/audit-installer-ui.ps1 -InstallerPath "release-assets/FleetInstaller.exe" -ExpectedSha512 skip
+          ./scripts/audit-installer-ui.ps1 -InstallerPath "release-assets/FleetInstaller.exe"
 
       - name: Upload audit output
         if: always()

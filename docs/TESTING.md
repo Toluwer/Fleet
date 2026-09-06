@@ -41,7 +41,7 @@ The live harnesses launch real Roblox clients. Run them only when it is acceptab
 | Games | Browse/search, category filtering, advanced server sorting, deep scan behavior. |
 | Instances | Process listing, focus/kill/restart API shape, keep-alive behavior. |
 | UI contract | Tauri bridge loading, theme behavior, saved sessions, text/markup checks. |
-| Packaging | Electron packages removed, custom frameless NSIS template configured, bundled Node and WebView2 bootstrap verified. |
+| Packaging | Electron packages removed, custom Win32 installer app configured, bundled Node and WebView2 bootstrap verified. |
 
 ## Multi-Instance Recipe
 
@@ -68,12 +68,13 @@ Installer layout:
 
 ```text
 Fleet.exe
-resources/node.exe
-_up_/src/main/...
+node.exe
+src/main/...
+uninstall.exe
 ```
 
 Both layouts must start the Node backend successfully.
 
-The installer contract also verifies that Fleet uses its custom full-window
-surface, omits the stock wizard pages, bundles `node.exe`, and emits the updater
-asset name `dist/FleetInstaller.exe`.
+The installer contract also verifies that Fleet uses its own Win32 application
+with real native controls (no owner-draw, no wizard pages), bundles
+`node.exe`, and emits the updater asset name `dist/FleetInstaller.exe`.

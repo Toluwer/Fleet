@@ -31,7 +31,9 @@ Roblox normally lets you run only **one** client at a time. Fleet works around t
 - **Light, dark, or system theme** — including matching native Windows window controls and readable semantic status colors in both palettes.
 - **Launch history**, **Diagnostics** with a live log, **Settings** that persist, and a built-in **Help** page.
 
-A clean custom top bar with the **native** Windows minimize / maximize / close buttons (no title-bar icon), an animated intro splash, smooth transitions, refined typography, and a light/dark monochrome aesthetic throughout.
+A clean custom top bar with the **native** Windows minimize / maximize / close buttons (no title-bar logo), an animated intro splash, smooth transitions, refined typography, and a light/dark monochrome aesthetic throughout.
+
+The installer is Fleet's own app too: it says **Hello!**, fades away, asks *where Fleet should live*, and installs with a real progress bar - all with genuine native Windows controls. No wizard pages, no fake drawn buttons.
 
 ## How multi-instance actually works
 
@@ -57,10 +59,10 @@ Build the portable distribution folder (requires the `dist` bundle step's Tauri 
 npm run build    # -> dist\Fleet (portable folder: Fleet.exe + node.exe + resources; zip it for distribution)
 ```
 
-Build the branded Tauri installer bundle:
+Build the custom installer (a real Win32 app, not a wizard):
 
 ```bash
-npm run dist     # -> dist\FleetInstaller.exe + src-tauri\target\release\bundle
+npm run dist     # -> dist\FleetInstaller.exe (self-extracting, built from installer/)
 ```
 
 Then: open **Accounts -> Add account** and sign in, go to **Instances**, choose **With account**, select one or more accounts, and click **Launch**. Or switch to **Signed out** and pick a number.

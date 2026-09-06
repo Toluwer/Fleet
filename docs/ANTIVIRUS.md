@@ -13,7 +13,7 @@ antivirus blocks a file.
 1. **No code-signing certificate.** Fleet is a free, personal project. A
    code-signing certificate (especially an EV certificate, which gets instant
    SmartScreen reputation) costs hundreds to thousands of dollars per year.
-   Unsigned NSIS-based installers get scrutinised far more heavily than signed
+   Unsigned custom installers get scrutinised far more heavily than signed
    ones, and "unsigned installer + unknown publisher" alone raises an engine's
    suspicion score.
 2. **The installer downloads and runs the WebView2 runtime** from Microsoft's

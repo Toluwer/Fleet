@@ -11,7 +11,7 @@
 
 | Concern | Choice | Notes |
 |---------|--------|-------|
-| Desktop shell | Tauri 2 | Rust app shell, native WebView2 renderer, NSIS installer. |
+| Desktop shell | Tauri 2 | Rust app shell, native WebView2 renderer. |
 | Renderer | Vanilla HTML/CSS/JS | Loaded from `src/renderer`; talks through `window.fleet`. |
 | Backend bridge | Rust Tauri commands | Commands in `src-tauri/src/lib.rs` proxy requests to the Node service host. |
 | Transitional service layer | Node.js | Existing service modules live in `src/main`. |
@@ -41,7 +41,7 @@ src/main/tauri-node-host.js
   accounts.js / launcher.js / native.js / processes.js / ...
 ```
 
-The Rust shell starts the Node host during Tauri setup. If the app is portable, the host is loaded from `src/main` next to `Fleet.exe`. If the app is installed by NSIS, the host is loaded from `_up_/src/main`. The launcher also supports both `node.exe` locations: side-by-side for portable builds and `resources/node.exe` for installer builds.
+The Rust shell starts the Node host during Tauri setup. The host is loaded from `src/main` next to `Fleet.exe` - the portable and installed layouts are identical (the custom installer extracts the portable distribution as-is). `node.exe` sits side-by-side with `Fleet.exe`.
 
 ## Packaging Layouts
 
@@ -54,16 +54,18 @@ src/main/tauri-node-host.js
 node_modules/koffi/...
 ```
 
-Installed NSIS build:
+Installed build (identical to portable - the custom installer extracts the
+portable distribution as-is, plus `uninstall.exe`):
 
 ```text
 Fleet.exe
-resources/node.exe
-_up_/src/main/tauri-node-host.js
-_up_/node_modules/koffi/...
+node.exe
+src/main/tauri-node-host.js
+node_modules/koffi/...
+uninstall.exe
 ```
 
-The app must keep both layouts working until the remaining Node service layer is ported to Rust.
+The app must keep this layout working until the remaining Node service layer is ported to Rust.
 
 ## Multi-Instance Mechanism
 

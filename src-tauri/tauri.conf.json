@@ -32,13 +32,8 @@
                              }
             },
     "bundle":  {
-                   "active":  true,
-                   "targets":  "nsis",
-                   "resources":  [
-                                     "../src/main",
-                                     "../node_modules/koffi",
-                                     "resources/node.exe"
-                                 ],
+                   "active":  false,
+                   "targets":  [],
                    "icon":  [
                                 "icons/32x32.png",
                                 "icons/128x128.png",
@@ -48,19 +43,8 @@
                             ],
                    "windows":  {
                                    "webviewInstallMode":  {
-                                                              "type":  "embedBootstrapper",
-                                                              "silent":  true
-                                                          },
-                                   "nsis":  {
-                                                "template":  "fleet-installer.nsi",
-                                                "installerIcon":  "icons/icon.ico",
-                                                "uninstallerIcon":  "icons/icon.ico",
-                                                "installMode":  "currentUser",
-                                                "languages":  [
-                                                                  "English"
-                                                              ],
-                                                "displayLanguageSelector":  false
-                                            }
+                                                              "type":  "downloadBootstrapper"
+                                                          }
                                }
                }
 }

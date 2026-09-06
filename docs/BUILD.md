@@ -21,7 +21,8 @@ Runtime:
 
 Build/dev:
 
-- `@tauri-apps/cli` for dev, release, portable, and NSIS installer builds.
+- `@tauri-apps/cli` for dev, release, and portable builds.
+- Rust (cargo) for the custom installer app in `installer/`.
 - Rust/Cargo for the Tauri shell.
 
 The app no longer uses Electron or electron-builder.
@@ -74,39 +75,49 @@ npm run dist
 Output:
 
 ```text
-src-tauri/target/release/bundle/nsis/Fleet_<version>_x64-setup.exe
 dist/FleetInstaller.exe
 ```
 
-Fleet uses a frameless, single-surface NSIS template with its own title bar,
-install location control, progress styling, and completion view. The stock
-welcome/directory/finish wizard pages are not shown.
+The installer is a custom Win32 application (see `installer/`), not an NSIS
+wizard. It is built with plain Rust + the Win32 API and every control on it is
+a real native Windows control (BUTTON / EDIT / STATIC / progress bar) with
+comctl32 v6 visual styles - nothing is owner-drawn and no chrome is faked.
 
-The installer is skinned to match the app's Obsidian theme (same palette,
-Segoe UI typography, `#2563eb` accent). The title bar uses the real Windows
-caption glyphs (Segoe MDL2 Assets) for minimize/close with live hover states
-(driven by an nsDialogs timer), input controls are themed with
-`DarkMode_Explorer`, and the uninstaller renders the same custom surface
-(`un.FleetConfirmPage` + dark progress) instead of the stock MUI wizard.
-`fleet-installer.nsi` contains literal Segoe MDL2 caption glyphs, so it must
-stay UTF-8 — tauri-bundler writes the rendered script with its own UTF-8 BOM
-(`write_utf8_with_bom`); do not add one to the template or makensis will see
-a double BOM and reject the first line.
+The flow it shows:
 
-Tauri's NSIS bundle installs resources under this layout:
+```text
+Hello! (fades away) -> Where should Fleet live? [path box + Browse]
+-> Confirm -> Ready to install [Install Fleet] -> progress -> done
+```
+
+`npm run dist` does three things:
+
+1. Builds the portable distribution (`dist/Fleet`) via `tauri build`.
+2. Builds the installer app: `cargo build --release` in `installer/`
+   (the Fleet version is injected through `FLEET_VERSION`).
+3. Packs the payload - the portable dist plus a payload-less
+   `uninstall.exe` and the WebView2 bootstrapper - into a zip and appends it
+   to the installer executable (`FLEETSTP` magic + offset trailer).
+
+Installed layout (same as portable, all in one folder):
 
 ```text
 Fleet.exe
-resources/node.exe
-_up_/src/main/...
-_up_/node_modules/koffi/...
+node.exe
+src/main/...
+node_modules/koffi/...
+uninstall.exe
 ```
 
-The Rust launcher supports both the portable layout and this installed layout.
-Node is bundled with Fleet, so installed users do not need a separate Node.js
-setup. The WebView2 bootstrapper is embedded in the installer and runs silently
-only when Windows does not already have the required runtime, so installing
-never stalls on a bootstrapper download.
+The installer writes the standard per-user uninstall entry
+(HKCU `...\Uninstall\Fleet`), Start Menu + optional Desktop shortcuts, and
+runs the WebView2 bootstrapper silently only when the runtime is missing, so
+installing never stalls on a bootstrapper download. `uninstall.exe` is the
+same app without a payload: it asks "Remove Fleet?", deletes the program
+files (optionally the saved accounts/settings), and cleans the registry.
+
+A `--demo` flag drives the whole flow automatically (used by the CI audit);
+`--path=` presets the install folder for automation.
 
 ## Publish a Release
 
@@ -187,8 +198,8 @@ Fleet/
   src-tauri/
     src/                    Rust Tauri shell and command bridge
     icons/                  committed Tauri app icons
-    tauri.conf.json         Tauri bundle configuration
-    fleet-installer.nsi     custom frameless NSIS installer
+    tauri.conf.json         Tauri build configuration
+  installer/                the custom Win32 installer app (cargo)
   docs/                     project documentation
   test/                     selftest, UI test, and live harnesses
 ```

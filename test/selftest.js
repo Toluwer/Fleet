@@ -376,8 +376,8 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && rendererSource.includes('function checkClipboardForGameLink(')
     && rendererSource.includes("case 'clip-use':"));
   check('Tauri installer output replaces legacy Electron installer customization',
-    tauriConfig.bundle.active === true
-    && !fs.existsSync(path.join(__dirname, '..', 'build', 'installer.nsh')));
+    !fs.existsSync(path.join(__dirname, '..', 'build', 'installer.nsh'))
+    && fs.existsSync(path.join(__dirname, '..', 'installer', 'src', 'main.rs')));
   check('Keep-alive auto-rejoins crashed clients with cooldown and strike-out',
     rendererSource.includes('function maybeKeepAlive(')
     && rendererSource.includes('KEEPALIVE_COOLDOWN_MS')
@@ -542,7 +542,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   check('Tauri bundle is configured for Fleet',
     tauriConfig.productName === 'Fleet'
     && tauriConfig.identifier === 'com.toluwa.fleet'
-    && tauriConfig.bundle.active === true);
+    && tauriConfig.bundle.active === false); // the custom installer app replaces bundling
 
   await section('Server intelligence and updater safety');
   const mockResponse = (status, data) => ({
@@ -584,49 +584,53 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && ipcSource.includes('FleetInstaller.exe')
     && ipcSource.includes("state = 'available'")
     && ipcSource.includes("state = 'installing'"));
-  const installerTemplate = fs.readFileSync(
-    path.join(__dirname, '..', 'src-tauri', 'fleet-installer.nsi'),
+  const installerMain = fs.readFileSync(
+    path.join(__dirname, '..', 'installer', 'src', 'main.rs'),
     'utf8',
   );
-  const nsisConfig = tauriConfig.bundle.windows.nsis;
-  check('Installer is frameless custom NSIS with bundled Node and WebView2 bootstrap',
-    tauriConfig.bundle.targets === 'nsis'
-    && tauriConfig.bundle.resources.includes('resources/node.exe')
-    && tauriConfig.bundle.windows.webviewInstallMode.type === 'embedBootstrapper'
-    && nsisConfig.template === 'fleet-installer.nsi'
-    && nsisConfig.installMode === 'currentUser'
-    && !Object.prototype.hasOwnProperty.call(nsisConfig, 'installerHooks')
-    && installerTemplate.includes('Function FleetCreateTitleBar')
-    && installerTemplate.includes('${NSD_RemoveStyle} $HWNDPARENT')
-    && installerTemplate.includes('Function FleetPrepareFullCanvas')
-    && !installerTemplate.includes('MUI_PAGE_WELCOME')
-    && !installerTemplate.includes('MUI_PAGE_DIRECTORY')
-    && !installerTemplate.includes('MUI_PAGE_FINISH'));
-  check('Installer matches the Fleet app theme with native caption buttons',
-    installerTemplate.includes('!define FLEET_ACCENT 0x2563EB')
-    && installerTemplate.includes('Segoe MDL2 Assets')
-    && installerTemplate.includes('Function FleetHoverPoll')
-    && installerTemplate.includes('DarkMode_Explorer')
-    && installerTemplate.includes('MUI_CUSTOMFUNCTION_GUIINIT FleetGuiInit'));
-  check('Installer progress page is a live Fleet surface, not a frozen wizard',
-    // raw Win32 statics on the wizard dialog - nsDialogs canvases never render
-    // on built-in pages and its page hook blocks the auto-advance to the
-    // finish page (v1.5.4 froze on the progress page because of it)
-    installerTemplate.includes('USER32::CreateWindowExW(i0,w"STATIC"')
-    && installerTemplate.includes('USER32::SetParent(p$FleetProgressBar,p$HWNDPARENT)')
-    && installerTemplate.includes('ShowWindow $FleetProgressDialog ${SW_HIDE}')
-    && installerTemplate.includes('Function FleetDestroyProgressSurface')
-    && installerTemplate.includes('Call FleetDestroyProgressSurface')
-    && installerTemplate.includes('Function FleetStatus')
-    && installerTemplate.includes('Call FleetStatus')
-    && !installerTemplate.includes('USER32::SetParent(p$FleetProgressBar,p$FleetDialog)')
-    && installerTemplate.includes('Keep using your PC - this window finishes by itself.'));
-  check('Uninstaller uses the same custom Fleet surface instead of the stock wizard',
-    installerTemplate.includes('UninstPage custom un.FleetConfirmPage')
-    && installerTemplate.includes('Function un.FleetConfirmPage')
-    && installerTemplate.includes('Function un.InstFilesShow')
-    && installerTemplate.includes('Function un.FleetStatus')
-    && !installerTemplate.includes('MUI_UNPAGE_CONFIRM'));
+  const installerBuild = fs.readFileSync(
+    path.join(__dirname, '..', 'installer', 'build.rs'),
+    'utf8',
+  );
+  const installerCargo = fs.readFileSync(
+    path.join(__dirname, '..', 'installer', 'Cargo.toml'),
+    'utf8',
+  );
+  const buildInstallerScript = fs.readFileSync(
+    path.join(__dirname, '..', 'scripts', 'build-installer.ps1'),
+    'utf8',
+  );
+  check('Installer is a real Win32 app, not a wizard',
+    tauriConfig.bundle.active === false
+    && !fs.existsSync(path.join(__dirname, '..', 'src-tauri', 'fleet-installer.nsi'))
+    && installerCargo.includes('name = "fleet-setup"')
+    && installerMain.includes('"Hello!"')
+    && installerMain.includes('"Where should Fleet live?"')
+    && installerMain.includes('"Confirm"')
+    && installerMain.includes('"Install Fleet"')
+    && installerMain.includes('"Change folder"')
+    && installerMain.includes('"Launch Fleet"'));
+  check('Installer uses only real native Windows controls (no drawn chrome)',
+    installerMain.includes('w!("BUTTON")')
+    && installerMain.includes('w!("EDIT")')
+    && installerMain.includes('w!("STATIC")')
+    && installerMain.includes('w!("msctls_progress32")')
+    && installerBuild.includes('Common-Controls')
+    && installerBuild.includes('PerMonitorV2')
+    && installerBuild.includes('asInvoker')
+    && !installerMain.includes('BS_OWNERDRAW')
+    && !installerMain.includes('WM_DRAWITEM')
+    && !installerMain.includes('WM_PAINT =>')); // (paint is just validation, never draws chrome)
+  check('Installer payload is a zip appended to the exe',
+    buildInstallerScript.includes("Compress-Archive")
+    && buildInstallerScript.includes('FLEETSTP')
+    && buildInstallerScript.includes('uninstall.exe')
+    && buildInstallerScript.includes('cargo build --release')
+    && buildInstallerScript.includes('WebView2Setup.exe'));
+  check('Uninstaller is the same app without a payload',
+    installerMain.includes('--uninstall')
+    && installerMain.includes('"Remove Fleet?"')
+    && installerMain.includes('"Fleet is gone."'));
   check('Joining a person passes numeric ids to Tauri (strict i64 deserialization)',
     tauriBridgeSource.includes('function coerceNumber(value)')
     && tauriBridgeSource.includes("invokeWithNumbers('launch_join_person_multi', ['targetUserId']")

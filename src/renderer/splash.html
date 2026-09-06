@@ -19,15 +19,6 @@
 
     .center { text-align: center; }
 
-    /* Animated mark: three bars sliding up into a stack, then a sweep */
-    .mark { width: 64px; height: 64px; margin: 0 auto 22px; position: relative; }
-    .mark .bar { position: absolute; left: 50%; border-radius: 6px; background: var(--ink);
-      transform: translateX(-50%) translateY(14px); opacity: 0; }
-    .mark .b1 { bottom: 6px; width: 46px; height: 12px; background: #3f1820; animation: rise .55s .15s cubic-bezier(.2,.8,.2,1) forwards; }
-    .mark .b2 { bottom: 24px; width: 38px; height: 12px; background: #67202d; animation: rise .55s .27s cubic-bezier(.2,.8,.2,1) forwards; }
-    .mark .b3 { bottom: 42px; width: 30px; height: 12px; background: var(--accent); animation: rise .55s .39s cubic-bezier(.2,.8,.2,1) forwards; }
-    @keyframes rise { to { transform: translateX(-50%) translateY(0); opacity: 1; } }
-
     .word { font-size: 30px; font-weight: 600; letter-spacing: -.02em; color: var(--ink);
       display: inline-flex; overflow: hidden; }
     .word span { display: inline-block; transform: translateY(105%); opacity: 0;
@@ -52,7 +43,6 @@
 <body>
   <div class="stage">
     <div class="center">
-      <div class="mark"><span class="bar b1"></span><span class="bar b2"></span><span class="bar b3"></span></div>
       <div class="word"><span>F</span><span>l</span><span>e</span><span>e</span><span>t</span></div>
       <div class="tag">Roblox multi-launcher</div>
       <div class="track"></div>
