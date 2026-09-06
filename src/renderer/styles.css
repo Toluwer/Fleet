@@ -161,7 +161,7 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 .nav button.active .count { background: color-mix(in srgb, var(--on-ink) 15%, transparent); color: var(--on-ink); }
 .nav button .ico { width: 18px; height: 18px; flex: none; opacity: .92; }
 .nav .label { flex: 1; }
-.nav .count { font-size: 11px; font-weight: 600; color: var(--ink-3); background: var(--surface-3);
+.nav .count { font-size: 11px; font-weight: 600; line-height: 1.25; color: var(--ink-3); background: var(--surface-3);
   border-radius: var(--r-pill); padding: 1px 8px; min-width: 22px; text-align: center; font-variant-numeric: tabular-nums; }
 
 .rail .spacer { flex: 1; }
@@ -289,7 +289,7 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 .presence .pd { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-4); }
 .presence.online .pd { background: var(--success); }
 .presence.ingame .pd { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
-.acct .acct-actions { display: flex; gap: 7px; }
+.acct .acct-actions { display: flex; gap: 7px; margin-top: auto; flex-wrap: wrap; }
 
 /* Avatar chips (launch selector) */
 .chips { display: flex; gap: 9px; flex-wrap: wrap; }
@@ -338,7 +338,8 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 .stat-value { font-size: 24px; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 .stat-label { font-size: 12px; color: var(--ink-3); margin-top: 3px; text-transform: uppercase; letter-spacing: .05em; }
 .stat-sub { font-size: 11.5px; color: var(--ink-3); margin-top: 4px; }
-.stat-cells { display: flex; gap: 18px; font-variant-numeric: tabular-nums; font-size: 12.5px; color: var(--ink-2); }
+.stat-cells { display: flex; gap: 18px; font-variant-numeric: tabular-nums; font-size: 12.5px; color: var(--ink-2); justify-content: flex-end; }
+.stat-cells span, .stat-cells b { width: 58px; text-align: right; }
 .stat-cells b { color: var(--ink); }
 .stat-cols { font-size: 11px; color: var(--ink-4); font-weight: 400; margin-left: 8px; text-transform: none; letter-spacing: 0; }
 .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--success); margin-right: 7px; }
@@ -366,7 +367,7 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 .btn.fav.on svg { fill: currentColor; }
 .games-cats { display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 14px; }
 .games-cats[hidden] { display: none; }
-.cat-chip { display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border: 1px solid var(--hair-2);
+.cat-chip { display: inline-flex; align-items: center; gap: 7px; padding: 0 12px; min-height: 30px; border: 1px solid var(--hair-2);
   border-radius: 999px; background: var(--surface); color: var(--ink-2); font: inherit; font-size: 12.5px; font-weight: 500;
   cursor: pointer; white-space: nowrap; transition: border-color .14s var(--ease), color .14s var(--ease), background .14s var(--ease); }
 .cat-chip:hover { border-color: var(--ink-3); color: var(--ink); }
@@ -392,9 +393,10 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 .game-meta > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .game-meta .likes { display: inline-flex; align-items: center; gap: 4px; flex: none; }
 .game-meta svg { width: 13px; height: 13px; flex: none; }
-.game-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; min-width: 0; }
-.game-actions .btn.primary { flex: 1 1 auto; min-width: 88px; }
-.game-actions .btn { flex-shrink: 0; }
+.game-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; min-width: 0; }
+.game-actions .btn { min-height: 30px; }
+.game-actions .btn.icon { width: 30px; min-height: 30px; padding: 0; }
+.game-actions .btn.primary { flex: 1 1 auto; min-width: 72px; }
 .games-end { grid-column: 1 / -1; text-align: center; color: var(--ink-3); font-size: 12.5px; padding: 18px; }
 
 /* Server browser */
@@ -403,7 +405,7 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 .server-tool-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .server-tool-head .seg-wrap { flex: 1; }
 .seg-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
-.seg-chip { padding: 6px 12px; border: 1px solid var(--hair-2); border-radius: 999px; background: var(--surface);
+.seg-chip { padding: 0 12px; min-height: 30px; display: inline-flex; align-items: center; border: 1px solid var(--hair-2); border-radius: 999px; background: var(--surface);
   color: var(--ink-2); font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer; white-space: nowrap;
   transition: border-color .14s var(--ease), color .14s var(--ease), background .14s var(--ease); }
 .seg-chip:hover { border-color: var(--ink-3); color: var(--ink); }
@@ -483,6 +485,7 @@ table.data td .mono, table.data td.mono { font-family: var(--mono); color: var(-
 .hint { color: var(--ink-3); font-size: 12.5px; line-height: 1.45; margin: 0; }
 .field .hint { color: var(--ink-3); font-size: 12.5px; margin-top: 6px; }
 .field .err { color: var(--danger); font-size: 12.5px; margin-top: 6px; }
+input[type=checkbox] { accent-color: var(--accent); margin: 0; }
 input[type=text], input[type=number], textarea, select {
   width: 100%; padding: 10px 13px; border: 1px solid var(--hair-2); border-radius: var(--r-sm); font: inherit;
   color: var(--ink); background: var(--surface); transition: border-color .15s var(--ease), box-shadow .15s var(--ease); }
@@ -490,11 +493,15 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 textarea { resize: vertical; min-height: 70px; }
 .inline { display: flex; gap: 10px; align-items: center; }
 
+/* Segmented controls share the sm-button height so rows that mix
+   .btn.sm and a segmented control (Sessions, log filter, People tools)
+   keep one visual baseline. */
 .segmented { display: inline-flex; border: 1px solid var(--hair-2); border-radius: var(--r-sm); overflow: hidden; background: var(--surface); }
-.segmented button { border: 0; background: transparent; padding: 8px 16px; font: inherit; font-weight: 550; color: var(--ink-2); cursor: pointer; transition: all .15s var(--ease); }
+.segmented button { border: 0; background: transparent; padding: 0 14px; min-height: var(--control-h-sm); display: inline-flex; align-items: center;
+  font: inherit; font-weight: 550; color: var(--ink-2); cursor: pointer; transition: all .15s var(--ease); }
 .segmented button + button { border-left: 1px solid var(--hair); }
 .segmented button.on { background: var(--accent); color: var(--on-ink); }
-.segmented.compact button { padding: 6px 10px; font-size: 11.5px; }
+.segmented.compact button { padding: 0 10px; min-height: 28px; font-size: 11.5px; }
 
 .toggle { position: relative; width: 42px; height: 24px; flex: none; }
 .toggle input { opacity: 0; width: 0; height: 0; }
@@ -504,7 +511,7 @@ textarea { resize: vertical; min-height: 70px; }
 .toggle input:checked + .track { background: var(--accent); }
 .toggle input:checked + .track::before { transform: translateX(18px); }
 
-.setting { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding: 16px 0; border-bottom: 1px solid var(--hair); }
+.setting { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 15px 0; border-bottom: 1px solid var(--hair); }
 .setting:last-child { border-bottom: 0; }
 .setting .s-label { font-weight: 550; }
 .setting > div:first-child { flex: 1; min-width: 0; }
@@ -541,9 +548,9 @@ textarea { resize: vertical; min-height: 70px; }
 .logline.error .lv { color: var(--danger); }
 .logline .m { color: var(--ink); white-space: pre-wrap; word-break: break-word; }
 .logline .m small { color: var(--ink-3); }
-.kv { display: grid; grid-template-columns: 170px 1fr; gap: 8px 18px; font-size: 13px; }
-.kv .k { color: var(--ink-3); }
-.kv .v { color: var(--ink); font-family: var(--mono); font-size: 12px; word-break: break-all; }
+.kv { display: grid; grid-template-columns: 172px 1fr; gap: 8px 18px; font-size: 13px; }
+.kv .k { color: var(--ink-3); overflow-wrap: anywhere; }
+.kv .v { color: var(--ink); font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 
 /* ----------------------------- Tooltip ----------------------------- */
 /* JS-positioned tooltip (see positionTip in app.js) — fixed-position so it
