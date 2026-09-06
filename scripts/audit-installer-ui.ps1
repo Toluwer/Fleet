@@ -125,6 +125,26 @@ function Find-Child([IntPtr]$root, [string]$textMatch) {
     return $script:found
 }
 
+# Find ALL children matching text, return the bottom-most (largest top coord).
+# Needed because heading and action button can share the same text.
+function Find-ChildBottom([IntPtr]$root, [string]$textMatch) {
+    $script:matches = @()
+    $cb = {
+        param([IntPtr]$h, [IntPtr]$lp)
+        $t = Get-WinText $h
+        if ($t -and $t.Trim() -eq $textMatch) {
+            $r = Get-WinRect $h
+            $script:matches += [pscustomobject]@{ H = $h; Top = $r.T; Rect = $r }
+        }
+        return $true
+    }
+    [void][WinCap]::EnumChildWindows($root, $cb, [IntPtr]::Zero)
+    if ($script:matches.Count -eq 0) { return [IntPtr]::Zero }
+    $sorted = $script:matches | Sort-Object -Property Top -Descending
+    Log ("matches for '{0}': {1} -> picking bottom-most at y={2}" -f $textMatch, $script:matches.Count, $sorted[0].Top)
+    return $sorted[0].H
+}
+
 function Click-Control([IntPtr]$h) {
     $r = Get-WinRect $h
     $cx = [int](($r.R - $r.L) / 2); $cy = [int](($r.B - $r.T) / 2)
@@ -189,24 +209,33 @@ Start-Sleep -Seconds 1
 [void](Capture-Window $main (Join-Path $Out '01b_install_page.png'))
 Capture-FullScreen (Join-Path $Out '01c_fullscreen.png')
 
-# ---- 5. click Install
-$install = Find-Child $main 'Install Fleet'
-if ($install -eq [IntPtr]::Zero) { $install = Find-Child $main 'Install' }
-if ($install -eq [IntPtr]::Zero) { $install = Find-Child $main 'Update Fleet' }
+# ---- 5. click Install (bottom-most match: the button, not the heading)
+$install = Find-ChildBottom $main 'Install Fleet'
+if ($install -eq [IntPtr]::Zero) { $install = Find-ChildBottom $main 'Install' }
+if ($install -eq [IntPtr]::Zero) { $install = Find-ChildBottom $main 'Update Fleet' }
 if ($install -eq [IntPtr]::Zero) { Log 'ERROR: Install control not found'; Dump-Tree $main (Join-Path $Out 'controls_01_install.txt'); throw 'Install control not found' }
 Log "Install control: $install rect=$((Get-WinRect $install).L),$((Get-WinRect $install).T) $((Get-WinRect $install).R - (Get-WinRect $install).L)x$((Get-WinRect $install).B - (Get-WinRect $install).T)"
 Click-Control $install
 
-# ---- 6. progress: poll & capture
+# ---- 6. progress: poll & capture (fast poll so we catch the install page transition)
 $finish = $false
 $progressShots = 0
+$pageChanged = $false
 $deadline = (Get-Date).AddSeconds(150)
 while ((Get-Date) -lt $deadline) {
-    Start-Sleep -Seconds 3
+    Start-Sleep -Milliseconds 900
     $p.Refresh()
     if ($p.HasExited) { Log 'installer exited during progress!'; break }
-    if ($progressShots -eq 1) { Dump-Tree $main (Join-Path $Out 'controls_02_progress.txt') }
-    if ($progressShots -lt 6) {
+    if (-not $pageChanged) {
+        # the install page still shows the Browse button; once gone we are on progress
+        if ((Find-Child $main 'Browse') -eq [IntPtr]::Zero) {
+            $pageChanged = $true
+            Log 'progress page active'
+            Start-Sleep -Milliseconds 700
+            Dump-Tree $main (Join-Path $Out 'controls_02_progress.txt')
+        } else { continue }
+    }
+    if ($progressShots -lt 10) {
         [void](Capture-Window $main (Join-Path $Out ("02_progress_{0:d2}.png" -f $progressShots)))
         $progressShots++
     }
