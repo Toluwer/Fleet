@@ -238,7 +238,7 @@ function paletteActions() {
 function paletteItems(query) {
   const items = [];
   // 1) Rail sections (labels stay in sync with the nav).
-  document.querySelectorAll('#nav button[data-view]').forEach(btn => {
+  document.querySelectorAll('.nav button[data-view]').forEach(btn => {
     const label = (btn.querySelector('.label') || {}).textContent || btn.dataset.view;
     items.push({ icon: null, navIcon: btn.querySelector('svg.ico use').getAttribute('href').slice(3), label: 'Go to ' + label.trim(), hint: 'Section', run: () => { if (btn.dataset.view === 'people') state.people.route = 'home'; setView(btn.dataset.view); } });
   });
@@ -528,7 +528,7 @@ document.addEventListener('keydown', (e) => {
   const n = parseInt(e.key, 10);
   if (!(n >= 1 && n <= 9)) return;
   if (state.palette && state.palette.open) { e.preventDefault(); paletteRunIndex(n - 1); return; }
-  const target = document.querySelectorAll('#nav button[data-view]')[n - 1];
+  const target = document.querySelectorAll('.nav button[data-view]')[n - 1];
   if (!target) return;
   e.preventDefault();
   if (target.dataset.view === 'people') state.people.route = 'home';
@@ -621,19 +621,19 @@ let renderedView = null;
 function setView(name) {
   state.view = name;
   try { localStorage.setItem('fleet-last-view', name); } catch (_) { /* storage is best-effort */ }
-  document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
+  document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   (views[name] || views.instances)();
   renderedView = name;
   if (name === 'people') setTimeout(refreshVisiblePeoplePresence, 0);
 }
-$('#nav').addEventListener('click', (e) => {
+document.querySelectorAll('.nav').forEach(navEl => navEl.addEventListener('click', (e) => {
   const b = e.target.closest('button[data-view]');
   if (b) {
     if (b.dataset.view === state.view && renderedView === state.view && b.dataset.view !== 'people') return;
     if (b.dataset.view === 'people') state.people.route = 'home';
     setView(b.dataset.view);
   }
-});
+}));
 function mount(html, options) {
   const animate = !options || options.animate !== false;
   content.innerHTML = `<div class="view${animate ? ' view-enter' : ''}">${html}</div>`;
@@ -823,7 +823,7 @@ function sessionRows() {
       <div class="s-desc">${known.length} account${known.length === 1 ? '' : 's'} · ${esc(target)}${s.arrange ? ' · auto-arrange' : ''}${s.keepAlive ? ' · keep-alive' : ''}${esc(missing)}</div></div>
       <div class="s-control inline">
         <button class="btn sm primary" data-action="session-launch" data-id="${esc(s.id)}" ${known.length ? '' : 'disabled'}>${icon('play')} Launch</button>
-        <button class="btn sm icon" data-action="session-delete" data-id="${esc(s.id)}" data-tip="Delete this session">${icon('x')}</button>
+        <button class="btn sm icon ghost" data-action="session-delete" data-id="${esc(s.id)}" data-tip="Delete this session">${icon('x')}</button>
       </div></div>`;
   }).join('');
 }
@@ -833,15 +833,15 @@ views.instances = function () {
   let detection;
   if (s.robloxFound) {
     detection = `<div class="banner good"><svg class="b-ico"><use href="#i-check-circle"/></svg>
-      <div class="b-text"><b>Roblox detected</b><span>${esc(s.version || '')} · found via ${esc(s.source || '')}</span></div></div>`;
+      <div class="b-text"><b>Roblox detected</b><span>${esc(s.version || '')} · via ${esc(s.source || '')}</span></div></div>`;
   } else {
     detection = `<div class="banner bad"><svg class="b-ico"><use href="#i-alert-circle"/></svg>
-      <div class="b-text"><b>Roblox not found</b><span>Install the regular desktop Roblox from roblox.com. The Microsoft Store version and custom launchers (Bloxstrap) aren't detected — or point Settings at your RobloxPlayerBeta.exe manually.</span></div>
+      <div class="b-text"><b>Roblox not found</b><span>Install the desktop Roblox from roblox.com, or point Settings at your RobloxPlayerBeta.exe. Store and Bloxstrap installs aren't detected.</span></div>
       <div class="b-actions"><button class="btn sm" data-action="goto-settings">Open Settings</button></div></div>`;
   }
   let lockBanner = '';
   if (s.ffiAvailable === false) {
-    lockBanner = `<div class="banner warn" style="margin-top:12px"><svg class="b-ico"><use href="#i-alert-tri"/></svg>
+    lockBanner = `<div class="banner warn"><svg class="b-ico"><use href="#i-alert-tri"/></svg>
       <div class="b-text"><b>Multi-instance is unavailable</b><span>The native helper could not load${s.ffiError ? ': ' + esc(s.ffiError) : ''}. You can still launch a single client.</span></div></div>`;
   }
 
@@ -855,26 +855,25 @@ views.instances = function () {
 
   const accountPanel = `
     <div id="lp-account" style="${mode === 'account' ? '' : 'display:none'}">
-      <div class="hint" style="margin:2px 0 12px">Select one or more accounts — Fleet opens a signed-in client for each.</div>
-      <div class="chips">${hasAccounts ? accountChips : '<span class="hint">No accounts yet.</span>'}</div>
-      <div class="inline" style="margin-top:16px">
-        <input id="lp-place" type="text" placeholder="Place ID or game link (optional)" value="${esc(state.placeId)}" style="max-width:320px" data-tip="Paste a place ID, a roblox.com game URL, or a share link with a server ID" />
-        <label class="inline" style="gap:7px;cursor:pointer;font-size:12.5px;color:var(--ink-2);white-space:nowrap" data-tip="If a client crashes or disconnects, Fleet puts that account straight back into the game"><input type="checkbox" id="lp-keepalive"> Keep alive</label>
-        <div class="spacer" style="flex:1"></div>
+      <div class="chips">${hasAccounts ? accountChips : '<span class="hint">No accounts yet — add one in Accounts.</span>'}</div>
+      <div class="inline" style="margin-top:14px">
+        <input id="lp-place" class="input-lg" type="text" placeholder="Place ID or game link (optional)" value="${esc(state.placeId)}" style="max-width:320px" data-tip="Paste a place ID, a roblox.com game URL, or a share link with a server ID" />
+        <label class="inline" style="gap:7px;cursor:pointer;font-size:12px;color:var(--ink-2);white-space:nowrap" data-tip="If a client crashes or disconnects, Fleet puts that account straight back into the game"><input type="checkbox" id="lp-keepalive"> Keep alive</label>
+        <div class="spacer"></div>
         <button class="btn primary lg" data-action="launch-accounts" ${s.robloxFound ? '' : 'disabled'}>${icon('play')} <span id="lp-count-label">Launch ${state.selected.size || ''}</span></button>
       </div>
     </div>`;
 
   const plainPanel = `
     <div id="lp-plain" style="${mode === 'plain' ? '' : 'display:none'}">
-      <div class="hint" style="margin:2px 0 12px">Opens signed-out clients. Each starts a real, separate Roblox client.</div>
       <div class="inline">
         <div class="stepper" data-tip="How many clients to open">
           <button data-action="step" data-dir="-1" data-target="launch-count">-</button>
           <input id="launch-count" type="number" min="1" max="10" value="1" />
           <button data-action="step" data-dir="1" data-target="launch-count">+</button>
         </div>
-        <div class="spacer" style="flex:1"></div>
+        <div class="hint">Signed-out clients — each is a real, separate Roblox client.</div>
+        <div class="spacer"></div>
         <button class="btn primary lg" data-action="launch-quick" ${s.robloxFound ? '' : 'disabled'}>${icon('play')} Launch</button>
       </div>
     </div>`;
@@ -888,41 +887,42 @@ views.instances = function () {
   mount(`
     <div class="page-head">
       <h1>Instances</h1>
-      <p>Launch Roblox and watch every client live. Fleet isolates each one, so you can run several at once - signed in to different accounts or signed out.</p>
+      <p>Launch Roblox clients and manage the ones already running.</p>
     </div>
     ${detection}
     ${lockBanner}
     <div id="clip-offer" class="clip-offer" hidden></div>
-    <div class="card pad" style="margin-top:14px">
-      <div class="row-split" style="margin-bottom:16px">
-        <div style="font-weight:600;font-size:15px">Launch Roblox</div>
+    <div class="card pad" style="margin-top:12px">
+      <div class="card-head">
+        <div><span class="t">Launch</span><span class="d">One client per selected account</span></div>
         ${modeToggle}
       </div>
       ${accountPanel}
       ${plainPanel}
     </div>
 
-    <div class="card pad" style="margin-top:14px">
-      <div class="row-split" style="margin-bottom:6px">
-        <div style="font-weight:600;font-size:15px">Sessions</div>
+    <div class="card pad" style="margin-top:12px">
+      <div class="card-head">
+        <div><span class="t">Sessions</span><span class="d">Relaunch a saved setup in one click</span></div>
         <button class="btn sm" data-action="session-save" ${hasAccounts ? '' : 'disabled'} data-tip="Save the current account selection and game as a one-click setup">${icon('plus')} Save current setup</button>
       </div>
-      <div class="hint" style="margin-bottom:10px">One click relaunches an entire setup - accounts, game, even window arrangement.</div>
       <div id="sessions-list">${sessionRows()}</div>
     </div>
 
-    <div class="row-split" style="margin:26px 2px 12px">
+    <div class="row-split" style="margin:20px 2px 10px">
       <div class="section-title" style="margin:0">Running clients</div>
       <span id="keepalive-chip" class="keepalive-chip" hidden></span>
       <div class="inline">
-        <button class="btn sm" data-action="refresh-instances" data-tip="Refresh now">${icon('refresh')} Refresh</button>
-        <button class="btn sm" data-action="arrange" data-tip="Tile all Roblox windows into a grid">${icon('grid')} Arrange</button>
-        <button class="btn sm" data-action="end-all" data-tip="End every Roblox client">${icon('x')} End all</button>
-        <button class="btn sm" data-action="cleanup" data-tip="End clients and clear leftover crash handlers">${icon('broom')} Cleanup</button>
+        <button class="btn sm ghost" data-action="refresh-instances" data-tip="Refresh now">${icon('refresh')} Refresh</button>
+        <button class="btn sm ghost" data-action="arrange" data-tip="Tile all Roblox windows into a grid">${icon('grid')} Arrange</button>
+        <button class="btn sm ghost danger" data-action="end-all" data-tip="End every Roblox client">${icon('x')} End all</button>
+        <button class="btn sm ghost" data-action="cleanup" data-tip="End clients and clear leftover crash handlers">${icon('broom')} Cleanup</button>
       </div>
     </div>
-    <div class="card" id="summary-card" style="display:none"><div class="summary" id="summary"></div></div>
-    <div id="ilist" class="ilist" style="margin-top:14px"></div>
+    <div class="card">
+      <div class="summary" id="summary" hidden></div>
+      <div id="ilist" class="ilist"></div>
+    </div>
   `);
   renderInstanceList();
   renderKeepAliveChip();
@@ -938,22 +938,21 @@ function renderInstanceList() {
 }
 
 function renderInstanceSummary(items) {
-  const sCard = $('#summary-card');
-  if (!sCard) return;
+  const el = $('#summary');
+  if (!el) return;
   const sum = state.summary;
   if (sum && items.length) {
-    sCard.style.display = '';
-    const summary = $('#summary');
     const key = [sum.total, sum.fleet, sum.external, sum.notResponding, sum.totalMemBytes].join('|');
-    if (summary.dataset.summaryKey !== key) summary.innerHTML = `
+    if (el.dataset.summaryKey !== key) el.innerHTML = `
       <div class="stat"><span class="v">${sum.total}</span><span class="k">Total</span></div>
-      <div class="stat"><span class="v">${sum.fleet}</span><span class="k">Launched by Fleet</span></div>
+      <div class="stat"><span class="v">${sum.fleet}</span><span class="k">Fleet</span></div>
       <div class="stat"><span class="v">${sum.external}</span><span class="k">External</span></div>
       <div class="stat"><span class="v">${sum.notResponding}</span><span class="k">Not responding</span></div>
-      <div class="stat"><span class="v">${fmtBytes(sum.totalMemBytes)}</span><span class="k">Total memory</span></div>`;
-    summary.dataset.summaryKey = key;
+      <div class="stat"><span class="v">${fmtBytes(sum.totalMemBytes)}</span><span class="k">Memory</span></div>`;
+    el.dataset.summaryKey = key;
+    el.hidden = false;
   } else {
-    sCard.style.display = 'none';
+    el.hidden = true;
   }
 }
 
@@ -962,19 +961,19 @@ function instanceRowHtml(i, isNew) {
   const tag = i.source === 'fleet'
     ? `<span class="tag fleet">${i.profileName ? esc(i.profileName) : 'Fleet'}</span>`
     : `<span class="tag external">External</span>`;
-  const title = i.windowTitle ? esc(i.windowTitle) : '<span style="color:var(--ink-3)">Loading-</span>';
+  const title = i.windowTitle ? esc(i.windowTitle) : '<span style="color:var(--ink-3)">Loading…</span>';
   const started = (i.startedExact ? '' : '~') + relTime(i.startedAt);
   const signature = encodeURIComponent(JSON.stringify([i.status, i.windowTitle, i.source, i.profileName, i.memBytes, i.startedAt, !!i.startedExact]));
   return `<div class="irow${isNew ? ' row-enter' : ''}" data-pid="${pid}" data-signature="${signature}" data-row>
     <span class="dot ${esc(i.status || 'running')}" data-tip="${i.status === 'not_responding' ? 'Not responding' : 'Running'}"></span>
     <span class="pid">${pid}</span>
-    <span><div class="title">${title}</div><div style="margin-top:4px">${tag}</div></span>
+    <span class="title-cell"><div class="title">${title}</div><div class="sub">${tag}</div></span>
     <span class="mem">${fmtBytes(i.memBytes)}</span>
     <span class="when" data-tip="${i.startedExact ? 'Launched by Fleet' : 'First seen by Fleet'}">${started}</span>
     <span class="actions">
-      <button class="btn icon sm" data-action="focus" data-pid="${pid}" data-tip="Bring window to front">${icon('focus')}</button>
-      <button class="btn icon sm" data-action="restart" data-pid="${pid}" data-tip="Restart this client">${icon('rotate')}</button>
-      <button class="btn icon sm danger" data-action="end" data-pid="${pid}" data-tip="End this client">${icon('x')}</button>
+      <button class="btn icon sm ghost" data-action="focus" data-pid="${pid}" data-tip="Bring window to front">${icon('focus')}</button>
+      <button class="btn icon sm ghost" data-action="restart" data-pid="${pid}" data-tip="Restart this client">${icon('rotate')}</button>
+      <button class="btn icon sm ghost danger" data-action="end" data-pid="${pid}" data-tip="End this client">${icon('x')}</button>
     </span>
   </div>`;
 }
@@ -983,8 +982,8 @@ function patchInstanceList(list, items) {
   if (!items.length) {
     if (list.dataset.mode !== 'empty') {
       list.dataset.mode = 'empty';
-      list.innerHTML = `<div class="card"><div class="empty"><div class="e-ico">${icon('box')}</div>
-        <h3>No Roblox clients running</h3><p>Use <b>Launch</b> above to open one.</p></div></div>`;
+      list.innerHTML = `<div class="empty"><div class="e-ico">${icon('box')}</div>
+        <h3>No Roblox clients running</h3><p>Use <b>Launch</b> above to open one.</p></div>`;
     }
     return;
   }
@@ -1063,7 +1062,7 @@ views.accounts = function () {
   mount(`
     <div class="page-head">
       <h1>Accounts</h1>
-      <p>Sign in to your Roblox accounts once, then launch any of them - alone or several at a time. Sessions are stored encrypted on this PC and never leave it.</p>
+      <p>Sign in once, then launch any account — alone or several at a time. Sessions are stored encrypted on this PC.</p>
     </div>
     <div class="row-split" style="margin-bottom:16px">
       <div class="section-title" style="margin:0">Your accounts${(() => { const t = list.reduce((n, x) => n + (x.robux || 0), 0); return list.some(x => x.robux != null) ? ` <span class="robux-total" data-tip="Total Robux across all accounts">${icon('box')} ${fmtNum(t)}</span>` : ''; })()}</div>
@@ -1071,7 +1070,7 @@ views.accounts = function () {
         ${list.length ? `<button class="btn sm" data-action="refresh-accounts" data-tip="Refresh all">${icon('refresh')} Refresh all</button>` : ''}
         ${selectedCount ? `<button class="btn primary sm" data-action="launch-selected" data-account-launch-selected>${icon('play')} Launch ${selectedCount} selected</button>` : ''}
         <button class="btn primary sm" data-action="add-account" ${state.addingAccount ? 'disabled' : ''}>
-          ${state.addingAccount ? '<span class="spinner"></span>' : icon('user-plus')} ${state.addingAccount ? 'Waiting for sign-in-' : 'Add account'}
+          ${state.addingAccount ? '<span class="spinner"></span>' : icon('user-plus')} ${state.addingAccount ? 'Waiting for sign-in…' : 'Add account'}
         </button>
       </div>
     </div>
@@ -1100,11 +1099,13 @@ function renderAccountCard(a) {
         </div>
         <div class="check" data-action="toggle-account" data-id="${id}" data-tip="Select for launch">${icon('check')}</div>
       </div>
-      <div class="row-split">
-        <span class="presence ${presClass}"${presTip} data-acct-presence="${id}"><span class="pd"></span>${esc(presRaw)}</span>
-        <span class="robux-chip" data-acct-robux="${id}"${a.robux == null ? ' hidden' : ''} data-tip="Robux balance${a.premium ? ' - Premium member' : ''}">${a.premium ? '<b class="prem">P</b>' : ''}${icon('box')} ${a.robux == null ? '' : fmtNum(a.robux)}</span>
+      <div class="acct-meta">
+        <div class="row-split">
+          <span class="presence ${presClass}"${presTip} data-acct-presence="${id}"><span class="pd"></span>${esc(presRaw)}</span>
+          <span class="robux-chip" data-acct-robux="${id}"${a.robux == null ? ' hidden' : ''} data-tip="Robux balance${a.premium ? ' - Premium member' : ''}">${a.premium ? '<b class="prem">P</b>' : ''}${icon('box')} ${a.robux == null ? '' : fmtNum(a.robux)}</span>
+        </div>
+        <div class="acct-game" data-acct-game="${id}"${a.game ? '' : ' hidden'}>${a.game ? icon('compass') + ' ' + esc(a.game.name) : ''}</div>
       </div>
-      <div class="acct-game" data-acct-game="${id}"${a.game ? '' : ' hidden'}>${a.game ? icon('compass') + ' ' + esc(a.game.name) : ''}</div>
       <div class="acct-actions">
         ${expired
           ? `<button class="btn primary sm" data-action="reauth-account" data-id="${id}">${icon('user-plus')} Sign in again</button>`
@@ -1242,10 +1243,10 @@ views.games = function () {
   mount(`
     <div class="page-head">
       <h1>Games</h1>
-      <p>Browse and search Roblox experiences, then jump straight in. Joining uses the game's place ID${state.accounts.length ? ' and your selected account (or the first one).' : ' — add an account to join signed in.'}</p>
+      <p>Browse and search Roblox experiences, then jump straight in.</p>
     </div>
     <div class="toolbar">
-      <div class="search">${icon('search')}<input id="games-search" type="text" placeholder="Search experiences-" value="${esc(g.query)}"></div>
+      <div class="search">${icon('search')}<input id="games-search" type="text" placeholder="Search experiences…" value="${esc(g.query)}"></div>
       <button class="btn" data-action="refresh-games" data-tip="Reload popular experiences">${icon('refresh')} Refresh</button>
       <button class="btn primary" data-action="random-game" data-tip="Join a random game from the list">${icon('dice')} Random Game</button>
     </div>
@@ -1466,7 +1467,7 @@ function renderServersModal() {
   const sv = state.servers;
   if (!sv) return;
   let body;
-  if (sv.loading && !sv.list.length) body = `<div class="games-end"><span class="spinner dark"></span> Loading servers-</div>`;
+  if (sv.loading && !sv.list.length) body = `<div class="games-end"><span class="spinner dark"></span> Loading servers…</div>`;
   else if (sv.error && !sv.list.length) body = `<div class="games-end">${esc(sv.error)}</div>`;
   else if (!sv.list.length) body = `<div class="games-end">No joinable servers found - every server is full right now.</div>`;
   else {
@@ -1480,7 +1481,7 @@ function renderServersModal() {
         <div class="server-bar"><span style="width:${s.maxPlayers ? Math.min(100, Math.round(s.playing / s.maxPlayers * 100)) : 0}%"></span></div>
         <div class="server-meta"><span class="server-quality q-${quality.label.toLowerCase()}">${quality.score} - ${quality.label}</span>${s.ping != null ? `${s.ping} ms` : ''}${s.fps != null ? ` - ${s.fps} fps` : ''}</div>
         <button class="server-copy" data-action="copy-server-id" data-server="${esc(s.id)}" data-tip="Copy server ID">${icon('copy')}</button>
-        <button class="btn primary sm" data-action="join-server" data-place="${esc(sv.placeId)}" data-server="${esc(s.id)}" data-name="${esc(sv.name)}" data-tip="Server #${i + 1}">${icon('play')} Join</button>
+        <button class="btn sm" data-action="join-server" data-place="${esc(sv.placeId)}" data-server="${esc(s.id)}" data-name="${esc(sv.name)}" data-tip="Server #${i + 1}">${icon('play')} Join</button>
       </div>`;
     }).join('') : '<div class="games-end">No servers match these filters.</div>'}
       ${sv.nextPageCursor ? `<button class="btn sm servers-more" data-action="servers-more">Load more servers</button>` : ''}</div>`;
@@ -1582,13 +1583,13 @@ function renderGamesGrid() {
   const grid = $('#games-grid');
   if (!grid) return;
   const g = state.games;
-  if (g.loading && !g.list.length) { grid.innerHTML = `<div class="games-end"><span class="spinner dark"></span> Loading experiences-</div>`; return; }
+  if (g.loading && !g.list.length) { grid.innerHTML = `<div class="games-end"><span class="spinner dark"></span> Loading experiences…</div>`; return; }
   if (g.error && !g.list.length) { grid.innerHTML = `<div class="games-end">${esc(g.error)}</div>`; return; }
   if (!g.list.length) { grid.innerHTML = `<div class="games-end">No experiences found.</div>`; return; }
   const list = visibleGames();
   if (!list.length) { grid.innerHTML = `<div class="games-end">No active experiences match this filter.</div>`; return; }
   let tail = '';
-  if (g.nextPageToken && g.query) tail = `<div class="games-end"><span class="spinner dark"></span> Scroll for more-</div>`;
+  if (g.nextPageToken && g.query) tail = `<div class="games-end"><span class="spinner dark"></span> Scroll for more…</div>`;
   else if (g.query) tail = `<div class="games-end">End of results</div>`;
   grid.innerHTML = list.map(gameCard).join('') + tail;
 }
@@ -1800,7 +1801,7 @@ function renderPeopleGrid() {
   const grid = $('#people-grid');
   if (!grid) return;
   const pp = state.people;
-  if (pp.loading) { grid.innerHTML = `<div class="games-end"><span class="spinner dark"></span> Loading people-</div>`; return; }
+  if (pp.loading) { grid.innerHTML = `<div class="games-end"><span class="spinner dark"></span> Loading people…</div>`; return; }
   if (pp.error) { grid.innerHTML = `<div class="games-end">${esc(pp.error)}</div>`; return; }
   if (!pp.list.length) { grid.innerHTML = `<div class="card"><div class="empty"><div class="e-ico">${icon('users-group')}</div><h3>No people to show</h3><p>Add an account with friends to populate this list.</p></div></div>`; return; }
   const list = visiblePeople(pp.list);
@@ -2037,7 +2038,7 @@ function renderPeopleProfile() {
   const detail = state.people.detail;
   const backLabel = state.people.returnRoute === 'friends' ? 'Back to Friends' : 'Back to People';
   if (detail.loading) {
-    mount(`<button class="back-link" data-action="people-back">${icon('chevron-left')} ${backLabel}</button><div class="profile-loading"><span class="spinner dark"></span> Loading public profile data-</div>`);
+    mount(`<button class="back-link" data-action="people-back">${icon('chevron-left')} ${backLabel}</button><div class="profile-loading"><span class="spinner dark"></span> Loading public profile…</div>`);
     return;
   }
   if (detail.error || !detail.profile) {
@@ -2113,15 +2114,15 @@ function fmtDur(ms) {
 
 views.stats = async function () {
   mount(`
-    <div class="page-head"><h1>Stats</h1><p>Playtime tracked from your accounts' live presence - per game and per account, kept on this PC only.</p></div>
-    <div id="stats-body"><div class="games-end"><span class="spinner dark"></span> Crunching playtime-</div></div>
+    <div class="page-head"><h1>Stats</h1><p>Playtime per game and account, tracked locally from live presence.</p></div>
+    <div id="stats-body"><div class="games-end"><span class="spinner dark"></span> Crunching playtime…</div></div>
   `);
   const r = await call(() => api.playtime.stats(), { ok: false });
   const root = $('#stats-body');
   if (!root || state.view !== 'stats') return;
   if (!r || !r.ok) { root.innerHTML = `<div class="games-end">Could not load stats.</div>`; return; }
   const t = r.totals || {};
-  const statCard = (label, value, sub) => `<div class="card pad stat-card"><div class="stat-value">${value}</div><div class="stat-label">${esc(label)}</div>${sub ? `<div class="stat-sub">${esc(sub)}</div>` : ''}</div>`;
+  const statCell = (label, value, sub) => `<div class="stat-cell"><div class="stat-value">${value}</div><div class="stat-label">${esc(label)}</div>${sub ? `<div class="stat-sub">${esc(sub)}</div>` : ''}</div>`;
   const row = (cells, live) => `<div class="setting stat-row"><div><div class="s-label">${live ? '<span class="pd live-dot"></span>' : ''}${esc(cells.name)}</div><div class="s-desc">${esc(cells.desc)}</div></div>
     <div class="s-control stat-cells"><span data-tip="Today">${fmtDur(cells.today)}</span><span data-tip="Last 7 days">${fmtDur(cells.week)}</span><b data-tip="All time">${fmtDur(cells.total)}</b></div></div>`;
   const games = (r.perGame || []).slice(0, 15).map(g => row({ name: g.label, desc: `${g.sessions} session${g.sessions === 1 ? '' : 's'}`, today: g.todayMs, week: g.weekMs, total: g.totalMs }, g.live)).join('');
@@ -2129,11 +2130,11 @@ views.stats = async function () {
   const recent = (r.recent || []).map(s => `<div class="setting stat-row"><div><div class="s-label">${s.live ? '<span class="pd live-dot"></span>' : ''}${esc(s.game)}</div>
     <div class="s-desc">${esc(s.username)} - ${new Date(s.start).toLocaleString()}</div></div><div class="s-control"><b>${fmtDur(s.ms)}</b></div></div>`).join('');
   root.innerHTML = `
-    <div class="stat-grid">
-      ${statCard('Today', fmtDur(t.todayMs))}
-      ${statCard('Last 7 days', fmtDur(t.weekMs))}
-      ${statCard('All time', fmtDur(t.totalMs), `${t.sessions || 0} sessions`)}
-      ${statCard('Tracking now', String(r.tracking || 0), r.tracking ? 'accounts in game' : 'no one in game')}
+    <div class="card stat-grid">
+      ${statCell('Today', fmtDur(t.todayMs))}
+      ${statCell('Last 7 days', fmtDur(t.weekMs))}
+      ${statCell('All time', fmtDur(t.totalMs), `${t.sessions || 0} sessions`)}
+      ${statCell('Tracking now', String(r.tracking || 0), r.tracking ? 'accounts in game' : 'no one in game')}
     </div>
     ${games ? `<div class="section-title">By game <span class="stat-cols">today - 7 days - all time</span></div><div class="card pad">${games}</div>` : ''}
     ${accountsRows ? `<div class="section-title">By account <span class="stat-cols">today - 7 days - all time</span></div><div class="card pad">${accountsRows}</div>` : ''}
@@ -2141,7 +2142,7 @@ views.stats = async function () {
     ${!games && !recent ? `<div class="games-end">No playtime yet. Stats build up automatically while your accounts play - launch a game and check back.</div>` : ''}
     <div class="inline" style="margin-top:16px"><div class="spacer" style="flex:1"></div>
       <button class="btn sm" data-action="stats-refresh">${icon('refresh')} Refresh</button>
-      <button class="btn sm danger" data-action="stats-clear">${icon('trash')} Clear playtime data</button></div>`;
+      <button class="btn sm ghost danger" data-action="stats-clear">${icon('trash')} Clear playtime data</button></div>`;
 };
 
 views.history = async function () {
@@ -2159,10 +2160,10 @@ views.history = async function () {
     : `<tr><td colspan="5"><div class="empty" style="padding:40px"><div class="e-ico">${icon('clock')}</div><h3>No launches yet</h3><p>Your launch history will appear here.</p></div></td></tr>`;
 
   mount(`
-    <div class="page-head"><h1>History</h1><p>A record of every launch, restart and the result.</p></div>
+    <div class="page-head"><h1>History</h1><p>Every launch, restart and its result.</p></div>
     <div class="row-split" style="margin-bottom:14px">
       <div class="section-title" style="margin:0">Recent activity</div>
-      <button class="btn sm danger" data-action="clear-history" ${state.history.length ? '' : 'disabled'}>${icon('trash')} Clear history</button>
+      <button class="btn sm ghost danger" data-action="clear-history" ${state.history.length ? '' : 'disabled'}>${icon('trash')} Clear history</button>
     </div>
     <div class="card" style="overflow:hidden">
       <table class="data"><thead><tr><th>Time</th><th>Account / mode</th><th>Result</th><th>PID</th><th>Message</th></tr></thead>
@@ -2179,7 +2180,7 @@ views.diagnostics = async function () {
   const g = state.diag;
   const kv = (k, v) => `<div class="k">${esc(k)}</div><div class="v">${esc(v == null ? '-' : v)}</div>`;
   mount(`
-    <div class="page-head"><h1>Diagnostics</h1><p>Environment details and a live log to help troubleshoot. Share these if you report a problem.</p></div>
+    <div class="page-head"><h1>Diagnostics</h1><p>Environment details and a live log for troubleshooting.</p></div>
     <div class="section-title">Environment</div>
     <div class="card pad">
       <div class="kv">
@@ -2210,7 +2211,7 @@ views.diagnostics = async function () {
           ${['all', 'info', 'warn', 'error'].map(f => `<button data-action="log-filter" data-f="${f}" class="${state.logFilter === f ? 'on' : ''}">${f[0].toUpperCase() + f.slice(1)}</button>`).join('')}
         </div>
         <button class="btn sm" data-action="logs-folder">${icon('folder')} Folder</button>
-        <button class="btn sm danger" data-action="logs-clear">${icon('trash')} Clear</button>
+        <button class="btn sm ghost danger" data-action="logs-clear">${icon('trash')} Clear</button>
       </div>
     </div>
     <div class="logview" id="logview"></div>
@@ -2379,8 +2380,8 @@ views.help = function () {
       <h2>Accounts</h2>
       <p>Accounts appear with avatar, name and presence. Fleet stores sessions locally and uses them for launch, follow, People search and join flows.</p>
 
-      <h2>The command palette</h2>
-      <p>Press <b>Ctrl+K</b> for the <b>command palette</b>: type to fuzzy-search sections, accounts, favorites, recent games, watched people and power actions (update check, arrange, end all, cleanup, theme, diagnostics), then run one with <b>Enter</b> or its <b>1-9</b> digit.</p>
+      <h2>Command palette</h2>
+      <p>Press <b>Ctrl+K</b> for the <b>command palette</b>: type to fuzzy-search sections, accounts, favorites, recent games, watched people and power actions (update check, arrange, end all, cleanup, theme, diagnostics), then run one with <b>Enter</b> or its <b>1-9</b> digit. <b>Ctrl+1-9</b> jumps straight to a rail section.</p>
 
       <h2>Watch people</h2>
       <p>On <b>People</b>, the eye button on any card or profile watches that person. A background poll (it works while the window is hidden) toasts the moment they join or switch games, and the People home shows a Watching card with a one-click <b>Join</b>. Up to 20 people, stored locally.</p>
@@ -3096,7 +3097,7 @@ setInterval(refreshVisiblePeoplePresence, 10000);
   let startView = 'instances';
   try {
     const saved = localStorage.getItem('fleet-last-view');
-    if (saved && document.querySelector(`#nav button[data-view="${saved}"]`)) startView = saved;
+    if (saved && document.querySelector(`.nav button[data-view="${saved}"]`)) startView = saved;
   } catch (_) { /* fresh profile */ }
   setView(startView);
 })();
