@@ -6,13 +6,17 @@
 //                      install folder next to Fleet.exe)
 //   buildApplyScript   the hidden PowerShell applier that runs AFTER Fleet
 //                      quits: it mirrors the staged new version over the
-//                      install folder, syncs Add/Remove Programs, and
-//                      relaunches Fleet
+//                      install folder, verifies the swap actually happened,
+//                      only then syncs Add/Remove Programs, relaunches Fleet
+//                      and writes a result file the new (or old) version
+//                      reads on its next start
 //   applyUpdate        writes the applier and starts it detached
 //
 // The flow is deliberately installer-free: the updater downloads the
-// portable zip, verifies its digest, stages it, then swaps files while the
-// app is closed. No second window, no wizard, nothing to click.
+// portable zip, verifies its digest, stages it, arms the applier, and only
+// THEN tells the renderer to close the window (the applier is already
+// waiting by then). The applier swaps files while the app is closed. No
+// second window, no wizard, nothing to click.
 
 const fs = require('fs');
 const path = require('path');
@@ -32,7 +36,11 @@ function resolveInstallDir(execPath) {
   return { ok: true, dir };
 }
 
-/** The applier. Plain Windows PowerShell 5.1 (always present), run hidden. */
+/** The applier. Plain Windows PowerShell 5.1 (always present), run hidden.
+ *  It is transactional: the registry version is only bumped after the new
+ *  Fleet.exe is verifiably on disk, and a result file is written either way
+ *  so the next start can tell the user what happened instead of failing
+ *  silently. */
 function buildApplyScript(opts) {
   const options = opts || {};
   const waitPids = `@(${Number(options.appPid) || 0}, ${Number(options.nodePid) || 0})`;
@@ -42,13 +50,28 @@ function buildApplyScript(opts) {
     '  [string]$InstallDir,',
     '  [string]$StageDir,',
     '  [string]$UpdatesDir,',
+    '  [string]$ResultPath,',
     '  [int]$AppPid,',
     '  [int]$NodePid,',
     '  [string]$Version',
     ')',
-    '$ErrorActionPreference = \'Continue\'',
+    "$ErrorActionPreference = 'Continue'",
     "$log = Join-Path $env:TEMP 'FleetUpdate.log'",
     'function Log($m) { try { Add-Content -Path $log -Value ("[{0}] {1}" -f (Get-Date -Format s), $m) } catch {} }',
+    'function Write-Result([bool]$Ok, [string]$Error, [string]$Stage) {',
+    '  try {',
+    '    $r = @{ ok = $Ok; to = $Version; at = (Get-Date -Format s); error = $Error; stage = $Stage }',
+    '    $r | ConvertTo-Json -Compress | Set-Content -LiteralPath $ResultPath -Encoding UTF8',
+    '  } catch { Log ("could not write result file: " + $_) }',
+    '}',
+    '# First three version numbers of "1.7.1" / "1.7.1.0" / "1.7" for compare.',
+    'function Ver3([string]$s) {',
+    "  if ($s -match '^\\s*(\\d+)\\.(\\d+)(?:\\.(\\d+))?') {",
+    "    $p = if ($matches[3]) { $matches[3] } else { '0' }",
+    "    return ($matches[1] + '.' + $matches[2] + '.' + $p)",
+    '  }',
+    '  return $null',
+    '}',
     'Log ("apply-update start: v" + $Version + " -> " + $InstallDir)',
     '',
     '# 1. Wait for the running Fleet and its backend to exit (graceful, then forced).',
@@ -62,8 +85,8 @@ function buildApplyScript(opts) {
     '  try { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue } catch {}',
     '}',
     '# Safety net: any Fleet/node process still running from the install folder.',
-    '$fleetExe = Join-Path $InstallDir \'Fleet.exe\'',
-    'foreach ($name in @(\'Fleet\', \'node\')) {',
+    "$fleetExe = Join-Path $InstallDir 'Fleet.exe'",
+    "foreach ($name in @('Fleet', 'node')) {",
     '  try {',
     '    Get-Process -Name $name -ErrorAction SilentlyContinue |',
     '      Where-Object { $_.Path -and $_.Path.StartsWith($InstallDir, [StringComparison]::OrdinalIgnoreCase) } |',
@@ -74,29 +97,83 @@ function buildApplyScript(opts) {
     '',
     '# 2. Mirror the staged new version over the install folder. /MIR removes',
     '#    files that only existed in older versions; the uninstaller is kept.',
-    '$null = robocopy $StageDir $InstallDir /MIR /XF uninstall.exe /R:2 /W:1 /NFL /NDL /NJH /NJS /NP',
-    'if ($LASTEXITCODE -ge 8) { Log ("robocopy failed: " + $LASTEXITCODE) } else { Log "robocopy ok" }',
+    '#    Locked files can make robocopy fail once, so it gets three tries.',
+    '$rc = 16',
+    'for ($attempt = 1; $attempt -le 3; $attempt++) {',
+    '  $null = robocopy $StageDir $InstallDir /MIR /XF uninstall.exe /R:2 /W:1 /NFL /NDL /NJH /NJS /NP',
+    '  $rc = $LASTEXITCODE',
+    '  Log ("robocopy attempt " + $attempt + " -> exit " + $rc)',
+    '  if ($rc -lt 8) { break }',
+    '  Start-Sleep -Seconds 2',
+    '}',
+    'if ($rc -ge 8) {',
+    '  Log "update FAILED: could not copy the new files"',
+    '  Write-Result $false ("The new files could not be copied (robocopy exit " + $rc + "). " +',
+    '    "Your antivirus may be holding them; allow Fleet in it and try again.") \'copy\'',
+    '} else {',
+    '  Log "robocopy ok"',
     '',
-    '# 3. Keep Add/Remove Programs in sync with the new version.',
-    'try {',
-    "  $key = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Fleet'",
-    '  if (Test-Path $key) {',
-    '    Set-ItemProperty -Path $key -Name DisplayVersion -Value $Version -Type String',
-    '    Set-ItemProperty -Path $key -Name InstallLocation -Value $InstallDir -Type String',
-    '    $kb = [int]((Get-ChildItem -LiteralPath $InstallDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum / 1024)',
-    '    Set-ItemProperty -Path $key -Name EstimatedSize -Value $kb -Type DWord',
+    '  # 3. Verify the swap really happened before touching the registry.',
+    '  #    (Earlier versions wrote the registry entry even when the copy',
+    '  #    failed, which left the installer claiming "already up to date".)',
+    '  if (-not (Test-Path -LiteralPath $fleetExe)) {',
+    '    Log "update FAILED: Fleet.exe is missing after the copy"',
+    '    Write-Result $false "Fleet.exe was not in the update package. Nothing was changed." \'verify\'',
+    '  } else {',
+    "    $exeVer = ''",
+    '    try { $exeVer = (Get-Item -LiteralPath $fleetExe).VersionInfo.ProductVersion } catch {}',
+    '    $want = Ver3 $Version',
+    '    $got  = Ver3 $exeVer',
+    '    if ($want -and $got -and ($want -ne $got)) {',
+    '      Log ("update FAILED: Fleet.exe reports v" + $exeVer + ", expected v" + $Version)',
+    '      Write-Result $false ("The update did not finish copying (found v" + $exeVer + "). Try again.") \'verify\'',
+    '    } else {',
+    '      Log ("verified Fleet.exe on disk: " + $exeVer)',
+    '',
+    '      # 4. Keep Add/Remove Programs in sync with the new version - only',
+    '      #    now that the files are verifiably the new ones.',
+    '      try {',
+    "        $key = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Fleet'",
+    '        if (Test-Path $key) {',
+    '          Set-ItemProperty -Path $key -Name DisplayVersion -Value $Version -Type String',
+    '          Set-ItemProperty -Path $key -Name InstallLocation -Value $InstallDir -Type String',
+    '          $kb = [int]((Get-ChildItem -LiteralPath $InstallDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum / 1024)',
+    '          Set-ItemProperty -Path $key -Name EstimatedSize -Value $kb -Type DWord',
+    '        }',
+    '      } catch { Log ("registry sync skipped: " + $_) }',
+    '      Write-Result $true $null \'done\'',
+    '      Log "update ok"',
+    '    }',
     '  }',
-    '} catch { Log ("registry sync skipped: " + $_) }',
+    '}',
     '',
-    '# 4. Relaunch the new version.',
+    '# 5. Relaunch whatever is on disk now (the new version after a successful',
+    '#    swap, the untouched old one after a failure - either way the user is',
+    '#    not left with a silently closed app).',
+    '$relaunched = $false',
+    'if (Test-Path -LiteralPath $fleetExe) {',
+    '  try {',
+    '    Start-Process -FilePath $fleetExe -WorkingDirectory $InstallDir',
+    '    $relaunched = $true',
+    "    Log 'relaunched'",
+    '  } catch { Log ("relaunch failed: " + $_) }',
+    '} else {',
+    "  Log 'relaunch skipped: Fleet.exe not present'",
+    '  # Last resort: the app cannot start, so the result file would never',
+    '  # be seen. Plain visible message box, one button, no obfuscation.',
+    '  try {',
+    "    Add-Type -AssemblyName System.Windows.Forms",
+    "    [System.Windows.Forms.MessageBox]::Show('Fleet could not finish updating and its files are incomplete. Download FleetInstaller.exe from github.com/Toluwer/Fleet/releases and run it to repair the install.', 'Fleet update failed') | Out-Null",
+    '  } catch {}',
+    '}',
+    '',
+    '# 6. Clean up the staged update only when everything worked - a failed',
+    '#    run keeps its evidence, and the next update attempt sweeps it anyway.',
     'try {',
-    '  Start-Process -FilePath $fleetExe -WorkingDirectory $InstallDir',
-    '  Log \'relaunched\'',
-    '} catch { Log ("relaunch failed: " + $_) }',
-    '',
-    '# 5. Clean up the staged update (best effort - the next update sweeps leftovers).',
-    'try { Remove-Item -LiteralPath $UpdatesDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}',
-    'Log \'apply-update done\'',
+    '  $res = Get-Content -LiteralPath $ResultPath -Raw | ConvertFrom-Json',
+    '  if ($res.ok) { Remove-Item -LiteralPath $UpdatesDir -Recurse -Force -ErrorAction SilentlyContinue }',
+    '} catch {}',
+    "Log 'apply-update done'",
     '',
   ].join('\r\n');
 }
@@ -138,8 +215,9 @@ function applyUpdate(opts) {
   const installDir = String(options.installDir || '');
   const stageDir = String(options.stageDir || '');
   const updatesDir = String(options.updatesDir || '');
-  if (!installDir || !stageDir || !updatesDir) {
-    return { ok: false, error: 'The update applier needs the install, staging and updates folders.' };
+  const resultPath = String(options.resultPath || '');
+  if (!installDir || !stageDir || !updatesDir || !resultPath) {
+    return { ok: false, error: 'The update applier needs the install, staging, updates and result paths.' };
   }
   const scriptPath = path.join(updatesDir, 'apply-update.ps1');
   const script = buildApplyScript(options);
@@ -156,6 +234,7 @@ function applyUpdate(opts) {
     '-InstallDir', installDir,
     '-StageDir', stageDir,
     '-UpdatesDir', updatesDir,
+    '-ResultPath', resultPath,
     '-AppPid', String(Number(options.appPid) || 0),
     '-NodePid', String(Number(options.nodePid) || 0),
     '-Version', String(options.version || ''),
@@ -176,4 +255,20 @@ function applyUpdate(opts) {
   });
 }
 
-module.exports = { resolveInstallDir, buildApplyScript, stageZip, applyUpdate, extractZip: unzip.extractZip, listEntries: unzip.listEntries };
+/** Reads (and deletes) the applier result file. Returns the parsed result
+ *  ({ ok, to, at, error, stage }) or null when there is nothing to report. */
+function readResultFile(resultPath) {
+  try {
+    if (!fs.existsSync(resultPath)) return null;
+    const raw = fs.readFileSync(resultPath, 'utf8').replace(/^\uFEFF/, '').trim();
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      fs.unlinkSync(resultPath);
+      return parsed;
+    }
+    fs.unlinkSync(resultPath);
+  } catch (_) { /* unreadable result is not fatal */ }
+  return null;
+}
+
+module.exports = { resolveInstallDir, buildApplyScript, stageZip, applyUpdate, readResultFile, extractZip: unzip.extractZip, listEntries: unzip.listEntries };

@@ -19,6 +19,9 @@ use windows::Win32::System::Registry::{
     HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, REG_OPTION_NON_VOLATILE, REG_VALUE_TYPE,
     RRF_RT_REG_SZ, REG_CREATE_KEY_DISPOSITION,
 };
+use windows::Win32::Storage::FileSystem::{
+    GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+};
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
@@ -155,6 +158,16 @@ fn reg_set_dword(hkey: HKEY, name: &str, value: u32) -> Result<(), String> {
     } else {
         Err(format!("could not write registry value {name}"))
     }
+}
+
+/// Opens/creates a key and writes one REG_SZ value into it.
+fn reg_set_value_string(subkey: &str, name: &str, value: &str) -> Result<(), String> {
+    let hkey = reg_create(subkey)?;
+    let result = reg_set_string(hkey, name, value);
+    unsafe {
+        let _ = RegCloseKey(hkey);
+    }
+    result
 }
 
 /// Writes the standard "Add/Remove Programs" entries (per-user install).
@@ -396,12 +409,93 @@ fn LPARAM_OF(w: &Vec<u16>) -> windows::Win32::Foundation::LPARAM {
 
 // ------------------------------------------------------------------ install state
 
-/// The installed Fleet this installer can see: (folder, version) from the
-/// per-user "Add/Remove Programs" entry. Returns None when Fleet isn't
-/// installed (or the entry is stale and no Fleet.exe is on disk).
+/// Reads the ProductVersion (falling back to FileVersion) straight out of a
+/// .exe's VERSIONINFO resource - the one source of truth about what is
+/// actually installed that cannot drift out of sync with the files.
+pub fn exe_file_version(path: &Path) -> Option<String> {
+    unsafe {
+        let wpath = to_wide(&path.to_string_lossy());
+        let size = GetFileVersionInfoSizeW(PCWSTR(wpath.as_ptr()), None);
+        if size == 0 {
+            return None;
+        }
+        let mut data = vec![0u8; size as usize];
+        if GetFileVersionInfoW(
+            PCWSTR(wpath.as_ptr()),
+            None,
+            size,
+            data.as_mut_ptr().cast(),
+        )
+        .is_err()
+        {
+            return None;
+        }
+        // Ask for the language/codepage the resource actually uses, then
+        // query its version strings; a couple of well-known blocks cover
+        // resources without a translation table.
+        let mut probes: Vec<String> = Vec::new();
+        let mut block: *mut core::ffi::c_void = std::ptr::null_mut();
+        let mut block_len = 0u32;
+        let trans = to_wide("\\VarFileInfo\\Translation");
+        if VerQueryValueW(
+            data.as_ptr().cast(),
+            PCWSTR(trans.as_ptr()),
+            &mut block,
+            &mut block_len,
+        )
+        .as_bool()
+            && block_len >= 4
+        {
+            let words = block as *const u16;
+            let lang = *words;
+            let codepage = *words.add(1);
+            probes.push(format!("\\StringFileInfo\\{lang:04X}{codepage:04X}\\ProductVersion"));
+            probes.push(format!("\\StringFileInfo\\{lang:04X}{codepage:04X}\\FileVersion"));
+        }
+        for probe in [
+            "\\StringFileInfo\\040904B0\\ProductVersion",
+            "\\StringFileInfo\\040904E4\\ProductVersion",
+            "\\StringFileInfo\\040904B0\\FileVersion",
+        ] {
+            probes.push(probe.to_string());
+        }
+        for probe in &probes {
+            let wprobe = to_wide(probe);
+            let mut value: *mut core::ffi::c_void = std::ptr::null_mut();
+            let mut value_len = 0u32;
+            if VerQueryValueW(
+                data.as_ptr().cast(),
+                PCWSTR(wprobe.as_ptr()),
+                &mut value,
+                &mut value_len,
+            )
+            .as_bool()
+                && value_len > 0
+            {
+                let chars = std::slice::from_raw_parts(value as *const u16, value_len as usize);
+                let s = String::from_utf16_lossy(chars)
+                    .trim_end_matches('\0')
+                    .trim()
+                    .to_string();
+                if !s.is_empty() {
+                    return Some(s);
+                }
+            }
+        }
+        None
+    }
+}
+
+/// The installed Fleet this installer can see: (folder, version). The
+/// version comes from the Fleet.exe on disk whenever it carries one - the
+/// registry entry is only the fallback, because a failed in-app update used
+/// to bump it without swapping the files, which left every later installer
+/// claiming "already up to date" while the app stayed old. A disagreement
+/// also repairs the registry entry on the spot, so broken installs heal.
 pub fn installed_fleet() -> Option<(PathBuf, String)> {
     const KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Fleet";
-    let version = reg_query_string(HKEY_CURRENT_USER, KEY, "DisplayVersion").unwrap_or_default();
+    let reg_version =
+        reg_query_string(HKEY_CURRENT_USER, KEY, "DisplayVersion").unwrap_or_default();
     let location =
         reg_query_string(HKEY_CURRENT_USER, KEY, "InstallLocation").unwrap_or_default();
     let has_app = |d: &Path| d.is_dir() && d.join("Fleet.exe").is_file();
@@ -416,6 +510,22 @@ pub fn installed_fleet() -> Option<(PathBuf, String)> {
         } else {
             return None;
         }
+    };
+
+    let file_version = exe_file_version(&dir.join("Fleet.exe"))
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let version = match file_version {
+        Some(file_version) => {
+            if file_version != reg_version {
+                log_str(&format!(
+                    "installed_fleet: registry says v{reg_version} but Fleet.exe is v{file_version}; trusting the file and fixing the entry"
+                ));
+                let _ = reg_set_value_string(KEY, "DisplayVersion", &file_version);
+            }
+            file_version
+        }
+        None => reg_version,
     };
     Some((dir, version))
 }
@@ -593,6 +703,23 @@ pub fn launch_app(exe: &Path, workdir: &Path) -> bool {
             SW_SHOWNORMAL,
         );
         // ShellExecuteW returns a HINSTANCE > 32 on success.
+        (r.0 as usize) > 32
+    }
+}
+
+/// Opens a URL in the user's default browser. Used for the "get a newer
+/// version" escape hatch on the up-to-date screen - re-running an old
+/// downloaded installer otherwise traps people on their old version.
+pub fn open_url(url: &str) -> bool {
+    unsafe {
+        let r = ShellExecuteW(
+            None,
+            PCWSTR(to_wide("open").as_ptr()),
+            PCWSTR(to_wide(url).as_ptr()),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        );
         (r.0 as usize) > 32
     }
 }

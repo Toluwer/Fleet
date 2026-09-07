@@ -94,6 +94,7 @@ const IDC_CHECK_DESKTOP: i32 = 107;
 const IDC_REMOVE: i32 = 110;
 const IDC_CHECK_DATA: i32 = 112;
 const IDC_RETRY: i32 = 113;
+const IDC_RELEASES: i32 = 114;
 // Esc / cancel command id (Win32 IDCANCEL == 2).
 const IDC_CANCEL: i32 = 2;
 
@@ -1020,8 +1021,17 @@ fn build_stage(a: &mut App) {
                 };
                 static_text!(a, "Fleet is up to date.", 0, Some(f.head), 36, 96, 428, 32, IDC_HEAD);
                 static_text!(a, &sub, 0, Some(f.body), 36, 136, 410, 44, IDC_SUB);
+                static_text!(
+                    a,
+                    "This installer is only as new as its download - if a newer release is out, it's on the releases page.",
+                    0x2000, // SS_EDITCONTROL (wraps)
+                    Some(f.small),
+                    36, 196, 410, 40,
+                    IDC_HINT
+                );
 
                 divider!(a);
+                button!(a, "Get newer version", 0, 196, 298, 144, 32, IDC_RELEASES, f.body);
                 button!(a, "Close", 0x1, 344, 298, 120, 32, IDC_CLOSE, f.body);
                 focus_ctrl(a, IDC_CLOSE);
             }
@@ -1224,6 +1234,19 @@ fn on_button(a: &mut App, id: i32) {
         IDC_CLOSE | IDC_CANCEL => unsafe {
             let _ = PostMessageW(Some(a.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
         },
+        IDC_RELEASES => {
+            if !shell::open_url("https://github.com/Toluwer/Fleet/releases") {
+                unsafe {
+                    let text = "The page could not open automatically.\nIt lives at github.com/Toluwer/Fleet/releases.";
+                    let _ = MessageBoxW(
+                        Some(a.hwnd),
+                        PCWSTR(to_wide(text).as_ptr()),
+                        PCWSTR(to_wide(APP_TITLE).as_ptr()),
+                        MB_OKCANCEL | windows::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION,
+                    );
+                }
+            }
+        }
         IDC_CHECK_DESKTOP => unsafe {
             if let Some(ck) = a.ctrls.iter().find(|c| GetDlgCtrlID(**c) == IDC_CHECK_DESKTOP) {
                 let st = SendMessageW(*ck, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))).0;

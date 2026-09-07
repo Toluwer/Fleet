@@ -18,6 +18,12 @@ Fleet is unsigned and open source, so some engines flag the installer with heuri
 - The updater verifies the sha512 of every download before running it.
 - Plain-file persistence only: no autorun, service, driver or scheduled task.
 
+## What Fleet changed (1.7.1)
+
+- The self-updater is transactional now: the new Fleet.exe is verified on disk before the "installed version" registry entry is touched, the file copy retries when something holds a lock, and a failed update leaves a plain result file the app reads on the next start - no more silent close-and-nothing-happened.
+- The installer reads the installed version straight off Fleet.exe instead of trusting the registry, so a half-finished update can no longer make it say "already up to date".
+- Still no packing, no UPX, no execution from %TEMP%, no obfuscated anything - every step is plain, logged, and reproducible from this repo.
+
 ## What you can do
 
 1. Verify the download: each release ships `checksums.txt`; compare against `Get-FileHash FleetInstaller.exe` (SHA-256).

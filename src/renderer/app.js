@@ -2283,7 +2283,7 @@ views.settings = async function () {
   }
   const up = state.updater || { state: 'disabled' };
   const updateText = updaterStatusText(up, st.appVersion);
-  const busy = up.state === 'checking' || up.state === 'downloading' || up.state === 'restarting';
+  const busy = up.state === 'checking' || up.state === 'downloading' || up.state === 'staging' || up.state === 'restarting';
   const updateActions = up.state === 'ready' || up.state === 'available'
     ? `<button class="btn primary" data-action="update-install">${icon('refresh')} Install update</button>`
     : up.state === 'error'
@@ -2379,6 +2379,7 @@ function updaterStatusText(up, appVersion) {
     return 'Downloading update…';
   }
   if (up.state === 'restarting') return 'Installing - Fleet will restart in a moment';
+  if (up.state === 'staging') return 'Unpacking the update…';
   if (up.state === 'checking') return 'Checking for updates…';
   if (up.state === 'error') return `Update failed: ${up.error || 'unknown error'}`;
   if (up.state === 'disabled') return 'Automatic updates activate in the installed version';
@@ -3163,7 +3164,7 @@ if (api) {
       setTimeout(() => { try { api.ui.window.close(); } catch (_) {} }, 900);
     }
     if (status && status.state === 'ready') toast(`Fleet ${status.availableVersion || 'update'} is ready`, 'good');
-    if (status && status.state === 'error' && (prev === 'downloading' || prev === 'restarting' || prev === 'checking')) {
+    if (status && status.state === 'error' && (prev === 'downloading' || prev === 'staging' || prev === 'restarting' || prev === 'checking')) {
       toast('Update failed - see Settings for details', 'bad');
     }
   });
@@ -3191,6 +3192,13 @@ setInterval(refreshVisiblePeoplePresence, 10000);
   // Independent boot calls run together and each has a timeout, so one broken
   // subsystem can no longer leave users staring at the splash forever.
   await Promise.all([refreshStatus(), loadInstances(), loadAccounts(), loadWatchdog()]);
+  // The last self-update leaves a one-shot result: tell the user it worked
+  // (or why it didn't) instead of the update failing silently after close.
+  const lastUpdate = state.status && state.status.lastUpdateResult;
+  if (lastUpdate) {
+    if (lastUpdate.ok) toast(`Fleet updated to v${lastUpdate.to || 'the latest version'}`, 'good');
+    else toast(`Update failed: ${lastUpdate.error || 'unknown error'} - try again from Settings`, 'bad');
+  }
   state.launchMode = state.accounts.length ? 'account' : 'plain';
   // Reopen the section the user last visited (validated against the nav).
   let startView = 'instances';

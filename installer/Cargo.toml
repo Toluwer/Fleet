@@ -1,6 +1,6 @@
 [package]
 name = "fleet-setup"
-version = "1.7.0"
+version = "1.7.1"
 edition = "2021"
 description = "Fleet's custom installer app - a real Win32 application, not a wizard."
 license = "MIT"
@@ -24,6 +24,7 @@ windows = { version = "0.61", features = [
     "Win32_System_SystemInformation",
     "Win32_System_LibraryLoader",
     "Win32_Security",
+    "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Threading",
 ] }

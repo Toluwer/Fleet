@@ -48,6 +48,19 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($vi.CompanyName)) { throw 'CompanyName missing.' }
           Write-Host "PE metadata OK: FileVersion=$($vi.FileVersion) ProductName=$($vi.ProductName) Company=$($vi.CompanyName)"
 
+      # The self-updater verifies Fleet.exe's ProductVersion after swapping
+      # files, and the installer now trusts the exe over the registry - so a
+      # missing/mismatched version resource would break updating, not just
+      # cosmetics. Gate on it here.
+      - name: Verify portable Fleet.exe PE metadata
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $vi = (Get-Item dist/Fleet/Fleet.exe).VersionInfo
+          if ([string]::IsNullOrWhiteSpace($vi.ProductVersion)) { throw 'Fleet.exe has no VERSIONINFO resource - the updater and installer rely on it.' }
+          if ($vi.ProductVersion -notlike "$version*") { throw "Fleet.exe ProductVersion '$($vi.ProductVersion)' does not match $version." }
+          Write-Host "Fleet.exe ProductVersion OK: $($vi.ProductVersion)"
+
       # Signs before latest.yml/checksums are generated so every published
       # digest matches the signed exe. Skipped entirely without the secrets.
       - name: Sign installer (optional, when cert secrets exist)

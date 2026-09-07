@@ -30,6 +30,21 @@ function makeBackend(ctx) {
 
   logger.configure(userData);
   store.configure(userData, logger);
+
+  // The self-update applier writes a result file before relaunching us;
+  // read it once (then delete it) so the UI can say what happened instead
+  // of the update failing silently after the window closed.
+  const updateResultPath = path.join(userData, 'update-result.json');
+  let lastUpdateResult = null;
+  try {
+    lastUpdateResult = selfupdate.readResultFile(updateResultPath);
+  } catch (err) {
+    logger.warn('Could not read the update result file', err && err.message);
+  }
+  if (lastUpdateResult) {
+    logger.info(`Update result: ${lastUpdateResult.ok ? 'ok' : 'FAILED'}${lastUpdateResult.to ? ' -> v' + lastUpdateResult.to : ''}${lastUpdateResult.error ? ' (' + lastUpdateResult.error + ')' : ''}`);
+  }
+
   try { native.init(); } catch (err) { logger.warn('Native initialization failed', err && err.message); }
   clones.configure(path.join(userData, 'clones'), logger);
   accounts.configure({
@@ -122,6 +137,7 @@ function makeBackend(ctx) {
       ffiError: native.getLoadError(),
       guard: guard.stats(),
       watchdog: keeper.status().summary,
+      lastUpdateResult: lastUpdateResult || null,
       settings,
     };
   }
@@ -480,9 +496,10 @@ function makeBackend(ctx) {
 
   /** Runs the whole update flow and reports every step via updater:status.
    *  The update is applied entirely in place: download the portable package,
-   *  verify its digest, stage it, then hand off to the hidden applier that
-   *  swaps the files while Fleet is closed and relaunches the new version.
-   *  No installer window is ever shown. */
+   *  verify its digest, unpack it, arm the hidden applier - and only once the
+   *  applier is alive and waiting does the app close its window, so the swap
+   *  can never be orphaned by an early exit (that race is what made updates
+   *  "download, close, never come back" before). */
   async function installUpdate() {
     try {
       if (updateState.state !== 'available' && updateState.state !== 'restarting') {
@@ -509,7 +526,11 @@ function makeBackend(ctx) {
       await downloadUpdatePackage(url, zipPath, updateState.portableSize, updateState.portableSha512);
       updateState.downloadedPath = zipPath;
 
-      updateState.state = 'restarting';
+      // Unpack and verify the package BEFORE announcing a restart: the
+      // renderer closes the window on 'restarting', and the window close
+      // tears this process down - so everything time-consuming happens
+      // first, while the app is still open and can still report errors.
+      updateState.state = 'staging';
       updateState.received = null;
       updateState.total = null;
       updateState.percent = null;
@@ -526,14 +547,18 @@ function makeBackend(ctx) {
         installDir: install.dir,
         stageDir,
         updatesDir,
+        resultPath: updateResultPath,
         appPid: process.ppid,
         nodePid: process.pid,
         version: updateState.latestVersion,
       });
       if (!armed.ok) throw new Error(armed.error);
       logger.info(`Update armed: v${updateState.latestVersion} will replace ${install.dir} on restart`);
-      // The renderer closes the window when it sees 'restarting'; the applier
-      // waits for both processes to exit, swaps the files, and relaunches.
+
+      // The applier is now alive and waiting for our pids to disappear, so
+      // it is finally safe to let the renderer close the window.
+      updateState.state = 'restarting';
+      emitUpdate();
     } catch (err) {
       updateState.state = 'error';
       updateState.error = (err && err.message) || String(err);
@@ -552,7 +577,7 @@ function makeBackend(ctx) {
       catch (err) { updateState.state = 'error'; updateState.error = (err && err.message) || String(err); emitUpdate(); return Object.assign({ ok: false }, updateState); }
     },
     async updater_install() {
-      if (updateState.state === 'downloading' || updateState.state === 'restarting') {
+      if (updateState.state === 'downloading' || updateState.state === 'staging' || updateState.state === 'restarting') {
         return Object.assign({ ok: false, error: 'An update is already in progress.' }, updateState);
       }
       // Fire and forget: the download can take minutes, so the IPC call must
