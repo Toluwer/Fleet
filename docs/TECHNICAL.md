@@ -1,12 +1,12 @@
-# Fleet Technical Notes
+# Fleet technical notes
 
 ## Stack
 
-| Concern | Choice |
+| Layer | Choice |
 |---------|--------|
 | Desktop shell | Tauri 2 (Rust, WebView2) |
-| Renderer | Vanilla HTML/CSS/JS, talks through `window.fleet` |
-| Backend | Rust Tauri commands proxy to Node service layer (`src/main`) |
+| Renderer | Plain HTML/CSS/JS, talks through `window.fleet` |
+| Backend | Rust Tauri commands proxying to a Node service layer (`src/main`) |
 | Win32 access | `koffi` FFI |
 | Storage | JSON files, atomic writes |
 
@@ -21,11 +21,11 @@ src/renderer  --window.__TAURI__.core.invoke-->  src-tauri/src/lib.rs
                                             accounts / launcher / native / processes / ...
 ```
 
-The Rust shell starts the Node host at setup. `node.exe` sits beside `Fleet.exe`; portable and installed layouts are identical (installed adds `uninstall.exe`).
+The Rust shell starts the Node host at setup. `node.exe` sits beside `Fleet.exe`; portable and installed layouts are identical, the installed copy just adds `uninstall.exe`.
 
-## Multi-instance mechanism
+## Multiple-instance mechanism
 
-Roblox enforces one client via named kernel objects:
+Roblox enforces one client with named kernel objects:
 
 ```text
 Event/Mutex  \Sessions\N\BaseNamedObjects\ROBLOX_singletonEvent / _Mutex
@@ -34,14 +34,14 @@ Mutex        \Sessions\N\BaseNamedObjects\<path-derived>.mtx
 
 Fleet's approach:
 
-1. Each client launches through its own junction under `%APPDATA%/fleet/clones/instance-N` → unique path → unique path-derived mutex.
-2. `guard.js` closes only the shared `ROBLOX_singleton*` objects as they reappear, leaving per-path mutexes intact.
+1. Each client launches through its own junction under `%APPDATA%/fleet/clones/instance-N`, so each gets a unique path and a unique path-derived mutex.
+2. `guard.js` closes only the shared `ROBLOX_singleton*` objects as they reappear and leaves the per-path mutexes alone.
 
 `native.js` does the Win32 work (enumeration, handle duplication, close) via koffi.
 
 ## Accounts
 
-Sign-in opens a Tauri WebView on Roblox's login page; Fleet watches for `.ROBLOSECURITY`, stores records via the backend, and strips cookies from all renderer responses. Launches mint an auth ticket and build the `roblox-player:` deep link.
+Sign-in opens a Tauri WebView on Roblox's login page. Fleet watches for `.ROBLOSECURITY`, stores records through the backend, and strips cookies from all renderer responses. Launches mint an auth ticket and build the `roblox-player:` deep link.
 
 ## Data paths
 
@@ -55,5 +55,5 @@ Sign-in opens a Tauri WebView on Roblox's login page; Fleet watches for `.ROBLOS
 ## Known limits
 
 - Windows only.
-- Roblox may change its singleton mechanism — updates would land in `native.js` / `guard.js` / `clones.js`.
-- Node service layer is transitional; long-term it moves to Rust.
+- Roblox may change its singleton mechanism; the fix would land in `native.js`, `guard.js` or `clones.js`.
+- The Node service layer is transitional and moves to Rust eventually.
