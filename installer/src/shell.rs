@@ -3,16 +3,27 @@
 
 use std::path::{Path, PathBuf};
 
-use windows::core::{Interface, PCWSTR, PWSTR};
-use windows::Win32::Foundation::{ERROR_CANCELLED, ERROR_SUCCESS, HWND};
+use windows::core::{Interface, PCWSTR, PWSTR, BOOL};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_CANCELLED, ERROR_SUCCESS, HANDLE, HWND, LPARAM, WAIT_OBJECT_0, WPARAM,
+};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, IPersistFile, CLSCTX_INPROC_SERVER,
     COINIT_APARTMENTTHREADED,
+};
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegGetValueW, RegSetValueExW, HKEY,
     HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, REG_OPTION_NON_VOLATILE, REG_VALUE_TYPE,
     RRF_RT_REG_SZ, REG_CREATE_KEY_DISPOSITION,
+};
+use windows::Win32::System::SystemInformation::GetTickCount64;
+use windows::Win32::System::Threading::{
+    OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
+    PROCESS_ACCESS_RIGHTS, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_TERMINATE,
 };
 use windows::Win32::UI::Shell::{
     SHBrowseForFolderW, SHCreateItemFromParsingName, SHGetPathFromIDListW,
@@ -20,7 +31,9 @@ use windows::Win32::UI::Shell::{
     IShellItem, IShellLinkW, ShellLink, SIGDN_FILESYSPATH,
 };
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
-use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetWindowThreadProcessId, PostMessageW, SW_SHOWNORMAL, WM_CLOSE,
+};
 
 // ------------------------------------------------------------------ helpers
 
@@ -381,7 +394,193 @@ fn LPARAM_OF(w: &Vec<u16>) -> windows::Win32::Foundation::LPARAM {
     windows::Win32::Foundation::LPARAM(w.as_ptr() as isize)
 }
 
+// ------------------------------------------------------------------ install state
+
+/// The installed Fleet this installer can see: (folder, version) from the
+/// per-user "Add/Remove Programs" entry. Returns None when Fleet isn't
+/// installed (or the entry is stale and no Fleet.exe is on disk).
+pub fn installed_fleet() -> Option<(PathBuf, String)> {
+    const KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Fleet";
+    let version = reg_query_string(HKEY_CURRENT_USER, KEY, "DisplayVersion").unwrap_or_default();
+    let location =
+        reg_query_string(HKEY_CURRENT_USER, KEY, "InstallLocation").unwrap_or_default();
+    let has_app = |d: &Path| d.is_dir() && d.join("Fleet.exe").is_file();
+    let dir = if !location.is_empty() && has_app(Path::new(&location)) {
+        PathBuf::from(location)
+    } else {
+        // Stale or hand-edited entry: trust the default folder only when
+        // Fleet is really there.
+        let fallback = local_app_data().join("Fleet");
+        if has_app(&fallback) {
+            fallback
+        } else {
+            return None;
+        }
+    };
+    Some((dir, version))
+}
+
+// ------------------------------------------------------------------ process close
+
+/// Case-insensitive "path is inside dir" check (Windows paths).
+fn path_is_under(path: &Path, dir: &Path) -> bool {
+    let lower = |p: &Path| -> Vec<String> {
+        p.components()
+            .filter_map(|c| c.as_os_str().to_str().map(|s| s.to_ascii_lowercase()))
+            .collect()
+    };
+    let (a, b) = (lower(path), lower(dir));
+    !b.is_empty() && a.len() >= b.len() && a[..b.len()] == b[..]
+}
+
+struct CloseCtx<'a> {
+    pids: &'a [u32],
+}
+
+unsafe extern "system" fn enum_post_close(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let ctx = &*(lparam.0 as *const CloseCtx);
+    let mut pid = 0u32;
+    let _ = GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid != 0 && ctx.pids.contains(&pid) {
+        // Ask nicely first; force only after the grace period below.
+        let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+    }
+    BOOL(1)
+}
+
+/// Closes every Fleet.exe / node.exe process running from `dir` so an update
+/// can replace the previous version's files. Graceful WM_CLOSE first, a five
+/// second grace period, then force-termination for anything still alive.
+/// Processes from other folders are never touched.
+pub fn close_fleet_processes(dir: &Path) {
+    let me = std::process::id();
+    let mut pids: Vec<u32> = Vec::new();
+    let mut handles: Vec<HANDLE> = Vec::new();
+
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return;
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snap, &mut entry).is_ok() {
+            loop {
+                let pid = entry.th32ProcessID;
+                if pid != 0 && pid != me {
+                    // QUERY_LIMITED_INFORMATION | TERMINATE | SYNCHRONIZE
+                    let access = PROCESS_ACCESS_RIGHTS(
+                        PROCESS_QUERY_LIMITED_INFORMATION.0
+                            | PROCESS_TERMINATE.0
+                            | 0x0010_0000,
+                    );
+                    if let Ok(h) = OpenProcess(access, false, pid) {
+                        let mut buf = [0u16; 1024];
+                        let mut len = buf.len() as u32;
+                        let image = QueryFullProcessImageNameW(
+                            h,
+                            PROCESS_NAME_WIN32,
+                            PWSTR(buf.as_mut_ptr()),
+                            &mut len,
+                        )
+                        .ok()
+                        .map(|_| PathBuf::from(String::from_utf16_lossy(&buf[..len as usize])));
+                        match image {
+                            Some(p) if path_is_under(&p, dir) => {
+                                pids.push(pid);
+                                handles.push(h);
+                            }
+                            _ => {
+                                let _ = CloseHandle(h);
+                            }
+                        }
+                    }
+                }
+                if Process32NextW(snap, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snap);
+    }
+
+    if pids.is_empty() {
+        return;
+    }
+    log_str(&format!(
+        "close_fleet_processes: closing {} process(es) running from {}",
+        pids.len(),
+        dir.display()
+    ));
+
+    // 1. Graceful: WM_CLOSE to every window those processes own.
+    let ctx = CloseCtx { pids: &pids };
+    unsafe {
+        let _ = EnumWindows(
+            Some(enum_post_close),
+            LPARAM(&ctx as *const CloseCtx as isize),
+        );
+    }
+
+    // 2. Grace period, then force-terminate the survivors.
+    let deadline = unsafe { GetTickCount64() } + 5000;
+    loop {
+        let alive = handles
+            .iter()
+            .filter(|h| unsafe { WaitForSingleObject(**h, 0) } != WAIT_OBJECT_0)
+            .count();
+        if alive == 0 {
+            return;
+        }
+        if unsafe { GetTickCount64() } >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    for h in &handles {
+        if unsafe { WaitForSingleObject(*h, 0) } != WAIT_OBJECT_0 {
+            let _ = unsafe { TerminateProcess(*h, 0) };
+        }
+    }
+    // Give the OS a beat to release the file locks before the caller
+    // starts deleting and rewriting the folder.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+}
+
 // ------------------------------------------------------------------ misc
+
+/// Removes the previous version's files from `dir` - every file and folder
+/// inside it, except the running installer itself - so nothing from an older
+/// Fleet is left behind. A file that is still locked gets parked under a
+/// `.fleetoldNNN` name (running executables can be renamed but not deleted);
+/// the next install's sweep deletes it.
+pub fn wipe_dir(dir: &Path) -> Result<(), String> {
+    let me = std::env::current_exe().ok();
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("could not read the previous install folder\n{e}"))?;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if me.as_deref() == Some(p.as_path()) {
+            continue; // never delete the exe we are running from
+        }
+        let removed = if p.is_dir() {
+            std::fs::remove_dir_all(&p)
+        } else {
+            std::fs::remove_file(&p).or_else(|_| {
+                let parked = p.with_extension(format!("fleetold{}", std::process::id()));
+                std::fs::rename(&p, &parked).map(|_| ())
+            })
+        };
+        if let Err(e) = removed {
+            return Err(format!(
+                "A file from the previous version couldn't be removed.\n{}\nClose Fleet, then try again.\n\n{e}",
+                p.display()
+            ));
+        }
+    }
+    Ok(())
+}
 
 pub fn launch_app(exe: &Path, workdir: &Path) -> bool {
     unsafe {

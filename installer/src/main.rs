@@ -1,7 +1,12 @@
 // Fleet's custom installer - a real Win32 app, not a wizard.
 //
-// Flow (install):   Hello! (fades away) -> choose a folder -> Confirm ->
+// Flow (fresh):     Hello! (fades away) -> choose a folder -> Confirm ->
 //                   Install Fleet -> (fades away) -> installing -> done.
+// Flow (update):    Hello! (fades away) -> New version detected ->
+//                   Update Fleet -> (fades away) -> updating -> done.
+//                   The old version's files are removed and a running Fleet
+//                   is closed automatically, in place, same folder.
+// Flow (same ver):  Hello! (fades away) -> up to date, Close only.
 // Flow (uninstall): Remove Fleet? -> removing -> gone.
 //
 // Every control is a REAL native Windows control (BUTTON / EDIT / STATIC /
@@ -103,6 +108,8 @@ enum Stage {
     Hello,
     Location,
     Ready,
+    UpdateReady,
+    UpToDate,
     Installing,
     Done,
     Error,
@@ -162,6 +169,11 @@ struct App {
     rx: Option<Receiver<Msg>>,
     busy: bool,
     fade: Fade,
+    /// (folder, version) of the Fleet already on this PC, if any. Decides
+    /// whether this run is a fresh install, an update, or a no-op.
+    installed: Option<(PathBuf, String)>,
+    /// True when this run replaces an older installed version.
+    updating: bool,
 }
 
 // ------------------------------------------------------------------ helpers
@@ -179,6 +191,25 @@ fn debug_log(s: &str) {
 
 fn mb(bytes: u64) -> String {
     format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+}
+
+/// Compares dotted versions ("1.5.12" vs "1.6"); non-numeric parts are 0.
+fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let nums = |s: &str| -> Vec<u64> {
+        s.split('.')
+            .map(|p| p.trim().parse::<u64>().unwrap_or(0))
+            .collect()
+    };
+    let (a, b) = (nums(a), nums(b));
+    for i in 0..a.len().max(b.len()) {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        match x.cmp(&y) {
+            std::cmp::Ordering::Equal => continue,
+            o => return o,
+        }
+    }
+    std::cmp::Ordering::Equal
 }
 
 /// Validates a typed/chosen install folder. Returns the cleaned path.
@@ -237,12 +268,28 @@ fn make_font(weight: i32, logical_height: i32, scale: f32) -> HFONT {
 
 // ------------------------------------------------------------------ install workers
 
-fn run_install(dest: &PathBuf, desktop: bool, version: &str, tx: &Sender<Msg>) -> Result<(), String> {
+fn run_install(
+    dest: &PathBuf,
+    desktop: bool,
+    version: &str,
+    is_update: bool,
+    tx: &Sender<Msg>,
+) -> Result<(), String> {
     debug_log("run_install start");
     let pkg = Package::open()
         .ok_or("This copy of the installer is missing its files.\nPlease download Fleet again.")?;
     let entries = pkg.entries()?;
     let total: u64 = entries.iter().map(|e| e.raw_size).sum();
+
+    if is_update {
+        // Replace the previous version in place: close the running app, clear
+        // the old files (nothing from the old version is left behind), then
+        // extract the new payload over the same folder.
+        let _ = tx.send(Msg::Note("Closing Fleet…".into()));
+        shell::close_fleet_processes(dest);
+        let _ = tx.send(Msg::Note("Removing the previous version…".into()));
+        shell::wipe_dir(dest)?;
+    }
 
     std::fs::create_dir_all(dest)
         .map_err(|e| format!("Could not create the folder {}\n{e}", dest.display()))?;
@@ -377,12 +424,33 @@ unsafe extern "system" fn wnd_proc(
                 .and_then(|p| p.parent().map(|p| p.to_path_buf()))
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
+
+            // An existing install decides the whole flow: older version ->
+            // update, same or newer -> up to date, nothing -> fresh install.
+            let installed = if uninstall { None } else { shell::installed_fleet() };
+            let updating = installed
+                .as_ref()
+                .map(|(_, v)| version_cmp(v, FLEET_VERSION) == std::cmp::Ordering::Less)
+                .unwrap_or(false);
+
             // Uninstall mode always operates on the folder we live in
-            // (the registry UninstallString points here).
+            // (the registry UninstallString points here). Updates always go
+            // to the folder the existing Fleet lives in.
             let path = if uninstall {
                 exe_dir
+            } else if let Some((dir, _)) = &installed {
+                dir.to_string_lossy().to_string()
             } else {
                 preset_path.unwrap_or(default_path)
+            };
+
+            // On an update, keep the desktop shortcut only if one is already
+            // there (the user's earlier choice); fresh installs offer it.
+            let desktop_shortcut = if updating {
+                let d = shell::special_folder(CSIDL_DESKTOPDIRECTORY);
+                !d.as_os_str().is_empty() && d.join("Fleet.lnk").exists()
+            } else {
+                true
             };
 
             let fonts = Fonts {
@@ -404,13 +472,15 @@ unsafe extern "system" fn wnd_proc(
                 ctrls: Vec::new(),
                 alpha: 0,
                 path,
-                desktop_shortcut: true,
+                desktop_shortcut,
                 delete_data: false,
                 last_error: String::new(),
                 install_dest: PathBuf::new(),
                 rx: None,
                 busy: false,
                 fade: Fade { active: false, from: 0, to: 255, t0: 0, dur: 1, after: After::None },
+                installed,
+                updating,
             });
             let raw = Box::into_raw(app);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, raw as isize);
@@ -434,7 +504,7 @@ unsafe extern "system" fn wnd_proc(
                     IDT_FADE => step_fade(a),
                     IDT_HELLO => {
                         let _ = KillTimer(Some(hwnd), IDT_HELLO);
-                        goto_stage(a, Stage::Location);
+                        goto_stage(a, first_stage(a));
                     }
                     IDT_DEMO => {
                         let _ = KillTimer(Some(hwnd), IDT_DEMO);
@@ -494,6 +564,8 @@ unsafe extern "system" fn wnd_proc(
                 if a.busy {
                     let text = if a.uninstall_mode {
                         "Fleet isn't finished removing itself yet.\nQuit anyway?"
+                    } else if a.updating {
+                        "Fleet isn't finished updating yet.\nQuit anyway?"
                     } else {
                         "Fleet isn't finished installing yet.\nQuit anyway?"
                     };
@@ -699,6 +771,21 @@ fn goto_stage(a: &mut App, next: Stage) {
     start_fade(a, 0, 240, After::Show(next));
 }
 
+/// The stage after the Hello beat: fresh install picks a folder, an older
+/// install updates, a same/newer install is told it's already up to date.
+fn first_stage(a: &App) -> Stage {
+    match &a.installed {
+        None => Stage::Location,
+        Some((_, v)) => {
+            if version_cmp(v, FLEET_VERSION) == std::cmp::Ordering::Less {
+                Stage::UpdateReady
+            } else {
+                Stage::UpToDate
+            }
+        }
+    }
+}
+
 fn fade_quit(a: &mut App) {
     start_fade(a, 0, 180, After::Quit);
 }
@@ -890,9 +977,63 @@ fn build_stage(a: &mut App) {
                 focus_ctrl(a, IDC_INSTALL);
             }
 
+            Stage::UpdateReady => {
+                let old = a
+                    .installed
+                    .as_ref()
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default();
+                let sub = if old.is_empty() {
+                    format!("Fleet will be updated to v{FLEET_VERSION}.")
+                } else {
+                    format!("Fleet v{old} will be updated to v{FLEET_VERSION}.")
+                };
+                let path_text = a.path.clone();
+                static_text!(a, "New version detected", 0, Some(f.head), 36, 44, 428, 32, IDC_HEAD);
+                static_text!(a, &sub, 0, Some(f.body), 36, 84, 428, 20, IDC_SUB);
+                static_text!(a, "Updating in place:", 0, Some(f.body), 36, 116, 428, 20, IDC_SUB);
+                static_text!(a, &path_text, 0x4000, Some(f.path), 36, 142, 428, 26, IDC_PATH);
+                static_text!(
+                    a,
+                    "Fleet will close while it updates. Your accounts and settings stay where they are.",
+                    0x2000, // SS_EDITCONTROL (wraps)
+                    Some(f.body),
+                    36, 184, 410, 42,
+                    IDC_HINT
+                );
+
+                divider!(a);
+                button!(a, "Update Fleet", 0x1, 344, 298, 120, 32, IDC_INSTALL, f.body);
+                focus_ctrl(a, IDC_INSTALL);
+            }
+
+            Stage::UpToDate => {
+                let cur = a
+                    .installed
+                    .as_ref()
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default();
+                let sub = if version_cmp(&cur, FLEET_VERSION) == std::cmp::Ordering::Equal {
+                    format!("The latest version (v{FLEET_VERSION}) is already installed.")
+                } else {
+                    format!("A newer version (v{cur}) is already installed.")
+                };
+                static_text!(a, "Fleet is up to date.", 0, Some(f.head), 36, 96, 428, 32, IDC_HEAD);
+                static_text!(a, &sub, 0, Some(f.body), 36, 136, 410, 44, IDC_SUB);
+
+                divider!(a);
+                button!(a, "Close", 0x1, 344, 298, 120, 32, IDC_CLOSE, f.body);
+                focus_ctrl(a, IDC_CLOSE);
+            }
+
             Stage::Installing => {
-                static_text!(a, "Installing Fleet…", 0, Some(f.head), 36, 44, 428, 32, IDC_HEAD);
-                static_text!(a, "Copying files…", 0, Some(f.body), 36, 84, 428, 20, IDC_SUB);
+                let (head, note) = if a.updating {
+                    ("Updating Fleet…", "Closing Fleet…")
+                } else {
+                    ("Installing Fleet…", "Copying files…")
+                };
+                static_text!(a, head, 0, Some(f.head), 36, 44, 428, 32, IDC_HEAD);
+                static_text!(a, note, 0, Some(f.body), 36, 84, 428, 20, IDC_SUB);
 
                 let prog = add_ctrl(
                     a,
@@ -917,8 +1058,16 @@ fn build_stage(a: &mut App) {
 
             Stage::Done => {
                 let dest_text = a.install_dest.to_string_lossy().to_string();
-                static_text!(a, "Fleet is installed.", 0, Some(f.head), 36, 72, 428, 32, IDC_HEAD);
-                static_text!(a, "Launch it whenever you're ready.", 0, Some(f.body), 36, 112, 428, 20, IDC_SUB);
+                let (head, sub) = if a.updating {
+                    (
+                        "Fleet is updated.",
+                        format!("You're on the latest version - v{FLEET_VERSION}."),
+                    )
+                } else {
+                    ("Fleet is installed.", "Launch it whenever you're ready.".to_string())
+                };
+                static_text!(a, head, 0, Some(f.head), 36, 72, 428, 32, IDC_HEAD);
+                static_text!(a, &sub, 0, Some(f.body), 36, 112, 428, 20, IDC_SUB);
                 static_text!(
                     a,
                     &dest_text,
@@ -1006,6 +1155,8 @@ fn build_stage(a: &mut App) {
             let delay: usize = match a.stage {
                 Stage::Location => 2200,
                 Stage::Ready => 2000,
+                Stage::UpdateReady => 2000,
+                Stage::UpToDate => 2500,
                 Stage::Done => 3000,
                 Stage::UninstallConfirm => 2000,
                 Stage::Uninstalled => 2500,
@@ -1105,6 +1256,8 @@ fn demo_advance(a: &mut App) {
     match a.stage {
         Stage::Location => on_button(a, IDC_CONFIRM),
         Stage::Ready => on_button(a, IDC_INSTALL),
+        Stage::UpdateReady => on_button(a, IDC_INSTALL),
+        Stage::UpToDate => fade_quit(a),
         Stage::Done | Stage::Uninstalled => fade_quit(a),
         Stage::UninstallConfirm => on_button(a, IDC_REMOVE),
         _ => {}
@@ -1117,13 +1270,14 @@ fn start_install(a: &mut App) {
     let dest = a.install_dest.clone();
     let desktop = a.desktop_shortcut;
     let version = FLEET_VERSION.to_string();
+    let is_update = a.updating;
     let (tx, rx) = channel::<Msg>();
     a.rx = Some(rx);
     a.busy = true;
     unsafe {
         let _ = SetTimer(Some(a.hwnd), IDT_POLL, 40, None);
     }
-    std::thread::spawn(move || match run_install(&dest, desktop, &version, &tx) {
+    std::thread::spawn(move || match run_install(&dest, desktop, &version, is_update, &tx) {
         Ok(()) => {
             let _ = tx.send(Msg::Done);
         }

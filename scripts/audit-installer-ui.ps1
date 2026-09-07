@@ -9,7 +9,10 @@ param(
 #      Hello -> folder -> Confirm -> Install Fleet -> done) and screenshots
 #      the screen throughout.
 #   2. Verifies the install actually happened: files, registry, shortcuts.
-#   3. Uninstalls and verifies removal.
+#   3. Re-runs it: same version -> must show "already installed" and close.
+#   4. Fakes an older installed version, re-runs it -> update flow: closes
+#      Fleet, removes the previous version's files, installs the new one.
+#   5. Uninstalls and verifies removal.
 # Output lands in .\audit-output\
 
 $ErrorActionPreference = 'Stop'
@@ -17,6 +20,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $outDir = Join-Path $root 'audit-output'
 if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+$version = (Get-Content (Join-Path $root 'package.json') -Raw | ConvertFrom-Json).version
 
 if (-not $InstallerPath) {
     $InstallerPath = Join-Path $root 'dist\FleetInstaller.exe'
@@ -82,6 +86,63 @@ if (-not (Get-Item $uninstallKey -ErrorAction SilentlyContinue)) {
 
 $programs = [Environment]::GetFolderPath('Programs')
 if (-not (Test-Path (Join-Path $programs 'Fleet\Fleet.lnk'))) { $problems += 'Start Menu shortcut missing.' }
+
+# ---- same version: re-running the installer must be a no-op ---------------
+$proc = Start-Process -FilePath $InstallerPath -ArgumentList '--demo' -PassThru
+$sw = [Diagnostics.Stopwatch]::StartNew()
+while (-not $proc.HasExited -and $sw.Elapsed.TotalSeconds -lt 90) { Start-Sleep -Milliseconds 500 }
+if (-not $proc.HasExited) {
+    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    $problems += 'Installer did not close itself when the same version is already installed (expected the up-to-date screen with Close only).'
+} else {
+    Write-Host 'Same-version re-run showed the up-to-date screen and closed on its own.'
+}
+$entry = Get-ItemProperty $uninstallKey -ErrorAction SilentlyContinue
+if (-not $entry -or $entry.DisplayVersion -ne $version) {
+    $problems += "DisplayVersion is wrong after the no-op re-run: '$($entry.DisplayVersion)'."
+}
+
+# ---- older version: the update flow replaces the previous install ---------
+Set-ItemProperty $uninstallKey -Name DisplayVersion -Value '0.0.1'
+$canary = Join-Path $installDir 'stale-file-from-old-version.txt'
+Set-Content -Path $canary -Value 'left over by the old version' -Encoding ascii
+
+$proc = Start-Process -FilePath $InstallerPath -ArgumentList '--demo' -PassThru
+$shot = 0
+$sw = [Diagnostics.Stopwatch]::StartNew()
+while (-not $proc.HasExited -and $sw.Elapsed.TotalSeconds -lt 600) {
+    # Screenshot the early UI stages (Hello -> New version detected ->
+    # Updating Fleet...), then just wait out the long file copy.
+    if ($sw.Elapsed.TotalSeconds -lt 30) {
+        try {
+            $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+            $g.Dispose()
+            $bmp.Save((Join-Path $outDir ("update-{0:d2}.png" -f $shot)), [System.Drawing.Imaging.ImageFormat]::Png)
+            $bmp.Dispose()
+            $shot++
+        } catch { }
+        Start-Sleep -Milliseconds 700
+    } else {
+        Start-Sleep -Milliseconds 2000
+    }
+}
+if (-not $proc.HasExited) {
+    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    $problems += 'Update flow did not finish within 10 minutes.'
+} else {
+    Write-Host "Update flow finished ($([int]$sw.Elapsed.TotalSeconds)s, $shot screenshots)."
+}
+
+if (Test-Path $canary) { $problems += 'A file from the previous version survived the update (previous version not fully deleted).' }
+if (-not (Test-Path (Join-Path $installDir 'Fleet.exe')))     { $problems += 'Fleet.exe missing after the update.' }
+if (-not (Test-Path (Join-Path $installDir 'node.exe')))      { $problems += 'node.exe missing after the update.' }
+if (-not (Test-Path (Join-Path $installDir 'uninstall.exe'))) { $problems += 'uninstall.exe missing after the update.' }
+$entry = Get-ItemProperty $uninstallKey -ErrorAction SilentlyContinue
+if (-not $entry -or $entry.DisplayVersion -ne $version) {
+    $problems += "DisplayVersion not refreshed by the update: '$($entry.DisplayVersion)'."
+}
 
 # ---- uninstall and verify removal ------------------------------------------
 if (Test-Path (Join-Path $installDir 'uninstall.exe')) {
