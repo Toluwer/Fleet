@@ -4,8 +4,8 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
 const downloader = require('./download');
+const selfupdate = require('./selfupdate');
 
 const logger = require('./logger');
 const store = require('./store');
@@ -156,6 +156,9 @@ function makeBackend(ctx) {
     path: null,
     sha512: null,
     size: null,
+    portableUrl: null,
+    portableSha512: null,
+    portableSize: null,
     downloadedPath: null,
     error: null,
     checkedAt: null,
@@ -222,14 +225,12 @@ function makeBackend(ctx) {
     });
   }
 
-  async function downloadUpdate(latest) {
-    const asset = latest.url || latest.path || 'FleetInstaller.exe';
-    const url = /^https?:\/\//i.test(asset)
-      ? asset
-      : `https://github.com/Toluwer/Fleet/releases/latest/download/${asset}`;
-    const dir = path.join(userData, 'updates');
+  /** Downloads the update package to `updatesDir`, verifying the digest the
+   * feed signed BEFORE anything is extracted or run. A mismatched download is
+   * retried once from scratch, then reported as a real error. */
+  async function downloadUpdatePackage(url, target, expectedSize, expectedSha512) {
+    const dir = path.dirname(target);
     fs.mkdirSync(dir, { recursive: true });
-    const target = path.join(dir, 'FleetInstaller.exe');
     const part = target + '.part';
 
     updateState.received = null;
@@ -256,10 +257,8 @@ function makeBackend(ctx) {
       throw new Error(`${err && err.message ? err.message : String(err)}. The download can also be finished in your browser from the releases page.`);
     }
 
-    // Verify the signed digest published in latest.yml BEFORE writing the
-    // final file or executing anything — a mismatched download is never run.
-    // A corrupt partial can still resume "successfully" (sizes add up) and
-    // only fail verification, so a failed check retries once from scratch.
+    // A corrupt partial can resume "successfully" (sizes add up) and only
+    // fail verification, so a failed check retries once from scratch.
     let verified = false;
     for (let verifyAttempt = 0; verifyAttempt < 2 && !verified; verifyAttempt++) {
       try {
@@ -268,14 +267,14 @@ function makeBackend(ctx) {
           await downloader.downloadToFile(url, part, { onProgress });
         }
         const size = fs.statSync(part).size;
-        if (latest.size && size !== Number(latest.size)) {
-          throw new Error('Downloaded installer size did not match latest.yml.');
+        if (expectedSize && size !== Number(expectedSize)) {
+          throw new Error(`Downloaded update size did not match the release feed (${size} vs ${expectedSize} bytes).`);
         }
-        const expected = normalizeDigest(latest.sha512);
-        if (!expected) throw new Error('Update feed did not publish a checksum for the installer, so it cannot be verified.');
+        const expected = normalizeDigest(expectedSha512);
+        if (!expected) throw new Error('The update feed did not publish a checksum, so the download cannot be verified.');
         const actual = await hashFile(part);
         if (normalizeDigest(actual) !== expected) {
-          throw new Error('Downloaded installer failed checksum verification and was discarded.');
+          throw new Error('Downloaded update failed checksum verification and was discarded.');
         }
         verified = true;
         fs.renameSync(part, target);
@@ -318,6 +317,9 @@ function makeBackend(ctx) {
     updateState.path = latest.path || 'FleetInstaller.exe';
     updateState.sha512 = latest.sha512 || null;
     updateState.size = latest.size || null;
+    updateState.portableUrl = latest.portableUrl || latest.portablePath || null;
+    updateState.portableSha512 = latest.portableSha512 || null;
+    updateState.portableSize = latest.portableSize || null;
     if (!updateState.latestVersion || !newerThan(updateState.latestVersion, appVersion)) {
       updateState.state = 'current';
       updateState.downloadedPath = null;
@@ -329,77 +331,62 @@ function makeBackend(ctx) {
     return Object.assign({ ok: true }, updateState);
   }
 
-  /** Starts the downloaded installer. Resolves { ok } or { ok:false, error }.
-   * Every failure mode reaches updateState.state = 'error' with a real
-   * message - the updater must never sit on "Starting the installer…". */
-  function startInstaller() {
-    return new Promise((resolve) => {
-      const exe = updateState.downloadedPath;
-      if (!exe || !fs.existsSync(exe)) {
-        resolve({ ok: false, error: 'The downloaded installer is gone - your antivirus likely quarantined it. Check Protection history, allow Fleet, then use "Download in browser".' });
-        return;
-      }
-      try {
-        const size = fs.statSync(exe).size;
-        if (updateState.size && size !== Number(updateState.size)) {
-          resolve({ ok: false, error: `The downloaded installer changed size on disk (${size} vs ${updateState.size} bytes) - it may have been tampered with or partly quarantined. Please download it again.` });
-          return;
-        }
-      } catch (err) {
-        resolve({ ok: false, error: `Could not read the downloaded installer: ${err.message}` });
-        return;
-      }
-
-      let child;
-      try {
-        child = spawn(exe, [], { detached: true, stdio: 'ignore', windowsHide: true });
-      } catch (err) {
-        resolve({ ok: false, error: `Could not start the installer: ${err.message}` });
-        return;
-      }
-
-      let settled = false;
-      const done = (result) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(failTimer);
-        resolve(result);
-      };
-      // Without this listener a failed spawn (file quarantined, execution
-      // blocked) raises an uncaught 'error' event instead of reporting back -
-      // exactly the stuck-on-"Starting the installer" bug.
-      child.once('error', (err) => {
-        const code = err.code || '';
-        let msg = `Could not start the installer: ${err.message}`;
-        if (code === 'ENOENT') msg = 'The installer file vanished before starting - your antivirus likely quarantined it. Check Protection history, allow Fleet, then use "Download in browser".';
-        else if (code === 'EACCES' || code === 'EPERM') msg = 'Windows blocked the installer from starting - your antivirus or SmartScreen may be holding it. Allow Fleet in Protection history, then retry.';
-        done({ ok: false, error: msg });
-      });
-      // 'spawn' fires once the process actually exists - success signal.
-      child.once('spawn', () => { child.unref(); done({ ok: true }); });
-      // Safety net: if neither event arrives quickly, unref and assume OK
-      // (a GUI app may take a moment; we must not block the update flow).
-      const failTimer = setTimeout(() => { child.unref(); done({ ok: true }); }, 8000);
-    });
-  }
-
-  /** Runs the whole update flow and reports every step via updater:status. */
+  /** Runs the whole update flow and reports every step via updater:status.
+   *  The update is applied entirely in place: download the portable package,
+   *  verify its digest, stage it, then hand off to the hidden applier that
+   *  swaps the files while Fleet is closed and relaunches the new version.
+   *  No installer window is ever shown. */
   async function installUpdate() {
     try {
-      if (updateState.state !== 'available' && updateState.state !== 'downloaded') {
+      if (updateState.state !== 'available' && updateState.state !== 'restarting') {
         await checkForUpdate();
-        if (updateState.state !== 'available' && updateState.state !== 'downloaded') return; // current / nothing to do
+        if (updateState.state !== 'available') return; // current / nothing to do
       }
+      if (!updateState.portableUrl || !updateState.portableSha512) {
+        throw new Error('This release does not publish a package the built-in updater can install. Use "Download in browser" from the releases page instead.');
+      }
+
+      const asset = updateState.portableUrl;
+      const url = /^https?:\/\//i.test(asset)
+        ? asset
+        : `https://github.com/Toluwer/Fleet/releases/latest/download/${asset}`;
+      const updatesDir = path.join(userData, 'updates');
+      // Sweep any leftovers from an earlier run (the applier also cleans up
+      // after itself, but a failed run must not poison the next one).
+      try { fs.rmSync(updatesDir, { recursive: true, force: true }); } catch (_) { /* nothing to sweep */ }
+      const zipPath = path.join(updatesDir, 'FleetUpdate.zip');
+
       updateState.state = 'downloading';
       updateState.error = null;
       emitUpdate();
-      updateState.downloadedPath = await downloadUpdate(updateState);
-      updateState.state = 'installing';
+      await downloadUpdatePackage(url, zipPath, updateState.portableSize, updateState.portableSha512);
+      updateState.downloadedPath = zipPath;
+
+      updateState.state = 'restarting';
+      updateState.received = null;
+      updateState.total = null;
+      updateState.percent = null;
       emitUpdate();
-      const started = await startInstaller();
-      if (!started.ok) throw new Error(started.error);
-      updateState.state = 'launched';
-      emitUpdate();
+
+      const stageDir = path.join(updatesDir, 'staged');
+      const staged = selfupdate.stageZip(zipPath, stageDir);
+      if (!staged.ok) throw new Error(staged.error);
+
+      const install = selfupdate.resolveInstallDir(process.execPath);
+      if (!install.ok) throw new Error(install.error);
+
+      const armed = await selfupdate.applyUpdate({
+        installDir: install.dir,
+        stageDir,
+        updatesDir,
+        appPid: process.ppid,
+        nodePid: process.pid,
+        version: updateState.latestVersion,
+      });
+      if (!armed.ok) throw new Error(armed.error);
+      logger.info(`Update armed: v${updateState.latestVersion} will replace ${install.dir} on restart`);
+      // The renderer closes the window when it sees 'restarting'; the applier
+      // waits for both processes to exit, swaps the files, and relaunches.
     } catch (err) {
       updateState.state = 'error';
       updateState.error = (err && err.message) || String(err);
@@ -418,7 +405,7 @@ function makeBackend(ctx) {
       catch (err) { updateState.state = 'error'; updateState.error = (err && err.message) || String(err); emitUpdate(); return Object.assign({ ok: false }, updateState); }
     },
     async updater_install() {
-      if (updateState.state === 'downloading' || updateState.state === 'installing') {
+      if (updateState.state === 'downloading' || updateState.state === 'restarting') {
         return Object.assign({ ok: false, error: 'An update is already in progress.' }, updateState);
       }
       // Fire and forget: the download can take minutes, so the IPC call must

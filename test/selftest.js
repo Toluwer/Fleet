@@ -579,38 +579,196 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     global.fetch = originalFetch;
   }
 
-  check('Updater checks GitHub latest.yml and installs FleetInstaller.exe',
+  check('Updater feed carries the portable package the self-updater installs',
     ipcSource.includes('https://github.com/Toluwer/Fleet/releases/latest/download/latest.yml')
-    && ipcSource.includes('FleetInstaller.exe')
-    && ipcSource.includes("state = 'available'")
-    && ipcSource.includes("state = 'installing'"));
+    && ipcSource.includes('portableUrl')
+    && ipcSource.includes('portableSha512')
+    && ipcSource.includes("state = 'restarting'"));
 
-  check('Updater never wedges on "Starting the installer" (guarded spawn)',
-    ipcSource.includes('function startInstaller')
-    && ipcSource.includes("child.once('error'")
-    && ipcSource.includes("child.once('spawn'")
-    && ipcSource.includes("state = 'launched'")
-    && ipcSource.includes('fs.existsSync(exe)'));
+  check('In-app update never spawns an installer window',
+    !ipcSource.includes('startInstaller')
+    && !ipcSource.includes("state = 'launched'")
+    && !ipcSource.includes("state = 'installing'")
+    && !/spawn\(\s*(exe|updateState\.downloadedPath)/.test(ipcSource));
 
-  // Behavioral proof of the same guard: a quarantined/missing exe must surface
-  // ENOENT as a handled error (previously: uncaught 'error' event, stuck UI),
-  // and a real spawn must report success via the 'spawn' event.
+  check('Renderer closes the app when the update is armed (installer-free restart)',
+    rendererSource.includes("status.state === 'restarting'")
+    && rendererSource.includes('api.ui.window.close()')
+    && !rendererSource.includes('The installer window is open'));
+
+  // ---- self-update engine (unzip + staging + applier) ----
   {
-    const { spawn } = require('child_process');
-    const guardSpawn = (cmd, args, opts) => new Promise((resolve) => {
-      let child;
-      try { child = spawn(cmd, args, opts); }
-      catch (err) { resolve({ ok: false, code: err.code }); return; }
-      let settled = false;
-      const done = (r) => { if (!settled) { settled = true; clearTimeout(t); resolve(r); } };
-      const t = setTimeout(() => { child.unref(); done({ ok: true, late: true }); }, 8000);
-      child.once('error', (err) => done({ ok: false, code: err.code }));
-      child.once('spawn', () => { child.unref(); done({ ok: true }); });
-    });
-    const missing = await guardSpawn(path.join(os.tmpdir(), 'fleet-definitely-not-here-928374.exe'), [], { detached: true, stdio: 'ignore' });
-    check('Guarded spawn reports a missing installer as ENOENT (no crash, no wedge)', !missing.ok && missing.code === 'ENOENT', JSON.stringify(missing));
-    const okSpawn = await guardSpawn(process.execPath, ['-e', ''], { detached: true, stdio: 'ignore' });
-    check('Guarded spawn confirms a healthy installer start', okSpawn.ok, JSON.stringify(okSpawn));
+    const zlib = require('zlib');
+    const unzip = require('../src/main/unzip');
+    const selfupdate = require('../src/main/selfupdate');
+
+    // Tiny zip writer so the extractor is proven against real bytes, including
+    // the two PowerShell Compress-Archive quirks: backslash entry names and
+    // local headers with zero sizes + data descriptors.
+    const makeZip = (entries) => {
+      const locals = [];
+      const centrals = [];
+      let offset = 0;
+      for (const e of entries) {
+        const data = Buffer.isBuffer(e.data) ? e.data : Buffer.from(String(e.data), 'utf8');
+        const name = Buffer.from(e.name, 'utf8');
+        const method = e.method === 'deflate' ? 8 : 0;
+        const payload = method === 8 ? zlib.deflateRawSync(data) : data;
+        const crc = e.crc != null ? e.crc : unzip.crc32(data);
+        const descriptor = !!e.descriptor;
+        const flags = descriptor ? 0x08 : 0;
+        const external = e.dir ? 0x10 : 0;
+        const local = Buffer.alloc(30);
+        local.writeUInt32LE(0x04034b50, 0);
+        local.writeUInt16LE(20, 4);
+        local.writeUInt16LE(flags, 6);
+        local.writeUInt16LE(method, 8);
+        local.writeUInt32LE(descriptor ? 0 : crc, 14);
+        local.writeUInt32LE(descriptor ? 0 : payload.length, 18);
+        local.writeUInt32LE(descriptor ? 0 : data.length, 22);
+        local.writeUInt16LE(name.length, 26);
+        local.writeUInt16LE(0, 28);
+        const localBlob = descriptor
+          ? Buffer.concat([local, name, payload, (() => { const d = Buffer.alloc(16); d.writeUInt32LE(0x08074b50, 0); d.writeUInt32LE(crc, 4); d.writeUInt32LE(payload.length, 8); d.writeUInt32LE(data.length, 12); return d; })()])
+          : Buffer.concat([local, name, payload]);
+        const central = Buffer.alloc(46);
+        central.writeUInt32LE(0x02014b50, 0);
+        central.writeUInt16LE(20, 4);
+        central.writeUInt16LE(20, 6);
+        central.writeUInt16LE(flags, 8);
+        central.writeUInt16LE(method, 10);
+        central.writeUInt32LE(crc, 16);
+        central.writeUInt32LE(payload.length, 20);
+        central.writeUInt32LE(data.length, 24);
+        central.writeUInt16LE(name.length, 28);
+        central.writeUInt32LE(external, 38);
+        central.writeUInt32LE(offset, 42);
+        locals.push(localBlob);
+        centrals.push(Buffer.concat([central, name]));
+        offset += localBlob.length;
+      }
+      const centralBlob = Buffer.concat(centrals);
+      const eocd = Buffer.alloc(22);
+      eocd.writeUInt32LE(0x06054b50, 0);
+      eocd.writeUInt16LE(entries.length, 8);
+      eocd.writeUInt16LE(entries.length, 10);
+      eocd.writeUInt32LE(centralBlob.length, 12);
+      eocd.writeUInt32LE(offset, 16);
+      return Buffer.concat([...locals, centralBlob, eocd]);
+    };
+
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-unzip-'));
+    try {
+      // 1. Compress-Archive layout: backslash names, "Fleet\" root, deflated
+      //    files with data descriptors, a stored file, a directory entry.
+      const zipA = path.join(tmp, 'portable.zip');
+      fs.writeFileSync(zipA, makeZip([
+        { name: 'Fleet\\', dir: true, data: '' },
+        { name: 'Fleet\\Fleet.exe', method: 'deflate', descriptor: true, data: 'MZ fake exe' },
+        { name: 'Fleet\\src\\main\\host.js', method: 'deflate', data: 'console.log(1)' },
+        { name: 'Fleet\\node.exe', method: 'store', data: 'MZ node' },
+      ]));
+      const names = unzip.listEntries(zipA);
+      check('Zip reader understands Compress-Archive entries (backslash names)',
+        names.includes('Fleet\\Fleet.exe') && names.length === 4);
+
+      const stageA = path.join(tmp, 'stage-a');
+      const written = unzip.extractZip(zipA, stageA, { stripRoot: 'Fleet' });
+      check('Zip extraction handles deflate, data descriptors and root stripping',
+        written.length === 3
+        && fs.readFileSync(path.join(stageA, 'Fleet.exe'), 'utf8') === 'MZ fake exe'
+        && fs.readFileSync(path.join(stageA, 'node.exe'), 'utf8') === 'MZ node'
+        && fs.readFileSync(path.join(stageA, 'src', 'main', 'host.js'), 'utf8') === 'console.log(1)');
+
+      // 2. stageZip drives the same layout end to end.
+      const staged = selfupdate.stageZip(zipA, path.join(tmp, 'stage-b'));
+      check('stageZip unpacks a portable archive and finds Fleet.exe',
+        staged.ok && fs.existsSync(path.join(tmp, 'stage-b', 'Fleet.exe')));
+
+      // 3. No root folder: files at the top level still stage.
+      const zipB = path.join(tmp, 'flat.zip');
+      fs.writeFileSync(zipB, makeZip([{ name: 'Fleet.exe', method: 'store', data: 'MZ flat' }]));
+      const stagedFlat = selfupdate.stageZip(zipB, path.join(tmp, 'stage-c'));
+      check('stageZip accepts an archive without a root folder',
+        stagedFlat.ok && fs.readFileSync(path.join(tmp, 'stage-c', 'Fleet.exe'), 'utf8') === 'MZ flat');
+
+      // 4. A package without Fleet.exe is refused before anything is applied.
+      const zipC = path.join(tmp, 'no-exe.zip');
+      fs.writeFileSync(zipC, makeZip([{ name: 'readme.txt', method: 'store', data: 'nope' }]));
+      const stagedBad = selfupdate.stageZip(zipC, path.join(tmp, 'stage-d'));
+      check('stageZip rejects a package with no Fleet.exe',
+        !stagedBad.ok && /Fleet\.exe/.test(stagedBad.error));
+
+      // 5. Corrupt payload (CRC mismatch) is caught, not silently extracted.
+      const zipD = path.join(tmp, 'corrupt.zip');
+      fs.writeFileSync(zipD, makeZip([{ name: 'Fleet\\Fleet.exe', method: 'deflate', descriptor: true, data: 'good data', crc: 0xdeadbeef }]));
+      let corruptErr = null;
+      try { unzip.extractZip(zipD, path.join(tmp, 'stage-e'), { stripRoot: 'Fleet' }); } catch (err) { corruptErr = err; }
+      check('Zip checksum verification rejects corrupted entries',
+        corruptErr && /Checksum mismatch/.test(corruptErr.message));
+
+      // 6. Path traversal is rejected before any file is written.
+      const zipE = path.join(tmp, 'evil.zip');
+      fs.writeFileSync(zipE, makeZip([{ name: '..\\..\\evil.txt', method: 'store', data: 'pwn' }]));
+      let evilErr = null;
+      try { unzip.extractZip(zipE, path.join(tmp, 'stage-f')); } catch (err) { evilErr = err; }
+      check('Zip path traversal (zip-slip) is refused',
+        evilErr && /escapes/.test(evilErr.message)
+        && !fs.existsSync(path.join(tmp, 'evil.txt'))
+        && !fs.existsSync(path.join(os.tmpdir(), 'evil.txt')));
+
+      // 7. resolveInstallDir: only a folder that actually contains Fleet.exe.
+      const installRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-install-'));
+      const realInstall = path.join(installRoot, 'Fleet');
+      fs.mkdirSync(realInstall, { recursive: true });
+      const locatedEmpty = selfupdate.resolveInstallDir(path.join(realInstall, 'node.exe'));
+      check('resolveInstallDir refuses a folder without Fleet.exe',
+        !locatedEmpty.ok && /development folder/.test(locatedEmpty.error));
+      fs.writeFileSync(path.join(realInstall, 'Fleet.exe'), 'MZ');
+      const located = selfupdate.resolveInstallDir(path.join(realInstall, 'node.exe'));
+      check('resolveInstallDir finds the install folder next to node.exe',
+        located.ok && located.dir === realInstall);
+
+      // 8. The applier script: swaps files without the installer, keeps the
+      //    uninstaller, syncs Add/Remove Programs and relaunches Fleet.
+      const script = selfupdate.buildApplyScript({
+        installDir: 'C:\\Apps\\Fleet', stageDir: 'C:\\Users\\t\\AppData\\staged',
+        updatesDir: 'C:\\Users\\t\\AppData\\updates', appPid: 100, nodePid: 200, version: '1.5.14',
+      });
+      check('Applier mirrors the staged version and preserves uninstall.exe',
+        script.includes('robocopy $StageDir $InstallDir /MIR /XF uninstall.exe')
+        && script.includes('Stop-Process -Id $p -Force'));
+      check('Applier waits for Fleet to exit, then relaunches the new version',
+        script.includes('Wait-Process -Timeout 45')
+        && script.includes("Start-Process -FilePath $fleetExe"));
+      check('Applier syncs the Add/Remove Programs version',
+        script.includes('DisplayVersion -Value $Version')
+        && script.includes('InstallLocation -Value $InstallDir'));
+      check('Applier log lives in TEMP for support diagnostics',
+        script.includes("Join-Path $env:TEMP 'FleetUpdate.log'"));
+
+      // The applier itself only ever runs on Windows (checked statically so
+      // the selftest never spawns a real PowerShell process on any platform).
+      const selfupdateSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'selfupdate.js'), 'utf8');
+      check('The Windows-only applier is guarded and runs hidden',
+        selfupdateSource.includes("process.platform !== 'win32'")
+        && selfupdateSource.includes("spawn('powershell.exe'")
+        && selfupdateSource.includes('windowsHide: true')
+        && selfupdateSource.includes('-ExecutionPolicy')
+        && selfupdateSource.includes('Bypass'));
+
+      // 9. installUpdate wires the pieces in order (static: sandbox has no
+      //    Fleet.exe, so the flow is proven by structure + the units above).
+      check('installUpdate downloads, stages and arms the applier in order',
+        ipcSource.includes('downloadUpdatePackage(url, zipPath, updateState.portableSize, updateState.portableSha512)')
+        && ipcSource.includes('selfupdate.stageZip(zipPath, stageDir)')
+        && ipcSource.includes('selfupdate.resolveInstallDir(process.execPath)')
+        && ipcSource.includes('appPid: process.ppid')
+        && ipcSource.includes('nodePid: process.pid'));
+    } finally {
+      try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
+      try { fs.rmSync(path.join(os.tmpdir(), 'fleet-install-'), { recursive: true, force: true }); } catch (_) {}
+    }
   }
 
   await section('Update downloader');

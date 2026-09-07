@@ -2250,9 +2250,9 @@ views.settings = async function () {
   }
   const up = state.updater || { state: 'disabled' };
   const updateText = updaterStatusText(up, st.appVersion);
-  const busy = up.state === 'checking' || up.state === 'downloading' || up.state === 'installing';
+  const busy = up.state === 'checking' || up.state === 'downloading' || up.state === 'restarting';
   const updateActions = up.state === 'ready' || up.state === 'available'
-    ? `<button class="btn primary" data-action="update-install">${icon('refresh')} Download and install</button>`
+    ? `<button class="btn primary" data-action="update-install">${icon('refresh')} Install update</button>`
     : up.state === 'error'
       ? `<div class="inline" style="flex-direction:column; align-items:flex-end; gap:8px">
           <button class="btn" data-action="update-check">${icon('refresh')} Retry</button>
@@ -2312,6 +2312,7 @@ views.settings = async function () {
     <div class="section-title">Updates</div>
     <div class="card pad">
       ${settingRow('Automatic updates', updateText, updateActions, 'update-status-line')}
+      <div class="hint" style="margin-top:-10px">Updates install themselves - Fleet downloads, swaps its files and restarts. No separate installer window.</div>
     </div>
     <div class="inline" style="margin-top:20px">
       <button class="btn primary" data-action="settings-save">${icon('check')} Save settings</button>
@@ -2330,13 +2331,12 @@ function settingRow(label, desc, control, descId) {
 
 /* Updater status line — shared by the settings render and live progress patches. */
 function updaterStatusText(up, appVersion) {
-  if (up.state === 'ready' || up.state === 'available') return `Version ${up.latestVersion || up.availableVersion || 'update'} is available - download and install`;
+  if (up.state === 'ready' || up.state === 'available') return `Version ${up.latestVersion || up.availableVersion || 'update'} is available - install it automatically`;
   if (up.state === 'downloading') {
     if (up.total) return `Downloading update - ${fmtBytes(up.received)} of ${fmtBytes(up.total)}${up.percent != null ? ` (${up.percent}%)` : ''}`;
     return 'Downloading update…';
   }
-  if (up.state === 'installing') return 'Starting the installer…';
-  if (up.state === 'launched') return 'The installer window is open - finish the update there';
+  if (up.state === 'restarting') return 'Installing - Fleet will restart in a moment';
   if (up.state === 'checking') return 'Checking for updates…';
   if (up.state === 'error') return `Update failed: ${up.error || 'unknown error'}`;
   if (up.state === 'disabled') return 'Automatic updates activate in the installed version';
@@ -3056,9 +3056,14 @@ if (api) {
       }
     }
     if (state.view === 'settings') views.settings();
-    if (status && status.state === 'launched') toast('Installer started - finish the update in its window', 'good');
+    if (status && status.state === 'restarting') {
+      // The applier is already waiting: close the app so it can swap the
+      // files and relaunch the new version. No installer window exists.
+      toast('Fleet is restarting to finish the update', 'good');
+      setTimeout(() => { try { api.ui.window.close(); } catch (_) {} }, 900);
+    }
     if (status && status.state === 'ready') toast(`Fleet ${status.availableVersion || 'update'} is ready`, 'good');
-    if (status && status.state === 'error' && (prev === 'downloading' || prev === 'installing' || prev === 'launched' || prev === 'checking')) {
+    if (status && status.state === 'error' && (prev === 'downloading' || prev === 'restarting' || prev === 'checking')) {
       toast('Update failed - see Settings for details', 'bad');
     }
   });

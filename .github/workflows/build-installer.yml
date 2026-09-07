@@ -69,7 +69,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "signtool failed ($LASTEXITCODE)." }
           Remove-Item $pfxPath -Force
 
-      - name: Generate update feed (latest.yml with sha512)
+      - name: Generate update feed (latest.yml + portable package with sha512)
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make-release.ps1
 
       - name: Collect release assets
@@ -81,7 +81,10 @@ jobs:
           Copy-Item dist/FleetInstaller.exe $out -Force
           Copy-Item dist/latest.yml $out -Force
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          Compress-Archive -Path dist/Fleet -DestinationPath "release-assets/FleetPortable_${version}_x64.zip" -Force
+          # Copy (never re-zip) the exact portable package make-release.ps1
+          # hashed into latest.yml - a fresh Compress-Archive would produce a
+          # different archive and break the digest check in the self-updater.
+          Copy-Item "dist/FleetPortable_${version}_x64.zip" $out -Force
           # SHA-256 manifest so users (and antivirus false-positive reports)
           # can verify exactly what CI built.
           Get-ChildItem $out -File | ForEach-Object {
