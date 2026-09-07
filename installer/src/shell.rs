@@ -486,12 +486,34 @@ pub fn exe_file_version(path: &Path) -> Option<String> {
     }
 }
 
-/// The installed Fleet this installer can see: (folder, version). The
-/// version comes from the Fleet.exe on disk whenever it carries one - the
-/// registry entry is only the fallback, because a failed in-app update used
-/// to bump it without swapping the files, which left every later installer
-/// claiming "already up to date" while the app stayed old. A disagreement
-/// also repairs the registry entry on the spot, so broken installs heal.
+/// Dotted version compare ("1.5.12" vs "1.6"); non-numeric parts count as 0.
+fn cmp_dotted(a: &str, b: &str) -> std::cmp::Ordering {
+    let nums = |s: &str| -> Vec<u64> {
+        s.split('.')
+            .map(|p| p.trim().parse::<u64>().unwrap_or(0))
+            .collect()
+    };
+    let (a, b) = (nums(a), nums(b));
+    for i in 0..a.len().max(b.len()) {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        match x.cmp(&y) {
+            std::cmp::Ordering::Equal => continue,
+            o => return o,
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+/// The installed Fleet this installer can see: (folder, version). The exe on
+/// disk is the source of truth for the version; the registry entry is only
+/// the fallback, because a failed in-app update used to bump it without
+/// swapping the files, which left every later installer claiming "already
+/// up to date" while the app stayed old. When the registry claims a NEWER
+/// version than the exe it is lying, and gets repaired on the spot. When it
+/// claims an older one (a half-applied update, or an old install whose
+/// registry was reset), the older number wins so the installer repairs the
+/// install in place instead of calling it up to date.
 pub fn installed_fleet() -> Option<(PathBuf, String)> {
     const KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Fleet";
     let reg_version =
@@ -517,13 +539,23 @@ pub fn installed_fleet() -> Option<(PathBuf, String)> {
         .filter(|v| !v.is_empty());
     let version = match file_version {
         Some(file_version) => {
-            if file_version != reg_version {
+            if cmp_dotted(&reg_version, &file_version) == std::cmp::Ordering::Greater {
+                // Registry ahead of the files: the classic broken-update lie.
+                // Trust the exe and drag the entry back down to reality.
                 log_str(&format!(
                     "installed_fleet: registry says v{reg_version} but Fleet.exe is v{file_version}; trusting the file and fixing the entry"
                 ));
                 let _ = reg_set_value_string(KEY, "DisplayVersion", &file_version);
+                file_version
+            } else if reg_version.trim().is_empty() {
+                // No entry to compare against: the exe is all we have.
+                file_version
+            } else {
+                // Registry matches or lags behind the files. Lagging is what
+                // a partially applied update looks like, so keep the lower
+                // number - the update then reinstalls and repairs it.
+                reg_version
             }
-            file_version
         }
         None => reg_version,
     };
