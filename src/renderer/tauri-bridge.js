@@ -97,6 +97,13 @@ window.fleet = {
     join: (accountIds, placeId, gameId) => tauriInvoke('launch_join', { accountIds, placeId, gameId }),
     joinPerson: (accountId, targetUserId) => invokeWithNumbers('launch_join_person', ['targetUserId'], { accountId, targetUserId }),
     joinPersonMulti: (accountIds, targetUserId) => invokeWithNumbers('launch_join_person_multi', ['targetUserId'], { accountIds, targetUserId }),
+    autoFill: (accountIds, placeId, opts) => tauriInvoke('launch_auto_fill', Object.assign({ accountIds, placeId }, opts || {})),
+  },
+  keeper: {
+    arm: (records) => tauriInvoke('keeper_arm', { records }),
+    disarm: (accountId) => tauriInvoke('keeper_disarm', { accountId }),
+    disarmAll: () => tauriInvoke('keeper_disarm_all'),
+    status: () => tauriInvoke('keeper_status'),
   },
   accounts: {
     list: () => tauriInvoke('accounts_list'),
@@ -153,5 +160,8 @@ window.fleet = {
   onAccountUpdate: (cb) => wrapEvent('account:update', cb),
   onAccountExpired: (cb) => wrapEvent('account:expired', cb),
   onAccountAdded: (cb) => wrapEvent('account:added', cb),
+  onKeeperStatus: (cb) => wrapEvent('keeper:status', cb),
+  onKeeperRejoin: (cb) => wrapEvent('keeper:rejoin', cb),
+  onKeeperGaveup: (cb) => wrapEvent('keeper:gaveup', cb),
   onUpdaterStatus: (cb) => wrapEvent('updater:status', cb),
 };

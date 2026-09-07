@@ -23,6 +23,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   confirmCleanup: true,      // confirm before "End all"
   warnInstanceCount: 6,      // soft warning threshold
   historyLimit: 200,
+  autoRejoinDelaySec: 10,    // watchdog: first retry delay, doubles each try
+  autoRejoinMaxAttempts: 5,  // watchdog: straight tries with no stable run before giving up
+  autoRestartHungSec: 0,     // watchdog: restart a client not responding this long (0 = off)
 });
 
 let baseDir = null;
@@ -100,6 +103,9 @@ function normalizeSettings(input) {
   s.launchDelayMs = clampInt(s.launchDelayMs, 0, 20000, DEFAULT_SETTINGS.launchDelayMs);
   s.warnInstanceCount = clampInt(s.warnInstanceCount, 1, 100, DEFAULT_SETTINGS.warnInstanceCount);
   s.historyLimit = clampInt(s.historyLimit, 10, 2000, DEFAULT_SETTINGS.historyLimit);
+  s.autoRejoinDelaySec = clampInt(s.autoRejoinDelaySec, 3, 300, DEFAULT_SETTINGS.autoRejoinDelaySec);
+  s.autoRejoinMaxAttempts = clampInt(s.autoRejoinMaxAttempts, 1, 20, DEFAULT_SETTINGS.autoRejoinMaxAttempts);
+  s.autoRestartHungSec = clampInt(s.autoRestartHungSec, 0, 120, DEFAULT_SETTINGS.autoRestartHungSec);
   return s;
 }
 

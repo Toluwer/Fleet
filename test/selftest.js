@@ -84,11 +84,16 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   store.configure(tmp, console);
   const def = store.getSettings();
   check('defaults load', def && def.pollIntervalMs === 2000);
+  check('watchdog defaults present', def.autoRejoinDelaySec === 10 && def.autoRejoinMaxAttempts === 5 && def.autoRestartHungSec === 0);
   const clamped = store.saveSettings({ pollIntervalMs: 999999, launchDelayMs: -50 });
   check('pollInterval clamped to <=10000', clamped.pollIntervalMs === 10000, 'got ' + clamped.pollIntervalMs);
   check('launchDelay clamped to >=0', clamped.launchDelayMs === 0, 'got ' + clamped.launchDelayMs);
+  const wdClamped = store.saveSettings({ autoRejoinDelaySec: 999999, autoRejoinMaxAttempts: 0, autoRestartHungSec: 999 });
+  check('watchdog settings clamp to their ranges',
+    wdClamped.autoRejoinDelaySec === 300 && wdClamped.autoRejoinMaxAttempts === 1 && wdClamped.autoRestartHungSec === 120,
+    JSON.stringify({ d: wdClamped.autoRejoinDelaySec, m: wdClamped.autoRejoinMaxAttempts, h: wdClamped.autoRestartHungSec }));
   const reset = store.resetSettings();
-  check('reset restores defaults', reset.pollIntervalMs === 2000);
+  check('reset restores defaults', reset.pollIntervalMs === 2000 && reset.autoRejoinDelaySec === 10);
 
   /* 4. Store: profiles + validation */
   await section('Store — profiles & validation');
@@ -112,7 +117,130 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   check('history entry added', store.getHistory().length === 1);
   check('history cleared', store.clearHistory().length === 0);
 
-  /* 6. Process enumeration */
+  /* 6.5 Watchdog (keeper) — auto-rejoin state machine, driven with a fake clock
+     and instant timers (autoRejoinDelaySec: 0 bypasses the store's 3 s floor
+     only inside these tests). */
+  await section('Watchdog auto-rejoin (keeper)');
+  {
+    const { InstanceKeeper } = require('../src/main/keeper');
+    const tick = (ms) => new Promise(r => setTimeout(r, ms));
+    let clock = 1000000;
+    const launches = [];
+    let failNext = 0;
+    let failAll = false;
+    const makeKeeper = (over) => new InstanceKeeper(Object.assign({
+      now: () => clock,
+      logger: { info() {}, warn() {}, error() {} },
+      settingsProvider: () => ({ autoRejoinDelaySec: 0, autoRejoinMaxAttempts: 2, autoRestartHungSec: 0, pollIntervalMs: 2000 }),
+      launchAccount: async (accountId, placeId, gameInstanceId) => {
+        launches.push({ accountId, placeId, gameInstanceId });
+        if (failAll || failNext > 0) { failNext -= 1; return { ok: false, reason: 'ticket refused' }; }
+        return { ok: true, pid: 4000 + launches.length };
+      },
+    }, over || {}));
+
+    const k = makeKeeper();
+    const events = [];
+    k.on('rejoin', r => events.push(['rejoin', r]));
+    k.on('gaveup', r => events.push(['gaveup', r]));
+    check('arm() accepts a watch record', k.arm({ accountId: 'a1', userId: 7, username: 'tester', placeId: '123', gameInstanceId: 'srv-1', name: 'g' }).ok);
+    check('a watch starts in the waiting state', k.status().records[0].state === 'waiting');
+    k.onInstances([{ pid: 111, source: 'fleet', accountId: 'a1', status: 'running' }]);
+    check('a live pid flips the watch to running', k.status().records[0].state === 'running' && k.status().records[0].pid === 111);
+
+    k.onInstances([]);
+    const afterDeath = k.status().records[0];
+    check('a dead pid schedules a rejoin', afterDeath.state === 'rejoining' && afterDeath.attempts === 1 && afterDeath.nextAt >= clock, JSON.stringify(afterDeath));
+    check('death emitted a rejoin event', events.some(e => e[0] === 'rejoin'));
+    await tick(50);
+    check('the rejoin relaunches the same account into the same server',
+      launches.length === 1 && launches[0].accountId === 'a1' && launches[0].gameInstanceId === 'srv-1' && launches[0].placeId === '123');
+    check('after a rejoin the watch waits for the new pid', k.status().records[0].state === 'waiting' && k.status().records[0].pid === 4001);
+
+    // Second death happens after the boot grace; the rejoin counter climbs.
+    clock += 25000;
+    k.onInstances([{ pid: 4001, source: 'fleet', accountId: 'a1', status: 'running' }]);
+    clock += 1000;
+    k.onInstances([]);
+    await tick(50);
+    check('a second death rejoins again', launches.length === 2);
+    k.onInstances([{ pid: 4002, source: 'fleet', accountId: 'a1', status: 'running' }]);
+    clock += 1000;
+    k.onInstances([]);
+    const givenUp = k.status().records[0];
+    check('the watchdog gives up after the configured straight tries', givenUp.state === 'gaveup' && givenUp.attempts === 2);
+    check('a give-up event is emitted', events.some(e => e[0] === 'gaveup'));
+
+    // A five-minute stable run resets the retry counter.
+    const k2 = makeKeeper();
+    k2.arm({ accountId: 'a1', userId: 7, placeId: '123' });
+    k2.onInstances([{ pid: 500, source: 'fleet', accountId: 'a1', status: 'running' }]);
+    k2.onInstances([]);
+    await tick(50);
+    k2.onInstances([{ pid: 4001 + 50, source: 'fleet', accountId: 'a1', status: 'running' }]);
+    clock += 5 * 60 * 1000 + 2000;
+    k2.onInstances([{ pid: 4001 + 50, source: 'fleet', accountId: 'a1', status: 'running' }]);
+    check('a five-minute stable run resets the retry counter', k2.status().records[0].attempts === 0);
+
+    // Manual actions never fight the user.
+    const k3 = makeKeeper();
+    k3.arm({ accountId: 'a9', userId: 9, placeId: '55' });
+    k3.onInstances([{ pid: 900, source: 'fleet', accountId: 'a9', status: 'running' }]);
+    check('a manual kill disarms that watch', k3.onManualKill(900) && k3.status().records.length === 0);
+    const k4 = makeKeeper();
+    k4.arm({ accountId: 'a2', userId: 8, placeId: '9' });
+    k4.onInstances([{ pid: 901, source: 'fleet', accountId: 'a2', status: 'running' }]);
+    k4.onManualRestart(901);
+    k4.onInstances([]);
+    check('a manual restart is not treated as a death', k4.status().records[0].state === 'running' && k4.status().records[0].nextAt === 0);
+
+    // Presence fallback covers pid-less watches (e.g. after a Fleet restart).
+    const k5 = makeKeeper();
+    k5.arm({ accountId: 'a3', userId: 31, placeId: '77' });
+    k5.onPresence(31, 'In game');
+    check('in-game presence adopts a pid-less watch as running', k5.status().records[0].state === 'running');
+    clock += 60 * 1000;
+    k5.onPresence(31, 'Offline');
+    check('presence gone past the grace triggers a rejoin', k5.status().records[0].state === 'rejoining');
+    await tick(50);
+
+    // Repeatedly failing rejoins give up rather than looping forever.
+    const k6 = makeKeeper();
+    k6.arm({ accountId: 'a4', userId: 41, placeId: '88' });
+    k6.onInstances([{ pid: 950, source: 'fleet', accountId: 'a4', status: 'running' }]);
+    failAll = true;
+    const beforeFails = launches.length;
+    k6.onInstances([]);
+    await tick(80);
+    check('repeatedly failed rejoins stop after the try limit',
+      k6.status().records[0].state === 'gaveup' && launches.length - beforeFails === 2);
+    failAll = false;
+
+    // A stuck (not responding) client is killed and rejoined.
+    let killedPid = null;
+    const k7 = makeKeeper({
+      settingsProvider: () => ({ autoRejoinDelaySec: 0, autoRejoinMaxAttempts: 2, autoRestartHungSec: 4, pollIntervalMs: 2000 }),
+      killInstance: (pid) => { killedPid = pid; return Promise.resolve({ ok: true }); },
+    });
+    k7.arm({ accountId: 'a5', userId: 51, placeId: '99' });
+    k7.onInstances([{ pid: 960, source: 'fleet', accountId: 'a5', status: 'running' }]);
+    k7.onInstances([{ pid: 960, source: 'fleet', accountId: 'a5', status: 'not_responding' }]);
+    k7.onInstances([{ pid: 960, source: 'fleet', accountId: 'a5', status: 'not_responding' }]);
+    check('a stuck client is killed and rejoined', killedPid === 960 && k7.status().records[0].state === 'rejoining');
+
+    // Armed watches persist and come back paused after a restart.
+    const files = {};
+    const fakeStore = { readJson: (key, dflt) => (key in files ? files[key] : dflt), writeJson: (key, v) => { files[key] = v; } };
+    const k8 = makeKeeper({ store: fakeStore });
+    k8.arm({ accountId: 'a7', userId: 71, placeId: '123', gameInstanceId: 'srv-9' });
+    check('armed watches persist to keeper.json', !!files['keeper.json'] && files['keeper.json'].records.length === 1);
+    const k9 = makeKeeper({ store: fakeStore });
+    k9.restore();
+    const restored = k9.status().records[0];
+    check('restored watches come back paused and keep their target',
+      k9.status().records.length === 1 && restored.paused === true && restored.gameInstanceId === 'srv-9');
+  }
+
   await section('Process monitor');
   const list = await processes.list();
   check('processes.list() returns array', Array.isArray(list), list.length + ' running');
@@ -131,10 +259,10 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   await monitor.poll();
   await monitor.poll();
   check('renamed or untrusted executables are not reported as Roblox', monitor.snapshot().length === 0);
-  monitor.markManaged(4103, { exePath: 'D:\\CustomRoblox\\RobloxPlayerBeta.exe', playerPath: 'D:\\CustomRoblox\\RobloxPlayerBeta.exe' });
+  monitor.markManaged(4103, { exePath: 'D:\\CustomRoblox\\RobloxPlayerBeta.exe', playerPath: 'D:\\CustomRoblox\\RobloxPlayerBeta.exe', accountId: 'acc-1' });
   mockRows = [{ pid: 4103, memBytes: 10, status: 'running', windowTitle: '', executablePath: 'D:\\CustomRoblox\\RobloxPlayerBeta.exe', verifiedPath: true, trustedInstall: false }];
   await monitor.poll();
-  check('managed custom clients are matched by exact launch path', monitor.snapshot().length === 1 && monitor.snapshot()[0].source === 'fleet');
+  check('managed clients carry their account id for the watchdog', monitor.snapshot().length === 1 && monitor.snapshot()[0].source === 'fleet' && monitor.snapshot()[0].accountId === 'acc-1');
   monitor.markManaged(4104, { exePath: 'C:\\Roblox\\Versions\\version-b\\RobloxPlayerBeta.exe', processIdentity: 'old' });
   mockRows = [{ pid: 4104, memBytes: 10, status: 'running', windowTitle: 'Roblox', executablePath: 'C:\\Roblox\\Versions\\version-b\\RobloxPlayerBeta.exe', verifiedPath: true, trustedInstall: true, processIdentity: 'new' }];
   await monitor.poll();
@@ -378,13 +506,49 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   check('Tauri installer output replaces legacy Electron installer customization',
     !fs.existsSync(path.join(__dirname, '..', 'build', 'installer.nsh'))
     && fs.existsSync(path.join(__dirname, '..', 'installer', 'src', 'main.rs')));
-  check('Keep-alive auto-rejoins crashed clients with cooldown and strike-out',
-    rendererSource.includes('function maybeKeepAlive(')
-    && rendererSource.includes('KEEPALIVE_COOLDOWN_MS')
-    && rendererSource.includes('t.fails >= 3')
-    && rendererSource.includes('everInGame')
+  const backendSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'tauri-backend.js'), 'utf8');
+  const keeperSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'keeper.js'), 'utf8');
+  const libSource = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  check('Watchdog auto-rejoin lives in the main process with backoff and a give-up limit',
+    keeperSource.includes('class InstanceKeeper')
+    && keeperSource.includes('Math.pow(2, record.attempts - 1)')
+    && keeperSource.includes('BACKOFF_CAP_MS')
+    && keeperSource.includes('STABLE_MS')
+    && keeperSource.includes("PERSIST_KEY = 'keeper.json'")
+    && keeperSource.includes('onManualKill')
+    && keeperSource.includes('this.launchAccount(record.accountId, record.placeId, record.gameInstanceId)')
+    && keeperSource.includes('this.launchFollow(record.accountId, record.targetUserId)'));
+  check('Rejoins mint fresh tickets instead of replaying the old deep link',
+    keeperSource.includes('getLaunchInfo') === false  // keeper stays launch-agnostic; the backend wires ticket minting
+    && backendSource.includes('accounts.getLaunchInfo(accountId, (placeId')
+    && backendSource.includes('accounts.getPersonJoinLaunchInfo(accountId, targetUserId)'));
+  check('Manual kills suppress the watchdog so it never fights the user',
+    backendSource.includes('keeper.onManualKill(pid)')
+    && backendSource.includes('keeper.onManualKillAll()')
+    && backendSource.includes('keeper.onManualRestart(pid)'));
+  check('Renderer arms the main-process watchdog and renders its live state',
+    rendererSource.includes('api.keeper.arm(')
+    && rendererSource.includes('onKeeperStatus')
+    && rendererSource.includes('renderWatchdogChip')
     && rendererSource.includes("case 'keepalive-off':")
-    && rendererSource.includes('session.keepAlive && session.placeId'));
+    && rendererSource.includes('session.keepAlive && session.placeId')
+    && rendererSource.includes('Stop auto-rejoin')
+    && rendererSource.includes('watchdog-chip'));
+  check('Auto-fill packs accounts into the emptiest servers',
+    rendererSource.includes("case 'servers-fill':")
+    && rendererSource.includes("case 'fill-confirm':")
+    && rendererSource.includes('api.launch.autoFill')
+    && backendSource.includes('function autoFill(')
+    && backendSource.includes('freeSlots(b) - freeSlots(a)')
+    && backendSource.includes('spread: payload.spread !== false')
+    && libSource.includes('launch_auto_fill'));
+  check('Watchdog settings are surfaced, clamped and bridged',
+    rendererSource.includes('set-rejoin-delay')
+    && rendererSource.includes('set-rejoin-tries')
+    && rendererSource.includes('set-hung')
+    && tauriBridgeSource.includes('keeper_arm')
+    && tauriBridgeSource.includes('keeper_disarm_all')
+    && tauriBridgeSource.includes("wrapEvent('keeper:status'"));
   const accountsSrcEarly = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'accounts.js'), 'utf8');
   check('User-facing source text is free of mojibake marker characters',
     !/[\u00c2\u00c3\u00e2]/.test(rendererSource)

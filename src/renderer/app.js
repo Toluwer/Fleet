@@ -221,6 +221,14 @@ function paletteActions() {
     { icon: 'refresh', label: 'Check for Fleet updates', hint: 'Updater', run: async () => { const r = await call(() => api.updater.check(), { ok: false }); if (!r || !r.ok) toast('Update check did not start', 'bad'); } },
     { icon: 'refresh', label: 'Refresh accounts', hint: 'Reload list', run: async () => { await loadAccounts(); toast('Accounts refreshed', 'good'); } },
     { icon: 'refresh', label: 'Refresh instances', hint: 'Reload list', run: async () => { await loadInstances(); toast('Refreshed', 'good'); } },
+  ];
+  if (watchdog.records.some(r => r.state !== 'gaveup')) {
+    acts.push({ icon: 'activity', label: 'Stop the watchdog', hint: 'Auto-rejoin', run: async () => {
+      const r = await call(() => api.keeper.disarmAll());
+      toast(r && r.ok ? 'Watchdog stopped' : 'Could not stop the watchdog', r && r.ok ? 'good' : 'bad');
+    } });
+  }
+  acts.push(
     { icon: 'grid', label: 'Arrange client windows', hint: 'Tile into a grid', run: async () => {
       if (!state.instances.length) { toast('No Roblox windows to arrange', 'bad'); return; }
       const r = await call(() => api.instances.arrange());
@@ -231,7 +239,7 @@ function paletteActions() {
     { icon: 'contrast', label: 'Toggle theme', hint: 'System / Graphite / Obsidian', run: paletteCycleTheme },
     { icon: 'copy', label: 'Copy diagnostics', hint: 'Clipboard', run: () => copyDiagnostics() },
     { icon: 'folder', label: 'Open data folder', hint: 'Local files', run: async () => { await call(() => api.openUserData()); } },
-  ];
+  );
   return acts;
 }
 
@@ -820,7 +828,7 @@ function sessionRows() {
     const missing = known.length < s.accountIds.length ? ` — ${s.accountIds.length - known.length} account(s) missing` : '';
     return `<div class="setting">
       <div><div class="s-label">${esc(s.name)}</div>
-      <div class="s-desc">${known.length} account${known.length === 1 ? '' : 's'} · ${esc(target)}${s.arrange ? ' · auto-arrange' : ''}${s.keepAlive ? ' · keep-alive' : ''}${esc(missing)}</div></div>
+      <div class="s-desc">${known.length} account${known.length === 1 ? '' : 's'} · ${esc(target)}${s.arrange ? ' · auto-arrange' : ''}${s.keepAlive ? ' · watchdog' : ''}${esc(missing)}</div></div>
       <div class="s-control inline">
         <button class="btn sm primary" data-action="session-launch" data-id="${esc(s.id)}" ${known.length ? '' : 'disabled'}>${icon('play')} Launch</button>
         <button class="btn sm icon ghost" data-action="session-delete" data-id="${esc(s.id)}" data-tip="Delete this session">${icon('x')}</button>
@@ -858,7 +866,7 @@ views.instances = function () {
       <div class="chips">${hasAccounts ? accountChips : '<span class="hint">No accounts yet — add one in Accounts.</span>'}</div>
       <div class="inline" style="margin-top:14px">
         <input id="lp-place" class="input-lg" type="text" placeholder="Place ID or game link (optional)" value="${esc(state.placeId)}" style="max-width:320px" data-tip="Paste a place ID, a roblox.com game URL, or a share link with a server ID" />
-        <label class="inline" style="gap:7px;cursor:pointer;font-size:12px;color:var(--ink-2);white-space:nowrap" data-tip="If a client crashes or disconnects, Fleet puts that account straight back into the game"><input type="checkbox" id="lp-keepalive"> Keep alive</label>
+        <label class="inline" style="gap:7px;cursor:pointer;font-size:12px;color:var(--ink-2);white-space:nowrap" data-tip="If a client crashes or disconnects, the watchdog puts that account straight back into the same server"><input type="checkbox" id="lp-keepalive"> Keep alive</label>
         <div class="spacer"></div>
         <button class="btn primary lg" data-action="launch-accounts" ${s.robloxFound ? '' : 'disabled'}>${icon('play')} <span id="lp-count-label">Launch ${state.selected.size || ''}</span></button>
       </div>
@@ -911,7 +919,7 @@ views.instances = function () {
 
     <div class="row-split" style="margin:20px 2px 10px">
       <div class="section-title" style="margin:0">Running clients</div>
-      <span id="keepalive-chip" class="keepalive-chip" hidden></span>
+      <span id="watchdog-chip" class="keepalive-chip" hidden></span>
       <div class="inline">
         <button class="btn sm ghost" data-action="refresh-instances" data-tip="Refresh now">${icon('refresh')} Refresh</button>
         <button class="btn sm ghost" data-action="arrange" data-tip="Tile all Roblox windows into a grid">${icon('grid')} Arrange</button>
@@ -925,7 +933,7 @@ views.instances = function () {
     </div>
   `);
   renderInstanceList();
-  renderKeepAliveChip();
+  renderWatchdogChip();
   setTimeout(checkClipboardForGameLink, 200);
 };
 
@@ -958,12 +966,13 @@ function renderInstanceSummary(items) {
 
 function instanceRowHtml(i, isNew) {
   const pid = Number(i.pid) || 0;
+  const watched = !!watchdogRecordForAccount(i.accountId);
   const tag = i.source === 'fleet'
-    ? `<span class="tag fleet">${i.profileName ? esc(i.profileName) : 'Fleet'}</span>`
+    ? `<span class="tag fleet">${i.profileName ? esc(i.profileName) : 'Fleet'}</span>${watched ? '<span class="tag watch" data-tip="The watchdog auto-rejoins this account">watchdog</span>' : ''}`
     : `<span class="tag external">External</span>`;
   const title = i.windowTitle ? esc(i.windowTitle) : '<span style="color:var(--ink-3)">Loading…</span>';
   const started = (i.startedExact ? '' : '~') + relTime(i.startedAt);
-  const signature = encodeURIComponent(JSON.stringify([i.status, i.windowTitle, i.source, i.profileName, i.memBytes, i.startedAt, !!i.startedExact]));
+  const signature = encodeURIComponent(JSON.stringify([i.status, i.windowTitle, i.source, i.profileName, i.memBytes, i.startedAt, !!i.startedExact, watched]));
   return `<div class="irow${isNew ? ' row-enter' : ''}" data-pid="${pid}" data-signature="${signature}" data-row>
     <span class="dot ${esc(i.status || 'running')}" data-tip="${i.status === 'not_responding' ? 'Not responding' : 'Running'}"></span>
     <span class="pid">${pid}</span>
@@ -1002,7 +1011,7 @@ function patchInstanceList(list, items) {
     live.add(key);
     const current = existing.get(key);
     if (current) {
-      const signature = encodeURIComponent(JSON.stringify([item.status, item.windowTitle, item.source, item.profileName, item.memBytes, item.startedAt, !!item.startedExact]));
+      const signature = encodeURIComponent(JSON.stringify([item.status, item.windowTitle, item.source, item.profileName, item.memBytes, item.startedAt, !!item.startedExact, !!watchdogRecordForAccount(item.accountId)]));
       if (current.dataset.signature !== signature) current.outerHTML = instanceRowHtml(item, false);
       else {
         const when = current.querySelector('.when');
@@ -1167,7 +1176,6 @@ function applyAccountUpdate(acc) {
   const structureChanged = !!prev && (!!prev.sessionExpired !== !!merged.sessionExpired || prev.presenceError === 'Session expired' !== (merged.presenceError === 'Session expired'));
   if (structureChanged && state.view === 'accounts') {
     replaceAccountCard(merged);
-    maybeKeepAlive(merged);
     return;
   }
 
@@ -1189,52 +1197,49 @@ function applyAccountUpdate(acc) {
     robuxEl.innerHTML = `${acc.premium ? '<b class="prem">P</b>' : ''}${icon('box')} ${fmtNum(acc.robux)}`;
     robuxEl.setAttribute('data-tip', 'Robux balance' + (acc.premium ? ' - Premium member' : ''));
   }
-  maybeKeepAlive(state.accounts[i >= 0 ? i : -1] || acc);
 }
 
-/* ----------------------------- Keep-alive (auto-rejoin) ----------------------------- */
-/* Armed per launch: if a watched account stops being in-game (crash, kick,
-   disconnect), Fleet relaunches it into the same game. Rides the existing 12s
-   presence stream - no extra polling. 90s cooldown + 3 strikes per account so
-   a genuinely broken join can't loop forever. */
-const keepAlive = { armed: new Map() }; // accountId -> {placeId, gameId, name, lastRelaunch, fails, everInGame}
-const KEEPALIVE_COOLDOWN_MS = 90000;
+/* ----------------------------- Watchdog (auto-rejoin) ----------------------------- */
+/* Armed per launch or saved session. The main process watches the actual
+   client processes (plus account presence as a fallback signal), mints a
+   fresh launch ticket on every rejoin, and backs off between tries. The
+   renderer only arms it, shows what it is doing, and can stop it. */
+const watchdog = { records: [], summary: null };
 
-function armKeepAlive(ids, placeId, gameId, name) {
-  if (!placeId) return;
-  const now = Date.now();
-  ids.forEach(id => keepAlive.armed.set(id, { placeId: String(placeId), gameId: gameId || '', name: name || 'game', lastRelaunch: now, fails: 0, everInGame: false }));
-  renderKeepAliveChip();
+function armWatchdog(rows) {
+  const records = (rows || []).map(r => ({
+    accountId: String(r.accountId || ''),
+    placeId: String(r.placeId || ''),
+    gameInstanceId: String(r.gameInstanceId || r.gameId || ''),
+    targetUserId: r.targetUserId || null,
+    name: r.name || 'the game',
+  })).filter(r => r.accountId);
+  if (!records.length) return;
+  call(() => api.keeper.arm(records), null, 0);
 }
-function disarmKeepAlive() { keepAlive.armed.clear(); renderKeepAliveChip(); }
 
-function renderKeepAliveChip() {
-  const el = $('#keepalive-chip');
+function watchdogRecordForAccount(accountId) {
+  if (!accountId) return null;
+  return watchdog.records.find(r => String(r.accountId) === String(accountId) && r.state !== 'gaveup') || null;
+}
+
+function applyWatchdogStatus(status) {
+  if (!status || !Array.isArray(status.records)) return;
+  watchdog.records = status.records;
+  watchdog.summary = status.summary || null;
+  renderWatchdogChip();
+  if (state.view === 'instances') renderInstanceList();
+}
+
+function renderWatchdogChip() {
+  const el = $('#watchdog-chip');
   if (!el) return;
-  const n = keepAlive.armed.size;
-  el.hidden = !n;
-  el.innerHTML = n ? `${icon('activity')} Keep-alive: ${n} account${n === 1 ? '' : 's'} <button class="btn sm ghost" data-action="keepalive-off">Stop</button>` : '';
-}
-
-async function maybeKeepAlive(acc) {
-  if (!acc || !acc.id) return;
-  const t = keepAlive.armed.get(acc.id);
-  if (!t) return;
-  const inGame = presenceClass(acc.presence) === 'ingame';
-  if (inGame) { t.everInGame = true; t.fails = 0; return; }
-  // Only react after the account has actually made it in once (joining takes
-  // a while), then rate-limit relaunches and give up after 3 straight fails.
-  if (!t.everInGame) return;
-  const now = Date.now();
-  if (now - t.lastRelaunch < KEEPALIVE_COOLDOWN_MS) return;
-  if (t.fails >= 3) { keepAlive.armed.delete(acc.id); renderKeepAliveChip(); toast(`Keep-alive gave up on ${acc.displayName || acc.username} after 3 tries`, 'bad'); return; }
-  t.lastRelaunch = now;
-  t.fails += 1;
-  toast(`Keep-alive: putting ${acc.displayName || acc.username} back into ${t.name}-`);
-  const r = t.gameId
-    ? await call(() => api.launch.join([acc.id], t.placeId, t.gameId))
-    : await call(() => api.launch.accounts([acc.id], t.placeId));
-  if (!(r && r.ok)) toast('Keep-alive relaunch failed - will retry', 'bad');
+  const recs = watchdog.records.filter(r => r.state !== 'gaveup');
+  el.hidden = !recs.length;
+  if (!recs.length) { el.innerHTML = ''; return; }
+  const rejoining = recs.filter(r => r.state === 'rejoining').length;
+  const label = `Watchdog: ${recs.length} account${recs.length === 1 ? '' : 's'}` + (rejoining ? ` - ${rejoining} rejoining` : '');
+  el.innerHTML = `${icon('activity')} ${label} <button class="btn sm ghost" data-action="keepalive-off">Stop</button>`;
 }
 
 /* ----------------------------- Games view ----------------------------- */
@@ -1494,8 +1499,35 @@ function renderServersModal() {
       ${hasList ? `<button class="btn" data-action="servers-refresh" style="margin-right:auto" data-tip="Reload the server list">${icon('refresh')} Refresh</button>
       <button class="btn ${sv.autoRefresh ? 'on' : ''}" data-action="servers-auto-refresh" data-tip="Refresh this server list every 30 seconds">Live ${sv.autoRefresh ? 'on' : 'off'}</button>` : ''}
       <button class="btn" data-action="modal-cancel">Close</button>
+      ${hasList && state.accounts.length ? `<button class="btn" data-action="servers-fill" data-tip="Launch the selected accounts into the emptiest servers">${icon('users-group')} Fill</button>` : ''}
       ${hasList ? `<button class="btn primary" data-action="join-best" data-tip="Join the top server for this filter">${icon('play')} Join best</button>` : ''}
     </div>`, 'server-modal');
+}
+
+/* Fill: pick the emptiest servers automatically and pack the selected
+   accounts into them, optionally arming the watchdog per account. */
+function openFillModal() {
+  const sv = state.servers;
+  if (!sv) return;
+  if (!state.accounts.length) { toast('Add an account first', 'bad'); return; }
+  const ids = state.selected.size ? Array.from(state.selected) : [state.accounts[0].id];
+  state.fillDraft = { placeId: sv.placeId, name: sv.name, ids, spread: false };
+  openModal(`
+    <div class="m-head"><h3>Fill servers</h3><p>${ids.length} account${ids.length === 1 ? '' : 's'} - ${esc(sv.name)}</p></div>
+    <div class="m-body">
+      <div class="field"><label>Placement</label>
+        <div class="segmented" id="fill-mode">
+          <button data-action="fill-mode" data-mode="same" class="on">Same server</button>
+          <button data-action="fill-mode" data-mode="spread">Spread out</button>
+        </div>
+        <div class="hint">Same server keeps the whole crew together when one server has room for everyone; spread fills the emptiest servers first, so accounts land in the least crowded ones.</div>
+      </div>
+      <label class="toggle-row inline" style="gap:10px;margin-top:8px;cursor:pointer">
+        <input type="checkbox" id="fill-keepalive" checked> <span>Arm the watchdog - dropped clients rejoin their server automatically</span>
+      </label>
+    </div>
+    <div class="m-foot"><button class="btn" data-action="modal-cancel">Cancel</button>
+    <button class="btn primary" data-action="fill-confirm">${icon('users-group')} Fill ${ids.length}</button></div>`, 'fill-modal');
 }
 
 async function openServersModal(placeId, name) {
@@ -2310,6 +2342,15 @@ views.settings = async function () {
       ${settingRow('History entries to keep', 'Maximum launch-history rows stored (10-2000).',
         `<input id="set-historylimit" type="number" min="10" max="2000" step="10" value="${s.historyLimit}" style="width:120px">`)}
     </div>
+    <div class="section-title">Watchdog</div>
+    <div class="card pad">
+      ${settingRow('Auto-rejoin delay', 'How long the watchdog waits before putting a dropped account back into its game. The wait doubles after each failed try (3-300 s).',
+        `<input id="set-rejoin-delay" type="number" min="3" max="300" step="1" value="${s.autoRejoinDelaySec}" style="width:120px">`)}
+      ${settingRow('Give up after', 'Straight rejoin tries without a five-minute stable run before the watchdog leaves that account alone (1-20).',
+        `<input id="set-rejoin-tries" type="number" min="1" max="20" step="1" value="${s.autoRejoinMaxAttempts}" style="width:120px">`)}
+      ${settingRow('Restart a stuck client after', 'Relaunch a client that has been not responding for this long. 0 leaves stuck clients alone (0-120 s).',
+        `<input id="set-hung" type="number" min="0" max="120" step="5" value="${s.autoRestartHungSec}" style="width:120px">`)}
+    </div>
     <div class="section-title">Updates</div>
     <div class="card pad">
       ${settingRow('Automatic updates', updateText, updateActions, 'update-status-line')}
@@ -2353,6 +2394,9 @@ function currentSettingsDraft() {
     launchDelayMs: parseInt($('#set-delay').value, 10),
     warnInstanceCount: parseInt($('#set-warn').value, 10),
     historyLimit: parseInt($('#set-historylimit').value, 10),
+    autoRejoinDelaySec: parseInt($('#set-rejoin-delay').value, 10),
+    autoRejoinMaxAttempts: parseInt($('#set-rejoin-tries').value, 10),
+    autoRestartHungSec: parseInt($('#set-hung').value, 10),
   };
 }
 
@@ -2386,8 +2430,14 @@ views.help = function () {
       <h2>Watch people</h2>
       <p>On <b>People</b>, the eye button on any card or profile watches that person. A background poll (it works while the window is hidden) toasts the moment they join or switch games, and the People home shows a Watching card with a one-click <b>Join</b>. Up to 20 people, stored locally.</p>
 
+      <h2>Watchdog (auto-rejoin)</h2>
+      <p>Tick <b>Keep alive</b> on the Instances launch panel — or in <b>Fill</b>, or on a saved session — and Fleet watches those accounts' clients in the background. When one crashes, disconnects or gets kicked, Fleet puts that account straight back into the same server. Every rejoin mints a fresh launch ticket, retries back off (10 s doubling, capped at 5 min), and after five straight tries with no five-minute stable run the watchdog leaves that account alone — a broken join can't loop forever. Ending a client, <b>End all</b> or restarting disarms it, so the watchdog never undoes something you did on purpose. Armed watches survive a Fleet restart but stay dormant until the account is seen in game again. Tune the delay, the give-up count and stuck-client restarts in <b>Settings · Watchdog</b>.</p>
+
+      <h2>Fill the emptiest servers</h2>
+      <p>On a game's server list, <b>Fill</b> scans the place, picks the servers with the most free slots and packs your selected accounts into them — all in one server when it has room for everyone, or spread across the least crowded ones. Each account gets its own launch ticket, spaced like any multi-launch, and the whole crew can be handed to the watchdog in the same click.</p>
+
       <h2>Sessions and appearance</h2>
-      <p>On <b>Instances</b>, <b>Save current setup</b> stores the selected accounts, game/server target, and optional window arrangement for one-click reuse. In <b>Settings · Appearance</b>, choose System, Light, or Dark.</p>
+      <p>On <b>Instances</b>, <b>Save current setup</b> stores the selected accounts, game/server target, window arrangement and watchdog arming for one-click reuse. In <b>Settings · Appearance</b>, choose System, Light, or Dark.</p>
 
       <h2>How multi-instance works</h2>
       <p>Roblox guards single-instance with named Windows objects, including a mutex tied to the client's exact program path. Fleet launches each client through its own folder -junction- (a unique path, no files copied) and a small guard clears the shared lock as it reappears - so every launch opens a new client that stays running.</p>
@@ -2495,7 +2545,10 @@ document.addEventListener('click', async (e) => {
       if (r && r.ok) {
         toast(`Launched ${r.launched} client${r.launched === 1 ? '' : 's'}` + (target.gameId ? ' into the exact server' : '') + (r.failed ? `, ${r.failed} failed` : ''), r.failed ? 'bad' : 'good');
         const ka = $('#lp-keepalive');
-        if (ka && ka.checked && target.placeId) { armKeepAlive(ids, target.placeId, target.gameId, 'the game'); toast('Keep-alive armed - crashed clients rejoin automatically', 'good'); }
+        if (ka && ka.checked && target.placeId) {
+          armWatchdog(ids.map(id => ({ accountId: id, placeId: target.placeId, gameInstanceId: target.gameId, name: 'the game' })));
+          toast('Watchdog armed - dropped clients rejoin automatically', 'good');
+        }
       } else toast((r && r.error) || 'Launch failed', 'bad');
       break;
     }
@@ -2629,8 +2682,8 @@ document.addEventListener('click', async (e) => {
       break;
     }
     case 'keepalive-off':
-      disarmKeepAlive();
-      toast('Keep-alive stopped', 'good');
+      await call(() => api.keeper.disarmAll());
+      toast('Watchdog stopped', 'good');
       break;
     case 'stats-refresh': views.stats(); break;
     case 'stats-clear': {
@@ -2665,7 +2718,7 @@ document.addEventListener('click', async (e) => {
             <input type="checkbox" id="session-arrange"> <span>Auto-arrange windows ~20s after launch</span>
           </label>
           <label class="toggle-row inline" style="gap:10px;margin-top:8px;cursor:pointer">
-            <input type="checkbox" id="session-keepalive"> <span>Keep alive — auto-rejoin accounts that crash or disconnect</span>
+            <input type="checkbox" id="session-keepalive"> <span>Watchdog — put accounts back in the same server if they crash or disconnect</span>
           </label>
         </div>
         <div class="m-foot"><button class="btn" data-action="modal-cancel">Cancel</button>
@@ -2711,7 +2764,7 @@ document.addEventListener('click', async (e) => {
           toast('Windows will be arranged in ~20s', 'good');
           setTimeout(() => { call(() => api.instances.arrange()); }, 20000);
         }
-        if (session.keepAlive && session.placeId) armKeepAlive(ids, session.placeId, session.gameId, session.name);
+        if (session.keepAlive && session.placeId) armWatchdog(ids.map(id => ({ accountId: id, placeId: session.placeId, gameInstanceId: session.gameId, name: session.name })));
       } else toast((r && r.error) || 'Session launch failed', 'bad');
       break;
     }
@@ -2762,6 +2815,29 @@ document.addEventListener('click', async (e) => {
     case 'join-best': {
       const sv = state.servers;
       if (sv && sv.list.length) { const top = sortedServers(filteredServers(sv), sv.sort)[0]; if (top) joinServer(sv.placeId, top.id, sv.name); }
+      break;
+    }
+    case 'servers-fill': openFillModal(); break;
+    case 'fill-mode': {
+      if (!state.fillDraft) break;
+      state.fillDraft.spread = elAction.dataset.mode === 'spread';
+      const seg = $('#fill-mode');
+      if (seg) seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', (b.dataset.mode === 'spread') === state.fillDraft.spread));
+      break;
+    }
+    case 'fill-confirm': {
+      const draft = state.fillDraft;
+      if (!draft || !draft.ids.length) { closeModal(); state.fillDraft = null; break; }
+      const keepAlive = !!($('#fill-keepalive') && $('#fill-keepalive').checked);
+      elAction.disabled = true;
+      elAction.innerHTML = '<span class="spinner dark"></span> Filling…';
+      const r = await call(() => api.launch.autoFill(draft.ids, draft.placeId, { spread: draft.spread, keepAlive, name: draft.name }), undefined, 300000);
+      state.fillDraft = null;
+      closeModal();
+      state.servers = null;
+      if (r && r.ok) {
+        toast(`Filled ${r.launched} account${r.launched === 1 ? '' : 's'} into ${r.servers} server${r.servers === 1 ? '' : 's'}` + (r.failed ? `, ${r.failed} failed` : ''), r.failed ? 'bad' : 'good');
+      } else toast((r && r.error) || 'Fill failed', 'bad');
       break;
     }
 
@@ -2960,14 +3036,25 @@ content.addEventListener('contextmenu', (e) => {
   if (!row) return;
   e.preventDefault();
   const pid = parseInt(row.dataset.pid, 10);
-  showContextMenu(e.clientX, e.clientY, [
+  const instance = (state.instances || []).find(i => Number(i.pid) === pid);
+  const watch = instance ? watchdogRecordForAccount(instance.accountId) : null;
+  const items = [
     { id: 'focus', icon: 'focus', label: 'Focus window', onClick: () => doRowAction('focus', pid) },
     { id: 'restart', icon: 'rotate', label: 'Restart client', onClick: () => doRowAction('restart', pid) },
+  ];
+  if (watch) {
+    items.push({ id: 'stop-watch', icon: 'activity', label: 'Stop auto-rejoin', onClick: async () => {
+      const r = await call(() => api.keeper.disarm(instance.accountId));
+      toast(r && r.ok ? 'Watchdog stopped for ' + (watch.username || 'that account') : 'Could not stop the watchdog', r && r.ok ? 'good' : 'bad');
+    } });
+  }
+  items.push(
     { sep: true },
     { id: 'copy', icon: 'copy', label: 'Copy PID', onClick: () => navigator.clipboard.writeText(String(pid)).then(() => toast('PID copied', 'good')) },
     { sep: true },
     { id: 'end', icon: 'x', label: 'End client', danger: true, onClick: () => doRowAction('end', pid) },
-  ]);
+  );
+  showContextMenu(e.clientX, e.clientY, items);
 });
 async function doRowAction(kind, pid) {
   if (kind === 'focus') { const r = await call(() => api.instances.focus(pid)); if (!(r && r.ok)) toast((r && r.reason) || 'Could not focus', 'bad'); }
@@ -3012,6 +3099,10 @@ async function loadAccounts() {
 }
 function updateNavCount() { const el = $('#nav-count'); if (el) el.textContent = (state.instances || []).length; }
 function updateAccountsCount() { const el = $('#nav-accounts'); if (el) el.textContent = (state.accounts || []).length; }
+async function loadWatchdog() {
+  const r = await call(() => api.keeper.status(), null);
+  if (r && Array.isArray(r.records)) applyWatchdogStatus(r);
+}
 
 if (api) {
   let instanceRenderFrame = 0;
@@ -3043,6 +3134,14 @@ if (api) {
   });
   // Re-authenticated (or new account added in background): reload the list.
   api.onAccountAdded(async () => { await loadAccounts(); if (state.view === 'accounts') views.accounts(); });
+  // Watchdog (auto-rejoin): live per-account state + toasts when it acts.
+  api.onKeeperStatus((status) => applyWatchdogStatus(status));
+  api.onKeeperRejoin((r) => {
+    toast(`Watchdog: ${(r && r.username) || 'an account'} dropped (${(r && r.reason) || 'closed'}) - rejoining in ${Math.max(1, Math.round(((r && r.delayMs) || 0) / 1000))}s`);
+  });
+  api.onKeeperGaveup((r) => {
+    toast(`Watchdog gave up on ${(r && r.username) || 'an account'} after ${((r && r.attempts) || 0)} tries - arm it again by relaunching`, 'bad');
+  });
   api.onUpdaterStatus((status) => {
     const prev = state.updater && state.updater.state;
     state.updater = status;
@@ -3091,7 +3190,7 @@ setInterval(refreshVisiblePeoplePresence, 10000);
   }
   // Independent boot calls run together and each has a timeout, so one broken
   // subsystem can no longer leave users staring at the splash forever.
-  await Promise.all([refreshStatus(), loadInstances(), loadAccounts()]);
+  await Promise.all([refreshStatus(), loadInstances(), loadAccounts(), loadWatchdog()]);
   state.launchMode = state.accounts.length ? 'account' : 'plain';
   // Reopen the section the user last visited (validated against the nav).
   let startView = 'instances';

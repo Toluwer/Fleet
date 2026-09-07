@@ -15,6 +15,8 @@ A multi-instance launcher and account manager for Roblox.
 - Launch multiple Roblox clients at once, each signed into a different account or signed out
 - Sign in through Roblox's real login page, keep several accounts saved, launch them together by Place ID, game URL or server link
 - Save an account group plus game setup as a session and relaunch it with one click
+- Watchdog: when a client crashes, disconnects or gets kicked, Fleet puts that account straight back into the same server, with a fresh login ticket and a retry backoff that gives up instead of looping forever
+- Fill: scan a game's servers and pack your whole account group into the emptiest ones, together or spread out
 - Browse and search games, scan servers, filter by ping, players and FPS
 - See friends across all accounts with live status, open profiles, join their server
 - Manage running clients: focus, restart or end any of them

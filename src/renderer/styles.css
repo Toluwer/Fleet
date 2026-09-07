@@ -300,6 +300,7 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
   color: var(--ink-2); background: var(--surface-2); letter-spacing: .01em; }
 .tag.fleet { color: var(--success-text); background: var(--success-bg); }
 .tag.external { color: var(--ink-3); background: var(--surface-2); }
+.tag.watch { color: var(--accent-text, var(--ink-2)); background: var(--accent-bg, var(--surface-2)); }
 
 .empty { text-align: center; padding: 44px 20px; color: var(--ink-3); }
 .empty .e-ico { width: 40px; height: 40px; margin: 0 auto 12px; display: grid; place-items: center;

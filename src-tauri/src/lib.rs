@@ -320,6 +320,11 @@ backend_command!(launch_accounts, "launch_accounts", (account_ids: Vec<String>, 
 backend_command!(launch_join, "launch_join", (account_ids: Vec<String>, place_id: Option<String>, game_id: Option<String>), json!({ "accountIds": account_ids, "placeId": place_id, "gameId": game_id }));
 backend_command!(launch_join_person, "launch_join_person", (account_id: Option<String>, target_user_id: Option<i64>), json!({ "accountId": account_id, "targetUserId": target_user_id }));
 backend_command!(launch_join_person_multi, "launch_join_person_multi", (account_ids: Vec<String>, target_user_id: Option<i64>), json!({ "accountIds": account_ids, "targetUserId": target_user_id }));
+backend_command!(launch_auto_fill, "launch_auto_fill", (account_ids: Vec<String>, place_id: Option<String>, spread: Option<bool>, keep_alive: Option<bool>, name: Option<String>), json!({ "accountIds": account_ids, "placeId": place_id, "spread": spread, "keepAlive": keep_alive, "name": name }));
+backend_command!(keeper_arm, "keeper_arm", (records: Value), json!({ "records": records }));
+backend_command!(keeper_disarm, "keeper_disarm", (account_id: Option<String>), json!({ "accountId": account_id }));
+backend_command!(keeper_disarm_all, "keeper_disarm_all", (), Value::Null);
+backend_command!(keeper_status, "keeper_status", (), Value::Null);
 backend_command!(accounts_list, "accounts_list", (), Value::Null);
 #[tauri::command]
 async fn accounts_add(app: AppHandle) -> Result<Value, String> {
@@ -471,6 +476,11 @@ pub fn run() {
             launch_join,
             launch_join_person,
             launch_join_person_multi,
+            launch_auto_fill,
+            keeper_arm,
+            keeper_disarm,
+            keeper_disarm_all,
+            keeper_status,
             accounts_list,
             accounts_add,
             accounts_remove,

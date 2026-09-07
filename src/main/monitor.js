@@ -109,6 +109,7 @@ class ProcessMonitor extends EventEmitter {
           executablePath: r.executablePath,
           source: managedMatch ? 'fleet' : 'external',
           profileName: managedMatch ? (m.profileName || '') : '',
+          accountId: managedMatch ? (m.accountId || '') : '',
           startedAt,
           startedExact: managedMatch,
         });

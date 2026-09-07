@@ -19,6 +19,7 @@ const accounts = require('./accounts');
 const people = require('./people');
 const games = require('./games');
 const playtime = require('./playtime');
+const { InstanceKeeper } = require('./keeper');
 const { ProcessMonitor } = require('./monitor');
 
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
@@ -50,14 +51,59 @@ function makeBackend(ctx) {
   if (native.isAvailable()) guard.start();
 
   let monitor = new ProcessMonitor({ intervalMs: settings.pollIntervalMs, logger });
-  monitor.on('update', (payload) => emit('instances:update', payload));
+  monitor.on('update', (payload) => { emit('instances:update', payload); keeper.onInstances(payload.instances); });
   monitor.start();
+
+  // Watchdog: armed accounts get a client relaunched into their game when it
+  // dies (crash, kick, disconnect). Fresh ticket every rejoin, backoff, and
+  // manual kills always win. See keeper.js.
+  const keeper = new InstanceKeeper({
+    logger,
+    store,
+    settingsProvider: () => store.getSettings(),
+    killInstance: async (pid) => {
+      const r = await processes.kill(pid, true);
+      monitor.forget(pid);
+      return r;
+    },
+    launchAccount: async (accountId, placeId, gameInstanceId) => {
+      const li = await accounts.getLaunchInfo(accountId, (placeId || '').toString() || null, gameInstanceId || null);
+      if (!li.ok) return { ok: false, reason: li.reason || 'Could not mint a launch ticket.' };
+      const loc = roblox.locate(store.getSettings());
+      if (!loc.found) return { ok: false, reason: 'Roblox player not found.' };
+      guard.setPlayerPath(loc.playerPath); guard.start();
+      const r = launchIsolated(loc, { mode: 'deeplink', deeplink: li.deeplink }, li.username, accountId);
+      monitor.poll();
+      return r.ok ? { ok: true, pid: r.pid } : { ok: false, reason: r.reason || 'Launch failed.' };
+    },
+    launchFollow: async (accountId, targetUserId) => {
+      const li = await accounts.getPersonJoinLaunchInfo(accountId, targetUserId);
+      if (!li.ok) return { ok: false, reason: li.reason || 'Could not mint a launch ticket.' };
+      const loc = roblox.locate(store.getSettings());
+      if (!loc.found) return { ok: false, reason: 'Roblox player not found.' };
+      guard.setPlayerPath(loc.playerPath); guard.start();
+      const r = launchIsolated(loc, { mode: 'deeplink', deeplink: li.deeplink }, li.username, accountId);
+      monitor.poll();
+      return r.ok ? { ok: true, pid: r.pid } : { ok: false, reason: r.reason || 'Launch failed.' };
+    },
+  });
+  keeper.on('change', (status) => emit('keeper:status', status));
+  keeper.on('rejoin', (record) => emit('keeper:rejoin', {
+    accountId: record.accountId, username: record.username, name: record.name,
+    attempts: record.attempts, delayMs: record.delayMs || 0, reason: record.lastReason || '',
+  }));
+  keeper.on('gaveup', (record) => emit('keeper:gaveup', {
+    accountId: record.accountId, username: record.username, name: record.name,
+    attempts: record.attempts, reason: record.lastReason || '',
+  }));
+  keeper.restore();
+
   logger.onEntry((entry) => emit('log:entry', entry));
   accounts.startPolling({
     intervalMs: 12000,
     onUpdate: (acc) => emit('account:update', acc),
     onExpired: (acc) => emit('account:expired', acc),
-    onObserve: (userId, username, status, game) => playtime.observe(userId, username, status, game),
+    onObserve: (userId, username, status, game) => { playtime.observe(userId, username, status, game); keeper.onPresence(userId, status); },
   });
 
   function buildStatus() {
@@ -75,11 +121,12 @@ function makeBackend(ctx) {
       ffiAvailable: native.isAvailable(),
       ffiError: native.getLoadError(),
       guard: guard.stats(),
+      watchdog: keeper.status().summary,
       settings,
     };
   }
 
-  function launchIsolated(loc, opts, profileName) {
+  function launchIsolated(loc, opts, profileName, accountId) {
     let exe = loc.playerPath;
     let slot = null;
     if (native.isAvailable()) {
@@ -96,7 +143,7 @@ function makeBackend(ctx) {
     const r = launcher.launchInstance({ playerPath: exe, mode: opts.mode, deeplink: opts.deeplink });
     if (r.ok && r.pid) {
       if (slot) clones.assign(slot, r.pid);
-      monitor.markManaged(r.pid, { profileName, mode: opts.mode, deeplink: opts.deeplink, playerPath: loc.playerPath, exePath: exe });
+      monitor.markManaged(r.pid, { profileName, mode: opts.mode, deeplink: opts.deeplink, playerPath: loc.playerPath, exePath: exe, accountId: accountId || '' });
     }
     store.addHistory({ profileName, mode: opts.mode, result: r.ok ? 'launched' : 'failed', pid: r.pid, message: r.ok ? '' : (r.reason || 'failed') });
     return r;
@@ -125,7 +172,7 @@ function makeBackend(ctx) {
           results.push({ ok: false, reason: li.reason });
           store.addHistory({ profileName: 'Account', mode: 'account', result: 'failed', message: li.reason });
         } else {
-          results.push(launchIsolated(loc, { mode: 'deeplink', deeplink: li.deeplink }, li.username));
+          results.push(launchIsolated(loc, { mode: 'deeplink', deeplink: li.deeplink }, li.username, accountIds[i]));
         }
         monitor.poll();
         if (i < accountIds.length - 1) await delay(settings.launchDelayMs);
@@ -146,6 +193,106 @@ function makeBackend(ctx) {
     logger.info(`Launch: ${launched} started, ${failed} failed`);
     monitor.poll();
     return { ok: launched > 0, launched, failed, multiInstance: native.isAvailable(), results };
+  }
+
+  /** Turn account ids into watchdog records the keeper can arm. */
+  function armRecords(rows) {
+    const known = new Map(accounts.list().map(a => [a.id, a]));
+    const list = [];
+    for (const row of (Array.isArray(rows) ? rows : []).slice(0, 20)) {
+      const accountId = String((row && row.accountId) || '').trim();
+      const acc = known.get(accountId);
+      if (accountId && acc) {
+        list.push({
+          accountId,
+          userId: acc.userId,
+          username: acc.username,
+          placeId: String((row && row.placeId) || ''),
+          gameInstanceId: String((row && row.gameInstanceId) || ''),
+          targetUserId: Number(row && row.targetUserId) || null,
+          name: String((row && row.name) || ''),
+        });
+      }
+    }
+    if (!list.length) return { ok: false, error: 'No matching accounts to watch.' };
+    return keeper.armMany(list);
+  }
+
+  /** Fill the emptiest servers with the given accounts.
+   *
+   * Scans the place's server list, then packs accounts in: "same server"
+   * keeps the whole crew together when one server fits them all, "spread"
+   * fills the emptiest server first and spills into the next. Each account
+   * gets its own freshly minted ticket into its assigned server, spaced like
+   * any other multi-launch. Optionally arms the watchdog per account so the
+   * whole setup self-heals. */
+  async function autoFill({ accountIds, placeId, spread, keepAlive, name }) {
+    const settings = store.getSettings();
+    const loc = roblox.locate(settings);
+    if (!loc.found) {
+      return { ok: false, error: 'Roblox is not installed or could not be found. Open Settings to set the path manually.' };
+    }
+    const scan = await games.scanServers(placeId, 8);
+    if (!scan.ok) return { ok: false, error: scan.error || 'Server scan failed.' };
+
+    const freeSlots = s => Math.max(0, Number(s.maxPlayers) - Number(s.playing));
+    const servers = (scan.servers || []).slice().sort((a, b) =>
+      freeSlots(b) - freeSlots(a) || (a.ping == null ? 999999 : a.ping) - (b.ping == null ? 999999 : b.ping));
+    if (!servers.length) return { ok: false, error: 'No joinable servers found right now.' };
+
+    const assignment = [];
+    if (!spread) {
+      const together = servers.find(s => freeSlots(s) >= accountIds.length);
+      if (together) for (const id of accountIds) assignment.push({ accountId: id, serverId: together.id });
+    }
+    if (!assignment.length) {
+      let i = 0;
+      for (const s of servers) {
+        const take = Math.min(freeSlots(s), accountIds.length - i);
+        for (let k = 0; k < take; k++) assignment.push({ accountId: accountIds[i + k], serverId: s.id });
+        i += take;
+        if (i >= accountIds.length) break;
+      }
+      for (; assignment.length < accountIds.length; ) {
+        assignment.push({ accountId: accountIds[assignment.length], serverId: null, reason: 'every scanned server is full' });
+      }
+    }
+
+    const byAccount = new Map(accounts.list().map(a => [a.id, a]));
+    const results = [];
+    for (let idx = 0; idx < assignment.length; idx++) {
+      const a = assignment[idx];
+      const acc = byAccount.get(a.accountId);
+      if (!a.serverId) {
+        results.push({ accountId: a.accountId, username: acc ? acc.username : '', ok: false, reason: a.reason });
+        continue;
+      }
+      const li = await accounts.getLaunchInfo(a.accountId, placeId, a.serverId);
+      if (!li.ok) {
+        results.push({ accountId: a.accountId, username: acc ? acc.username : '', serverId: a.serverId, ok: false, reason: li.reason });
+        store.addHistory({ profileName: acc ? acc.username : 'Auto-fill', mode: 'account', result: 'failed', message: li.reason });
+      } else {
+        const r = launchIsolated(loc, { mode: 'deeplink', deeplink: li.deeplink }, li.username, a.accountId);
+        results.push({ accountId: a.accountId, username: li.username, serverId: a.serverId, ok: r.ok, pid: r.pid, reason: r.reason });
+      }
+      monitor.poll();
+      if (idx < assignment.length - 1) await delay(settings.launchDelayMs);
+    }
+
+    const launched = results.filter(r => r.ok);
+    const usedServers = new Set(launched.map(r => r.serverId));
+    logger.info(`Auto-fill: ${launched.length} of ${results.length} launched into ${usedServers.size} server(s)`);
+    if (keepAlive && launched.length) {
+      armRecords(launched.map(r => ({ accountId: r.accountId, placeId, gameInstanceId: r.serverId, name: name || 'the game' })));
+    }
+    return {
+      ok: launched.length > 0,
+      launched: launched.length,
+      failed: results.length - launched.length,
+      servers: usedServers.size,
+      scan: scan.scan || null,
+      results,
+    };
   }
 
   const updateState = {
@@ -436,6 +583,26 @@ function makeBackend(ctx) {
       if (!targetUserId || !accountIds.length) return { ok: false, error: 'Choose at least one account and a player.' };
       return doLaunch({ accountIds, targetUserId });
     },
+    async launch_auto_fill(payload) {
+      const accountIds = Array.from(new Set((Array.isArray(payload.accountIds) ? payload.accountIds : []).map(id => String(id || '')).filter(Boolean))).slice(0, 20);
+      const placeId = String(payload.placeId || '').trim();
+      if (!accountIds.length) return { ok: false, error: 'Choose at least one account.' };
+      if (!/^\d+$/.test(placeId)) return { ok: false, error: 'A valid place id is required.' };
+      return autoFill({
+        accountIds,
+        placeId,
+        spread: payload.spread !== false,
+        keepAlive: !!payload.keepAlive,
+        name: String(payload.name || 'the game').slice(0, 80),
+      });
+    },
+    async keeper_arm(payload) { return armRecords(payload.records); },
+    async keeper_disarm(payload) {
+      const r = keeper.disarm(payload.accountId, 'stopped by user');
+      return r.ok ? { ok: true } : { ok: false, error: 'That account is not being watched.' };
+    },
+    async keeper_disarm_all() { return keeper.disarmAll('stopped by user'); },
+    async keeper_status() { return keeper.status(); },
     async people_list(payload) { return people.listFriends(asInt(payload.page) || 0, asInt(payload.pageSize) || 9, !!payload.force); },
     async people_search(payload) { return people.search(payload.query, payload.cursor); },
     async people_profile(payload) { return people.profile(payload.userId); },
@@ -466,22 +633,25 @@ function makeBackend(ctx) {
     },
     async instance_kill(payload) {
       const pid = asInt(payload.pid); if (!pid) return { ok: false, error: 'Invalid PID.' };
+      keeper.onManualKill(pid);   // a client the user ends must stay ended
       const r = await processes.kill(pid, true); monitor.forget(pid); monitor.poll(); return r;
     },
     async instance_restart(payload) {
       const pid = asInt(payload.pid); if (!pid) return { ok: false, error: 'Invalid PID.' };
       const managed = monitor.getManaged(pid);
+      keeper.onManualRestart(pid);   // the restart path relaunches on its own
       const settings = store.getSettings();
       const loc = roblox.locate(settings);
       if (!loc.found) return { ok: false, error: 'Roblox player not found for restart.' };
       guard.setPlayerPath(loc.playerPath); guard.start();
       const opts = { mode: (managed && managed.mode) || 'client', deeplink: (managed && managed.deeplink) || '' };
       const name = (managed && managed.profileName) || 'Restarted';
+      const accountId = (managed && managed.accountId) || '';
       await processes.kill(pid, true); monitor.forget(pid); await delay(700);
-      const launch = launchIsolated(loc, opts, name); monitor.poll(); return Object.assign({ ok: launch.ok }, launch);
+      const launch = launchIsolated(loc, opts, name, accountId); monitor.poll(); return Object.assign({ ok: launch.ok }, launch);
     },
-    async instances_kill_all() { const r = await processes.killAllPlayers(); monitor.poll(); return r; },
-    async instances_cleanup() { const r = await processes.cleanupAll(); monitor.poll(); return Object.assign({ ok: r.ok }, r); },
+    async instances_kill_all() { keeper.onManualKillAll(); const r = await processes.killAllPlayers(); monitor.poll(); return r; },
+    async instances_cleanup() { keeper.onManualKillAll(); const r = await processes.cleanupAll(); monitor.poll(); return Object.assign({ ok: r.ok }, r); },
     async instances_arrange() {
       const pids = (monitor.snapshot() || []).map(i => i.pid);
       const r = native.tileWindows(pids); return Object.assign({ ok: r.ok }, r);
@@ -575,6 +745,7 @@ function makeBackend(ctx) {
     try { accounts.stopPolling(); } catch (_) {}
     try { playtime.flush(); } catch (_) {}
     try { guard.stop(); } catch (_) {}
+    try { keeper.stop(); } catch (_) {}
     try { clones.cleanup(); } catch (_) {}
   }
 

@@ -19,7 +19,7 @@ node test/inspect.js
 
 ## Selftest coverage
 
-Detection, the native layer (koffi/mutex/focus), store, launcher, accounts, people, games, instances, the UI contract, and packaging.
+Detection, the native layer (koffi/mutex/focus), store, launcher, accounts, people, games, instances, the watchdog state machine (rejoin, backoff, give-up, manual-kill suppression, presence fallback, persistence), the UI contract, and packaging.
 
 ## Multiple-instance recipe
 
