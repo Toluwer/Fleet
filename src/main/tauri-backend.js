@@ -17,6 +17,7 @@ const clones = require('./clones');
 const guard = require('./guard');
 const accounts = require('./accounts');
 const people = require('./people');
+const signup = require('./signup');
 const games = require('./games');
 const playtime = require('./playtime');
 const { InstanceKeeper } = require('./keeper');
@@ -53,6 +54,7 @@ function makeBackend(ctx) {
     logger,
   });
   playtime.configure({ store, logger });
+  signup.configure({ logger });
   games.configure({ logger });
   people.configure({ logger });
 
@@ -635,6 +637,9 @@ function makeBackend(ctx) {
     async accounts_list() { return { ok: true, accounts: accounts.list() }; },
     async accounts_add(payload) { return accounts.add(payload || {}); },
     async accounts_add_cookie(payload) { return accounts.addFromCookie(String((payload && payload.cookie) || '')); },
+    async signup_check_username(payload) {
+      return signup.checkUsername(String((payload && payload.username) || ''), String((payload && payload.birthday) || ''));
+    },
     async accounts_remove(payload) { return accounts.remove(payload.id); },
     async accounts_refresh(payload) { return accounts.refresh(payload.id, payload.full); },
     async accounts_follow(payload) {

@@ -17,6 +17,8 @@ Each client shows up in Running clients with status, PID, memory and start time.
 
 Add account opens Roblox's real login page, 2FA included. Sessions are encrypted and stay on this PC.
 
+Create account builds a brand-new Roblox account instead: fill in the username, password, birthday and profile field, and Fleet opens Roblox's real signup form already filled in — finish the captcha there and the new account is saved, signed in. Usernames are checked against Roblox while you type.
+
 Each card has Launch, Refresh, Remove and Select (for multi-launch). Expired sessions offer Sign in again.
 
 ## Sessions

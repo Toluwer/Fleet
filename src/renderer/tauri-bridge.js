@@ -111,6 +111,10 @@ window.fleet = {
     remove: (id) => tauriInvoke('accounts_remove', { id }),
     refresh: (id, full) => tauriInvoke('accounts_refresh', { id, full }),
     follow: (targetAccountId, followerAccountIds) => tauriInvoke('accounts_follow', { targetAccountId, followerAccountIds }),
+    create: (payload) => tauriInvoke('accounts_create', payload || {}),
+  },
+  signup: {
+    checkUsername: (username, birthday) => tauriInvoke('signup_check_username', { username, birthday }),
   },
   games: {
     browse: () => tauriInvoke('games_browse'),

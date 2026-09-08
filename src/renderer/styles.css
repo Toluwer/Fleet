@@ -551,8 +551,16 @@ table.data td .mono, table.data td.mono { font-family: var(--mono); color: var(-
 .hint { color: var(--ink-3); font-size: 12px; line-height: 1.45; margin: 0; }
 .field .hint { margin-top: 6px; }
 .field .err { color: var(--danger); font-size: 12px; margin-top: 6px; }
+.pass-row { display: flex; gap: 8px; align-items: stretch; }
+.pass-row input { flex: 1; min-width: 0; }
+.field-status { font-size: 12px; line-height: 1.4; margin-top: 6px; min-height: 0; display: flex; align-items: center; gap: 5px; }
+.field-status:empty { display: none; }
+.field-status .spinner { width: 12px; height: 12px; border-width: 2px; }
+.field-status.ok { color: var(--success-text); }
+.field-status.bad { color: var(--danger); }
+.field-status.dim { color: var(--ink-3); }
 input[type=checkbox] { accent-color: var(--accent); margin: 0; }
-input[type=text], input[type=number], textarea, select {
+input[type=text], input[type=number], input[type=password], input[type=date], textarea, select {
   width: 100%; min-height: var(--control-h); padding: 5px 11px; border: 1px solid var(--hair-2); border-radius: var(--r); font: inherit;
   color: var(--ink); background: var(--bg); transition: border-color var(--motion-fast) var(--ease), box-shadow var(--motion-fast) var(--ease); }
 input::placeholder, textarea::placeholder { color: var(--ink-4); }
@@ -662,6 +670,10 @@ textarea { resize: vertical; min-height: 70px; }
 .modal .m-body { padding: 12px 18px; }
 .modal .m-foot { padding: 12px 18px 16px; display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--hair); }
 .modal.server-modal { width: min(860px, calc(100vw - 48px)); height: min(760px, calc(100vh - 48px)); overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+/* The creator form keeps its footer pinned: the body scrolls, the actions
+   never fall off-screen on short windows. */
+.modal.create-modal { overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+.modal.create-modal .m-body { min-height: 0; overflow-y: auto; }
 .modal.server-modal .m-head { text-align: center; padding-top: 18px; }
 .modal.server-modal .m-body { min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 .modal.server-modal .m-body > .server-tools { flex: none; }

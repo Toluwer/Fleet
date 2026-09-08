@@ -72,6 +72,8 @@ const state = {
   logs: [],
   logFilter: 'all',
   addingAccount: false,
+  creatingAccount: false,
+  createDraft: null,
   followTargetId: null,
   followSelected: new Set(),
   following: false,
@@ -220,6 +222,7 @@ function paletteActions() {
   const acts = [
     { icon: 'refresh', label: 'Check for Fleet updates', hint: 'Updater', run: async () => { const r = await call(() => api.updater.check(), { ok: false }); if (!r || !r.ok) toast('Update check did not start', 'bad'); } },
     { icon: 'refresh', label: 'Refresh accounts', hint: 'Reload list', run: async () => { await loadAccounts(); toast('Accounts refreshed', 'good'); } },
+    { icon: 'user-plus', label: 'Create a Roblox account', hint: 'Accounts', run: () => { setView('accounts'); openCreateAccountModal(); } },
     { icon: 'refresh', label: 'Refresh instances', hint: 'Reload list', run: async () => { await loadInstances(); toast('Refreshed', 'good'); } },
   ];
   if (watchdog.records.some(r => r.state !== 'gaveup')) {
@@ -440,6 +443,217 @@ function openFollowDialog(targetId) {
   renderFollowDialog();
 }
 
+/* ----------------------------- Create account ----------------------------- */
+// The creator fills Roblox's real signup form in a Tauri webview: Fleet
+// pre-fills every field, the user finishes Roblox's captcha, and the new
+// session is imported the moment Roblox sets it — no manual re-entry, no
+// cookie copy-paste. Validation mirrors Roblox's own rules so the button
+// only enables on submittable input.
+
+const CREATE_GENDERS = ['Male', 'Female', 'Skip'];
+let createCheckTimer = null;
+
+function defaultCreateBirthday() {
+  // ~18 years back, formatted for <input type="date">.
+  const now = new Date();
+  return (now.getFullYear() - 18) + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+}
+
+function openCreateAccountModal() {
+  clearTimeout(createCheckTimer);
+  state.createDraft = {
+    username: '', password: '', confirm: '',
+    birthday: defaultCreateBirthday(), gender: 'Skip',
+    check: null, checking: false, submitting: false, showPass: false,
+  };
+  renderCreateAccountModal();
+}
+
+function renderCreateAccountModal() {
+  const d = state.createDraft;
+  if (!d) return;
+  openModal(`
+    <div class="m-head"><h3>Create a Roblox account</h3>
+      <p>Fleet pre-fills Roblox's signup form — finish the captcha there and the new account lands here, already signed in.</p></div>
+    <div class="m-body">
+      <div class="field">
+        <label for="create-username">Username</label>
+        <input id="create-username" type="text" maxlength="20" autocomplete="off" spellcheck="false"
+          placeholder="3-20 characters" value="${esc(d.username)}">
+        <div class="field-status" id="create-username-status"></div>
+        <p class="hint">Checked against Roblox as you type.</p>
+      </div>
+      <div class="field">
+        <label for="create-password">Password</label>
+        <div class="pass-row">
+          <input id="create-password" type="${d.showPass ? 'text' : 'password'}" maxlength="20"
+            autocomplete="new-password" placeholder="8-20 characters" value="${esc(d.password)}">
+          <button class="btn sm icon" data-action="create-toggle-pass" data-tip="${d.showPass ? 'Hide password' : 'Show password'}"
+            aria-label="${d.showPass ? 'Hide password' : 'Show password'}">${icon('eye')}</button>
+        </div>
+        <div class="field-status" id="create-password-status"></div>
+        <p class="hint">8-20 characters with a letter and a number.</p>
+      </div>
+      <div class="field">
+        <label for="create-confirm">Confirm password</label>
+        <input id="create-confirm" type="${d.showPass ? 'text' : 'password'}" maxlength="20"
+          autocomplete="new-password" placeholder="Repeat the password" value="${esc(d.confirm)}">
+        <div class="field-status" id="create-confirm-status"></div>
+      </div>
+      <div class="field">
+        <label for="create-birthday">Birthday</label>
+        <input id="create-birthday" type="date" min="1900-01-01" max="${defaultCreateBirthday().slice(0, 4) - 5}-12-31" value="${esc(d.birthday)}">
+        <div class="field-status" id="create-birthday-status"></div>
+        <p class="hint">Age 13+ keeps Roblox's quick sign-up flow.</p>
+      </div>
+      <div class="field" style="margin-bottom:0">
+        <label>Profile field</label>
+        <div class="segmented" id="create-gender">
+          ${CREATE_GENDERS.map(g => `<button type="button" class="${d.gender === g ? 'on' : ''}" data-action="create-gender" data-g="${g}">${g === 'Skip' ? 'Prefer not to say' : g}</button>`).join('')}
+        </div>
+        <p class="hint" style="margin-top:6px">Optional — sets the avatar's default look.</p>
+      </div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" data-action="modal-cancel">Cancel</button>
+      <button class="btn primary" data-action="create-account-submit" id="create-submit">
+        ${d.submitting ? '<span class="spinner"></span> Opening Roblox…' : `${icon('user-plus')} Create account`}
+      </button>
+    </div>`, 'create-modal');
+  wireCreateModal();
+  updateCreateValidation();
+  const first = $('#create-username');
+  if (first) first.focus();
+}
+
+function wireCreateModal() {
+  const d = state.createDraft;
+  if (!d) return;
+  const username = $('#create-username');
+  const password = $('#create-password');
+  const confirm = $('#create-confirm');
+  const birthday = $('#create-birthday');
+
+  username.addEventListener('input', () => {
+    d.username = username.value;
+    d.check = null;
+    d.checking = false;
+    clearTimeout(createCheckTimer);
+    updateCreateValidation();
+    scheduleCreateUsernameCheck();
+  });
+  password.addEventListener('input', () => {
+    d.password = password.value;
+    updateCreateValidation();
+  });
+  confirm.addEventListener('input', () => {
+    d.confirm = confirm.value;
+    updateCreateValidation();
+  });
+  birthday.addEventListener('input', () => {
+    d.birthday = birthday.value;
+    d.check = null;               // availability checks depend on the birthday
+    updateCreateValidation();
+    scheduleCreateUsernameCheck();
+  });
+}
+
+function scheduleCreateUsernameCheck() {
+  const d = state.createDraft;
+  if (!d || d.submitting) return;
+  clearTimeout(createCheckTimer);
+  const candidate = String(d.username || '').trim();
+  if (!/^[A-Za-z0-9_]{3,20}$/.test(candidate) || !d.birthday) return;
+  createCheckTimer = setTimeout(async () => {
+    const dd = state.createDraft;
+    if (!dd || dd.submitting || !$('#create-username')) return;   // modal closed or re-opened
+    dd.checking = true;
+    updateCreateStatusLine();
+    const current = String(dd.username || '').trim();
+    const r = await call(() => api.signup.checkUsername(current, dd.birthday), { ok: true }, 9000);
+    if (!state.createDraft || state.createDraft !== dd || !$('#create-username')) return;
+    dd.checking = false;
+    if (r && r.ok) dd.check = { available: r.available, message: r.message };
+    else dd.check = { available: null, message: (r && r.error) || 'Could not check availability — Roblox validates the name at sign-up.' };
+    updateCreateStatusLine();
+    updateCreateValidation();
+  }, 550);
+}
+
+function createValidationErrors(d) {
+  const errors = {};
+  const u = String(d.username || '').trim();
+  if (u.length < 3) errors.username = 'At least 3 characters.';
+  else if (u.length > 20) errors.username = 'At most 20 characters.';
+  else if (!/^[A-Za-z0-9_]+$/.test(u)) errors.username = 'Only letters, numbers and underscores.';
+
+  const p = String(d.password || '');
+  if (!p) errors.password = 'Enter a password.';
+  else if (p.length < 8) errors.password = 'At least 8 characters.';
+  else if (p.length > 20) errors.password = 'At most 20 characters.';
+  else if (!/[A-Za-z]/.test(p) || !/[0-9]/.test(p)) errors.password = 'Include a letter and a number.';
+
+  const c = String(d.confirm || '');
+  if (c !== p) errors.confirm = 'The passwords do not match.';
+
+  const b = String(d.birthday || '');
+  const m = b.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) errors.birthday = 'Pick a valid birthday.';
+  else {
+    const y = Number(m[1]), mo = Number(m[2]), dy = Number(m[3]);
+    const date = new Date(Date.UTC(y, mo - 1, dy));
+    const now = new Date();
+    if (date.getUTCFullYear() !== y || date.getUTCMonth() !== mo - 1 || date.getUTCDate() !== dy) {
+      errors.birthday = 'That date does not exist.';
+    } else if (date.getTime() > Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())) {
+      errors.birthday = 'The birthday is in the future.';
+    } else {
+      let age = now.getUTCFullYear() - y;
+      const before = now.getUTCMonth() < mo - 1 || (now.getUTCMonth() === mo - 1 && now.getUTCDate() < dy);
+      if (before) age -= 1;
+      if (age < 13) errors.birthday = 'Roblox needs age 13+ for the quick flow.';
+    }
+  }
+  return errors;
+}
+
+function updateCreateStatusLine() {
+  const d = state.createDraft;
+  const line = $('#create-username-status');
+  if (!d || !line) return;
+  if (d.checking) { line.className = 'field-status dim'; line.innerHTML = '<span class="spinner"></span> Checking availability…'; return; }
+  if (d.check && d.check.available === true) { line.className = 'field-status ok'; line.innerHTML = `${icon('check-circle')} ${esc(d.check.message || 'Username is available')}`; return; }
+  if (d.check && d.check.available === false) { line.className = 'field-status bad'; line.innerHTML = `${icon('alert-circle')} ${esc(d.check.message || 'That username is already taken')}`; return; }
+  if (d.check) { line.className = 'field-status dim'; line.textContent = d.check.message || 'Availability unknown — Roblox validates at sign-up.'; return; }
+  line.className = 'field-status'; line.innerHTML = '';
+}
+
+function updateCreateValidation() {
+  const d = state.createDraft;
+  if (!d || !$('#create-submit')) return;   // modal closed
+  const errors = createValidationErrors(d);
+  const taken = d.check && d.check.available === false;
+  const btn = $('#create-submit');
+  btn.disabled = !!Object.keys(errors).length || taken || d.checking || d.submitting;
+  const mark = (field, err) => {
+    const el = $('#create-' + field + '-status');
+    if (!el) return;
+    if (field === 'username') { updateCreateStatusLine(); return; }
+    if (err) { el.className = 'field-status bad'; el.textContent = err; }
+    else { el.className = 'field-status'; el.textContent = ''; }
+  };
+  mark('username', errors.username);
+  mark('password', errors.password);
+  mark('confirm', errors.confirm);
+  mark('birthday', errors.birthday);
+}
+
+function closeCreateModal() {
+  clearTimeout(createCheckTimer);
+  state.createDraft = null;
+  closeModal();
+}
+
 function closePersonJoinDialog() {
   state.personJoin = null;
   closeModal();
@@ -519,6 +733,7 @@ ctxmenu.addEventListener('click', (e) => {
 function cancelModal() {
   if (state.personJoin) closePersonJoinDialog();
   else if (state.followTargetId) closeFollowDialog();
+  else if (state.createDraft) closeCreateModal();
   else { closeModal(); state.servers = null; state.sessionDraft = null; }
 }
 document.addEventListener('keydown', (e) => {
@@ -1066,7 +1281,11 @@ views.accounts = function () {
 
   const cards = list.length ? `<div class="acct-grid" data-account-grid>` + list.map(a => renderAccountCard(a)).join('') + `</div>`
     : `<div class="card"><div class="empty"><div class="e-ico">${icon('users')}</div>
-        <h3>No accounts yet</h3><p>Add a Roblox account to launch clients already signed in.</p></div></div>`;
+        <h3>No accounts yet</h3><p>Add an existing Roblox account or create a brand-new one without leaving Fleet.</p>
+        <div class="b-actions" style="margin-top:14px">
+          <button class="btn sm primary" data-action="create-account">${icon('user-plus')} Create account</button>
+          <button class="btn sm" data-action="add-account" ${state.addingAccount ? 'disabled' : ''}>${state.addingAccount ? '<span class="spinner"></span> Waiting…' : 'Add account'}</button>
+        </div></div></div>`;
 
   mount(`
     <div class="page-head">
@@ -1078,6 +1297,9 @@ views.accounts = function () {
       <div class="inline" data-account-launch-actions>
         ${list.length ? `<button class="btn sm" data-action="refresh-accounts" data-tip="Refresh all">${icon('refresh')} Refresh all</button>` : ''}
         ${selectedCount ? `<button class="btn primary sm" data-action="launch-selected" data-account-launch-selected>${icon('play')} Launch ${selectedCount} selected</button>` : ''}
+        <button class="btn sm" data-action="create-account" ${state.creatingAccount ? 'disabled' : ''} data-tip="Create a new Roblox account">
+          ${state.creatingAccount ? '<span class="spinner"></span>' : icon('plus')} ${state.creatingAccount ? 'Creating…' : 'Create account'}
+        </button>
         <button class="btn primary sm" data-action="add-account" ${state.addingAccount ? 'disabled' : ''}>
           ${state.addingAccount ? '<span class="spinner"></span>' : icon('user-plus')} ${state.addingAccount ? 'Waiting for sign-in…' : 'Add account'}
         </button>
@@ -2419,8 +2641,9 @@ views.help = function () {
 
       <h2>Quick start</h2>
       <div class="step"><div class="n">1</div><div>On <b>Accounts</b>, click <b>Add account</b>. Fleet opens a Tauri Roblox sign-in window and saves the account after Roblox sets the session.</div></div>
-      <div class="step"><div class="n">2</div><div>On <b>Instances</b>, choose <b>With account</b> or <b>Signed out</b>. Optionally paste a Place ID, game URL, or exact-server link, then click <b>Launch</b>.</div></div>
-      <div class="step"><div class="n">3</div><div>Every client appears under <b>Running clients</b>, where you can focus, restart or end it.</div></div>
+      <div class="step"><div class="n">2</div><div>Need a fresh account instead? Click <b>Create account</b>, fill in the username, password and birthday, and Fleet opens Roblox's signup form already filled in — finish the captcha and the new account is saved here, signed in.</div></div>
+      <div class="step"><div class="n">3</div><div>On <b>Instances</b>, choose <b>With account</b> or <b>Signed out</b>. Optionally paste a Place ID, game URL, or exact-server link, then click <b>Launch</b>.</div></div>
+      <div class="step"><div class="n">4</div><div>Every client appears under <b>Running clients</b>, where you can focus, restart or end it.</div></div>
 
       <h2>Accounts</h2>
       <p>Accounts appear with avatar, name and presence. Fleet stores sessions locally and uses them for launch, follow, People search and join flows.</p>
@@ -2587,6 +2810,61 @@ document.addEventListener('click', async (e) => {
         renderFollowDialog();
         toast((r && r.error) || (firstFailure && firstFailure.reason) || 'Could not follow that account', 'bad');
       }
+      break;
+    }
+
+    case 'create-account': {
+      openCreateAccountModal();
+      break;
+    }
+    case 'create-gender': {
+      const d = state.createDraft;
+      if (!d || d.submitting) break;
+      d.gender = CREATE_GENDERS.includes(elAction.dataset.g) ? elAction.dataset.g : 'Skip';
+      const seg = $('#create-gender');
+      if (seg) Array.from(seg.querySelectorAll('button')).forEach(b => b.classList.toggle('on', b.dataset.g === d.gender));
+      break;
+    }
+    case 'create-toggle-pass': {
+      const d = state.createDraft;
+      if (!d) break;
+      d.showPass = !d.showPass;
+      const pass = $('#create-password');
+      const confirm = $('#create-confirm');
+      if (pass) pass.type = d.showPass ? 'text' : 'password';
+      if (confirm) confirm.type = d.showPass ? 'text' : 'password';
+      elAction.dataset.tip = d.showPass ? 'Hide password' : 'Show password';
+      break;
+    }
+    case 'create-account-submit': {
+      const d = state.createDraft;
+      if (!d || d.submitting || state.creatingAccount) break;
+      const errors = createValidationErrors(d);
+      if (Object.keys(errors).length || (d.check && d.check.available === false)) { updateCreateValidation(); break; }
+
+      d.submitting = true;
+      const btn = $('#create-submit');
+      if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Opening Roblox…'; }
+      state.creatingAccount = true;
+      closeCreateModal();
+      if (state.view === 'accounts') views.accounts();
+      toast('Opening Roblox signup — finish the captcha there; Fleet saves the account automatically');
+      const r = await call(() => api.accounts.create({
+        username: String(d.username || '').trim(),
+        password: String(d.password || ''),
+        birthday: String(d.birthday || ''),
+        gender: d.gender,
+      }), undefined, 0);
+      state.creatingAccount = false;
+      if (r && r.ok) {
+        await loadAccounts();
+        toast((r.updated ? 'Account updated: ' : 'Account created: ') + (r.account ? r.account.username : ''), 'good');
+      } else if (r && r.canceled) {
+        toast('Sign-up canceled');
+      } else {
+        toast((r && r.error) || 'Could not create the account', 'bad');
+      }
+      if (state.view === 'accounts') views.accounts();
       break;
     }
 

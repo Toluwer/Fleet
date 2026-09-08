@@ -1,0 +1,163 @@
+'use strict';
+
+/**
+ * signup.js — Roblox account creation support.
+ *
+ * Roblox gates programmatic signup behind browser-side anti-bot checks, so
+ * the account creator works through Roblox's real signup page in a Tauri
+ * webview — the same proven approach the sign-in flow uses. The Rust shell
+ * opens that page with the form pre-filled, and the new session is imported
+ * the moment Roblox sets it.
+ *
+ * This module owns everything that can be checked before that window opens:
+ *   - local validation of username / password / birthday / gender
+ *   - live username availability through Roblox's public validate endpoint
+ */
+
+let logger = { info() {}, warn() {}, error() {} };
+
+function configure(opts) {
+  if (opts && opts.logger) logger = opts.logger;
+}
+
+/* ----------------------------- Local rules ----------------------------- */
+
+const USERNAME_MIN = 3, USERNAME_MAX = 20;
+const PASSWORD_MIN = 8, PASSWORD_MAX = 20;
+const MIN_AGE = 13;
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const GENDERS = ['Male', 'Female', 'Skip'];
+
+/** Roblox usernames: 3-20 chars, ASCII letters, digits, underscore. */
+function validateUsernameLocal(username) {
+  const name = String(username || '').trim();
+  if (!name) return { ok: false, message: 'Enter a username.' };
+  if (name.length < USERNAME_MIN) return { ok: false, message: `At least ${USERNAME_MIN} characters.` };
+  if (name.length > USERNAME_MAX) return { ok: false, message: `At most ${USERNAME_MAX} characters.` };
+  if (!/^[A-Za-z0-9_]+$/.test(name)) return { ok: false, message: 'Only letters, numbers and underscores.' };
+  return { ok: true, message: '' };
+}
+
+/** Roblox passwords: 8-20 chars, at least one letter and one number. */
+function validatePasswordLocal(password) {
+  const pass = String(password || '');
+  if (!pass) return { ok: false, message: 'Enter a password.' };
+  if (pass.length < PASSWORD_MIN) return { ok: false, message: `At least ${PASSWORD_MIN} characters.` };
+  if (pass.length > PASSWORD_MAX) return { ok: false, message: `At most ${PASSWORD_MAX} characters.` };
+  if (!/[A-Za-z]/.test(pass) || !/[0-9]/.test(pass)) return { ok: false, message: 'Include at least one letter and one number.' };
+  return { ok: true, message: '' };
+}
+
+/**
+ * Birthday as "YYYY-MM-DD": a real calendar date, not in the future, and at
+ * least MIN_AGE years old. (Younger signups route Roblox into a parent-email
+ * flow that cannot complete inside the quick-create window.)
+ */
+function validateBirthdayLocal(birthday) {
+  const raw = String(birthday || '').trim();
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return { ok: false, message: 'Pick a valid birthday.' };
+  const year = Number(m[1]), month = Number(m[2]), day = Number(m[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+    return { ok: false, message: 'That date does not exist.' };
+  }
+  const now = new Date();
+  const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  if (date.getTime() > todayUtc) return { ok: false, message: 'The birthday is in the future.' };
+  // Age in whole years at the current date.
+  let age = now.getUTCFullYear() - year;
+  const beforeBirthday = now.getUTCMonth() < month - 1
+    || (now.getUTCMonth() === month - 1 && now.getUTCDate() < day);
+  if (beforeBirthday) age -= 1;
+  if (age < MIN_AGE) return { ok: false, message: `Roblox needs age ${MIN_AGE}+ for this flow — use a different birthday.` };
+  if (year < 1900) return { ok: false, message: 'Pick a year Roblox offers (1900 or later).' };
+  return { ok: true, message: '', age };
+}
+
+function validateGenderLocal(gender) {
+  return GENDERS.includes(String(gender || '')) ? { ok: true, message: '' }
+    : { ok: false, message: 'Choose Male, Female or Skip.' };
+}
+
+/** Full local validation. Returns { ok, errors: { field: message } }. */
+function validateInput(input) {
+  const inp = input || {};
+  const errors = {};
+  const u = validateUsernameLocal(inp.username); if (!u.ok) errors.username = u.message;
+  const p = validatePasswordLocal(inp.password); if (!p.ok) errors.password = p.message;
+  if (inp.confirm !== undefined && String(inp.password || '') !== String(inp.confirm || '')) {
+    errors.confirm = 'The passwords do not match.';
+  }
+  const b = validateBirthdayLocal(inp.birthday); if (!b.ok) errors.birthday = b.message;
+  const g = validateGenderLocal(inp.gender); if (!g.ok) errors.gender = g.message;
+  return { ok: Object.keys(errors).length === 0, errors };
+}
+
+/* ------------------------- Live availability ------------------------- */
+
+/**
+ * Friendly text for the codes Roblox's validate endpoint returns. Unknown
+ * codes fall back to the endpoint's own message.
+ */
+const CODE_MESSAGES = {
+  0: 'Username is available',
+  1: 'That username is already taken',
+  2: 'Usernames can only contain letters, numbers and underscores',
+  3: 'That username is too short',
+  4: 'That username is too long',
+  6: 'That username is not allowed',
+};
+
+/**
+ * Live username availability via Roblox's public endpoint (the birthday
+ * parameter satisfies its anonymous-call requirement). Network hiccups are
+ * reported, never thrown — Roblox re-validates at signup anyway.
+ * Returns { ok, available, message }.
+ */
+async function checkUsername(username, birthday) {
+  const local = validateUsernameLocal(username);
+  if (!local.ok) return { ok: true, available: false, message: local.message };
+  const bday = validateBirthdayLocal(birthday);
+  if (!bday.ok) return { ok: true, available: false, message: 'Pick a valid birthday first.' };
+  try {
+    const url = 'https://auth.roblox.com/v1/usernames/validate?username='
+      + encodeURIComponent(String(username).trim())
+      + '&birthday=' + encodeURIComponent(String(birthday).trim());
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Fleet', 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.status === 429) return { ok: true, available: null, message: 'Roblox is rate-limiting checks — it will validate the name at sign-up.' };
+    if (!res.ok) return { ok: true, available: null, message: 'Could not reach Roblox to check the name — it will be validated at sign-up.' };
+    const j = await res.json();
+    const code = Number(j && j.code);
+    const available = code === 0;
+    const message = CODE_MESSAGES[code] || (j && j.message) || (available ? 'Username is available' : 'Roblox rejected that username');
+    return { ok: true, available, message };
+  } catch (err) {
+    logger.warn('Username check failed', (err && err.message) || err);
+    return { ok: true, available: null, message: 'Could not reach Roblox to check the name — it will be validated at sign-up.' };
+  }
+}
+
+/** Birthday "1995-06-15" -> select values Roblox's form uses: Jun / 15 / 1995. */
+function birthdayToFormValues(birthday) {
+  const b = validateBirthdayLocal(birthday);
+  if (!b.ok) return null;
+  const m = String(birthday).trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const month = Number(m[2]), day = Number(m[3]);
+  return { month: MONTHS[month - 1], day: String(day).padStart(2, '0'), year: m[1] };
+}
+
+module.exports = {
+  configure,
+  validateInput,
+  validateUsernameLocal,
+  validatePasswordLocal,
+  validateBirthdayLocal,
+  validateGenderLocal,
+  checkUsername,
+  birthdayToFormValues,
+  GENDERS, MONTHS, USERNAME_MIN, USERNAME_MAX, PASSWORD_MIN, PASSWORD_MAX, MIN_AGE,
+};

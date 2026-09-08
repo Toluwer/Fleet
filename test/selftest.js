@@ -21,6 +21,7 @@ const processes = require('../src/main/processes');
 const launcher = require('../src/main/launcher');
 const accounts = require('../src/main/accounts');
 const people = require('../src/main/people');
+const signup = require('../src/main/signup');
 const games = require('../src/main/games');
 const rendererModel = require('../src/renderer/model');
 const { ProcessMonitor } = require('../src/main/monitor');
@@ -340,6 +341,75 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     global.fetch = originalFetch;
   }
 
+  /* 8.5 Account creator — validation + availability mapping */
+  await section('Account creator');
+  check('username rules mirror Roblox (3-20, letters/digits/underscore)',
+    signup.validateUsernameLocal('Fleet_test1').ok
+      && !signup.validateUsernameLocal('ab').ok
+      && !signup.validateUsernameLocal('twentyone-characters-x').ok
+      && !signup.validateUsernameLocal('has space').ok
+      && !signup.validateUsernameLocal('dash-in-it').ok);
+  check('password rules mirror Roblox (8-20, letter + digit)',
+    signup.validatePasswordLocal('hunter2x').ok
+      && !signup.validatePasswordLocal('short1').ok
+      && !signup.validatePasswordLocal('nodigitsatall').ok
+      && !signup.validatePasswordLocal('12345678').ok
+      && !signup.validatePasswordLocal('this-password-is-way-too-long1').ok);
+  check('birthday validation rejects impossible and future dates',
+    !signup.validateBirthdayLocal('1995-02-30').ok
+      && !signup.validateBirthdayLocal('2999-01-01').ok
+      && !signup.validateBirthdayLocal('banana').ok
+      && signup.validateBirthdayLocal('1995-06-15').ok);
+  const now = new Date();
+  const youngBday = (now.getUTCFullYear() - 10) + '-06-15';
+  const adultBday = (now.getUTCFullYear() - 30) + '-06-15';
+  check('under-13 birthdays are refused for the quick flow',
+    !signup.validateBirthdayLocal(youngBday).ok && /13/.test(signup.validateBirthdayLocal(youngBday).message));
+  const turns13Tomorrow = (() => {
+    // Someone whose 13th birthday is tomorrow is still 12 today.
+    const d = new Date(Date.UTC(now.getUTCFullYear() - 13, now.getUTCMonth(), now.getUTCDate() + 1));
+    return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0');
+  })();
+  check('someone who turns 13 tomorrow is still refused', !signup.validateBirthdayLocal(turns13Tomorrow).ok);
+  check('gender accepts Male/Female/Skip only',
+    signup.validateGenderLocal('Male').ok && signup.validateGenderLocal('Female').ok && signup.validateGenderLocal('Skip').ok
+      && !signup.validateGenderLocal('Other').ok);
+  check('full input validation aggregates per-field errors',
+    (() => {
+      const bad = signup.validateInput({ username: 'x', password: 'short', birthday: youngBday, gender: 'Nope', confirm: 'other' });
+      const good = signup.validateInput({ username: 'Fleet_test1', password: 'hunter2x', birthday: adultBday, gender: 'Skip', confirm: 'hunter2x' });
+      return !bad.ok && bad.errors.username && bad.errors.password && bad.errors.birthday && bad.errors.gender && bad.errors.confirm && good.ok;
+    })());
+  check('birthday converts to Roblox form values (Mon/DD/YYYY)',
+    (() => {
+      const v = signup.birthdayToFormValues('1995-06-15');
+      return v && v.month === 'Jun' && v.day === '15' && v.year === '1995'
+        && signup.birthdayToFormValues('nope') === null;
+    })());
+
+  const signupFetchOriginal = global.fetch;
+  try {
+    global.fetch = async (url) => {
+      if (String(url).includes('usernames/validate')) {
+        return { ok: true, status: 200, json: async () => ({ code: 1, message: 'Username is already in use.' }) };
+      }
+      throw new Error('unexpected fetch');
+    };
+    const taken = await signup.checkUsername('builderman', adultBday);
+    check('taken username maps to available=false', taken.ok && taken.available === false && /already taken/i.test(taken.message));
+    global.fetch = async (url) => ({ ok: true, status: 200, json: async () => ({ code: 0, message: 'Username is valid' }) });
+    const free = await signup.checkUsername('Fleet_test1', adultBday);
+    check('free username maps to available=true', free.ok && free.available === true && /available/i.test(free.message));
+    global.fetch = async () => { throw new Error('network down'); };
+    const unreachable = await signup.checkUsername('Fleet_test1', adultBday);
+    check('network failure never throws and never blocks sign-up',
+      unreachable.ok === true && unreachable.available === null && unreachable.message);
+    check('locally invalid usernames skip the network entirely',
+      (await signup.checkUsername('x', adultBday)).message === 'At least 3 characters.');
+  } finally {
+    global.fetch = signupFetchOriginal;
+  }
+
   /* 9. Public people data normalization */
   await section('People profiles');
   check('people rejects unsafe user ids', people.numericId('nope') === null && people.numericId(-2) === null);
@@ -487,7 +557,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && rendererModel.parseRobloxTarget('not a Roblox target').invalid === true
     && rendererModel.parseRobloxTarget('').invalid === false);
   check('Account-less installs can search public profiles without exposing account cookies',
-    peopleSource.includes("'User-Agent': 'Fleet/1.7.1'")
+    peopleSource.includes("'User-Agent': 'Fleet/1.8.0'")
     && peopleSource.includes('search-api/omni-search')
     && peopleSource.includes("verticalType: 'user'")
     && peopleSource.includes("presence: 'Unknown'")
@@ -1232,6 +1302,41 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     // Preserved behaviors.
     check('Escape still closes modal first when palette closed', /cancelModal\(\); e\.preventDefault\(\); \}/.test(js.replace(/\n/g, ' ')));
     check('toast cap of 4 stacked cards kept', /wrap\.children\.length >= 4/.test(js));
+
+    // Account creator wiring (modal -> bridge -> Rust webview -> cookie import).
+    const bridge = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/tauri-bridge.js'), 'utf8');
+    const backend = fs.readFileSync(path.join(__dirname, '..', 'src/main/tauri-backend.js'), 'utf8');
+    const lib = fs.readFileSync(path.join(__dirname, '..', 'src-tauri/src/lib.rs'), 'utf8');
+    check('create-account modal, validation and submit flow implemented',
+      /function openCreateAccountModal/.test(js)
+        && /function createValidationErrors/.test(js)
+        && /case 'create-account-submit'/.test(js)
+        && /api\.accounts\.create\(/.test(js));
+    check('creator validates against Roblox rules and blocks taken names',
+      /errors\.username/.test(js) && /errors\.password/.test(js) && /errors\.confirm/.test(js) && /errors\.birthday/.test(js)
+        && /d\.check\.available === false/.test(js));
+    check('live username availability check is debounced and fault-tolerant',
+      /api\.signup\.checkUsername/.test(js) && /scheduleCreateUsernameCheck/.test(js) && /createCheckTimer/.test(js));
+    check('create buttons wired in Accounts header, empty state and palette',
+      (js.match(/data-action="create-account"/g) || []).length >= 2
+        && /Create a Roblox account/.test(js));
+    check('bridge exposes accounts.create and signup.checkUsername',
+      /create: \(payload\) => tauriInvoke\('accounts_create'/.test(bridge)
+        && /checkUsername: \(username, birthday\) => tauriInvoke\('signup_check_username'/.test(bridge));
+    check('backend handles the username availability probe',
+      /async signup_check_username\(payload\)/.test(backend) && backend.includes("require('./signup')"));
+    check('Rust opens the Roblox signup webview and registers accounts_create',
+      lib.includes('ROBLOX_SIGNUP_URL')
+        && /async fn accounts_create/.test(lib)
+        && /accounts_create,/.test(lib)
+        && lib.includes('accounts_add_cookie'));
+    check('prefill script fills the real Roblox form via React native setters',
+      lib.includes('#signup-username') && lib.includes('#signup-password')
+        && lib.includes('HTMLSelectElement.prototype') && lib.includes('on_page_load'));
+    check('prefill values are JSON-escaped into the injected script',
+      /fn js_string/.test(lib) && /serde_json::to_string/.test(lib));
+    check('signup form styles cover password and date inputs',
+      /input\[type=password\], input\[type=date\]/.test(css) && /\.field-status/.test(css) && /\.pass-row/.test(css));
   }
 
   /* 11. Live launch (opt-in) */
