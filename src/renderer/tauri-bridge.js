@@ -115,6 +115,7 @@ window.fleet = {
   },
   signup: {
     checkUsername: (username, birthday) => tauriInvoke('signup_check_username', { username, birthday }),
+    suggestUsernames: (username, birthday) => tauriInvoke('signup_suggest_usernames', { username, birthday }),
   },
   games: {
     browse: () => tauriInvoke('games_browse'),

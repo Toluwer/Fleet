@@ -327,6 +327,8 @@ backend_command!(keeper_disarm, "keeper_disarm", (account_id: Option<String>), j
 backend_command!(keeper_disarm_all, "keeper_disarm_all", (), Value::Null);
 backend_command!(keeper_status, "keeper_status", (), Value::Null);
 backend_command!(accounts_list, "accounts_list", (), Value::Null);
+backend_command!(signup_check_username, "signup_check_username", (username: Option<String>, birthday: Option<String>), json!({ "username": username, "birthday": birthday }));
+backend_command!(signup_suggest_usernames, "signup_suggest_usernames", (username: Option<String>, birthday: Option<String>), json!({ "username": username, "birthday": birthday }));
 #[tauri::command]
 async fn accounts_add(app: AppHandle) -> Result<Value, String> {
     let label = format!(
@@ -400,17 +402,253 @@ async fn accounts_add(app: AppHandle) -> Result<Value, String> {
     Ok(result)
 }
 
-/// JSON-escape a value into a JS string literal (used to embed the new
-/// account's form values into the injected prefill script).
-fn js_string(value: &str) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| "\"\"".into())
-}
-
 /// Roblox usernames: 3-20 chars, ASCII letters, digits, underscore.
 const SIGNUP_USERNAME_MIN: usize = 3;
 const SIGNUP_USERNAME_MAX: usize = 20;
 const SIGNUP_PASSWORD_MIN: usize = 8;
 const SIGNUP_PASSWORD_MAX: usize = 20;
+
+/// The prefill driver for Roblox's real signup page. Roblox A/B tests the
+/// form (a two-step wizard with Continue / "Add password" buttons, and a
+/// classic single-step form with a Sign Up button), so the driver locates
+/// fields by fingerprint instead of fixed ids: the username/password inputs
+/// by several id/name/autocomplete patterns, the birthday selects by their
+/// option values (never by document order), the gender by toggle buttons or
+/// radios. It fills every field as soon as it appears (values set through
+/// the native property setters + input/change events so React registers
+/// them), re-fills anything a re-mount wipes, and advances the form toward
+/// the captcha: one click when everything is valid, one retry for a
+/// swallowed click, and after the captcha exactly one more click to finish
+/// a trailing password step. The moment the user types or clicks anything,
+/// every automatic action stops — the captcha itself is always theirs.
+/// All user-supplied values arrive as one JSON object spliced into the
+/// `__FLEET_VALS__` placeholder, so nothing can break out of the script.
+/// The password lives only in memory (webview session) — it is never logged
+/// or stored; the session cookie Roblox sets afterwards is what gets saved,
+/// exactly like the sign-in flow.
+const PREFILL_SCRIPT: &str = r#"(function() {
+  if (window.__fleetPrefill) return;
+  window.__fleetPrefill = true;
+  var vals = __FLEET_VALS__;
+  var dbg = { filled: { u: false, p: false, m: false, d: false, y: false, g: false },
+              clickedAdvance: 0, captchaSeen: false, take: false, stopped: false, ticks: 0 };
+  window.__fleetFill = dbg;
+  try { console.log('[fleet-prefill] driver installed'); } catch (e) {}
+
+  function onSignupPage() {
+    try {
+      var p = location.pathname.toLowerCase();
+      return p.indexOf('createaccount') >= 0 || p.indexOf('create-account') >= 0 || p.indexOf('signup') >= 0;
+    } catch (e) { return false; }
+  }
+
+  // Real user activity hands control back: typed input / real clicks on
+  // controls stop every automatic action. Synthetic events (ours, React's)
+  // carry isTrusted=false and never trigger this.
+  var owned = new WeakSet();
+  ['input', 'change'].forEach(function(type) {
+    document.addEventListener(type, function(e) {
+      var t = e.target;
+      if (e.isTrusted && t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) {
+        owned.add(t); dbg.take = true;
+      }
+    }, true);
+  });
+  document.addEventListener('click', function(e) {
+    var t = e.target;
+    if (e.isTrusted && t && t.closest && t.closest('button, a, [role=button], input[type=radio], input[type=checkbox]')) dbg.take = true;
+  }, true);
+
+  function setNative(el, value) {
+    var proto = el.tagName === 'SELECT' ? window.HTMLSelectElement.prototype : window.HTMLInputElement.prototype;
+    var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    try {
+      if (desc && desc.set) desc.set.call(el, value); else el.value = value;
+    } catch (e) { el.value = value; }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  // Set a select by value, falling back to matching an option by value or
+  // label prefix ("Jun" vs "June") so month-name style changes survive.
+  function setSelect(select, value) {
+    if (select.value === value) return true;
+    setNative(select, value);
+    if (select.value === value) return true;
+    var opts = Array.prototype.slice.call(select.options);
+    var low = String(value).toLowerCase();
+    var hit = null;
+    for (var i = 0; i < opts.length; i++) {
+      var v = String(opts[i].value || '').toLowerCase();
+      var t = String(opts[i].textContent || '').trim().toLowerCase();
+      if (v === low) { hit = opts[i]; break; }
+      if (!hit && t && (t === low || t.indexOf(low) === 0)) hit = opts[i];
+    }
+    if (hit) { setNative(select, hit.value); return select.value === hit.value; }
+    return false;
+  }
+
+  function q(sel) { return document.querySelector(sel); }
+  function findUser() { return q('#signup-username') || q('input[name="signupUsername"]') || q('input[autocomplete="username"]'); }
+  function findPass() { return q('#signup-v2-password') || q('#signup-password') || q('input[autocomplete="new-password"]') || q('input[id*="signup"][type="password"]'); }
+
+  // Birthday selects are identified by their option values, not document
+  // order, so extra selects (language pickers) can never be misfilled.
+  function findSelects() {
+    var out = { month: null, day: null, year: null };
+    var sels = Array.prototype.slice.call(document.querySelectorAll('select'));
+    for (var i = 0; i < sels.length; i++) {
+      var s = sels[i];
+      var opts = Array.prototype.map.call(s.options, function(o) { return String(o.value || ''); });
+      var has = function(v) { return opts.indexOf(v) >= 0; };
+      if (has('Jan') || has('January')) out.month = s;
+      else if (has('01') && has('15') && has('31')) out.day = s;
+      else if (opts.some(function(v) { return /^\d{4}$/.test(v); })) out.year = s;
+    }
+    return out;
+  }
+
+  function findButton(re) {
+    var btns = Array.prototype.slice.call(document.querySelectorAll('button'));
+    for (var i = 0; i < btns.length; i++) {
+      if (re.test(String(btns[i].textContent || '').trim())) return btns[i];
+    }
+    return null;
+  }
+
+  // Roblox A/B tests the signup page: one variant is a two-step wizard
+  // (Continue -> Add password), another is a classic single-step form with a
+  // "Sign Up" button. Any of these, once enabled, advances toward the
+  // captcha; the driver clicks whichever appears.
+  var ADV_RE = /^(sign up|sign up now|continue|next|add password|register|create account)$/i;
+  function advanceButtons() {
+    var out = [];
+    var btns = Array.prototype.slice.call(document.querySelectorAll('button'));
+    for (var i = 0; i < btns.length; i++) {
+      if (ADV_RE.test(String(btns[i].textContent || '').trim())) out.push(btns[i]);
+    }
+    return out;
+  }
+
+  function captchaVisible() {
+    return !!document.querySelector('iframe[title*="verification" i], iframe[src*="arkose" i], iframe[src*="funcaptcha" i], iframe[id*="arkose" i], iframe[id*="enforcement" i]');
+  }
+
+  // Gender: toggle buttons ("Male" with aria-pressed) in one variant; radio
+  // inputs in older layouts. Word-boundary match so "male" never matches
+  // "female".
+  function clickGender() {
+    if (vals.g !== 'Male' && vals.g !== 'Female') return false;
+    var btn = findButton(new RegExp('^' + vals.g + '$', 'i'));
+    if (btn) {
+      var on = btn.getAttribute('aria-pressed') === 'true' || String(btn.className).indexOf('selected') >= 0;
+      if (!on && !dbg.take) { try { btn.click(); } catch (e) {} }
+      return on;
+    }
+    var radios = Array.prototype.slice.call(document.querySelectorAll('input[type=radio]'));
+    var reG = new RegExp('\\b' + vals.g + '\\b', 'i');
+    for (var i = 0; i < radios.length; i++) {
+      var r = radios[i];
+      var direct = [r.value, r.id, r.name, r.getAttribute('aria-label') || ''].join(' ');
+      if (reG.test(direct) || (r.parentElement && reG.test(r.parentElement.textContent || ''))) {
+        if (r.checked) return true;
+        if (!dbg.take) { try { r.click(); } catch (e) {} }
+        return r.checked;
+      }
+    }
+    return false;
+  }
+
+  var allFilledAt = 0, lastAdvanceAttempt = 0;
+  var h = null, mo = null;
+
+  function stop(reason) {
+    if (dbg.stopped) return;
+    dbg.stopped = true;
+    if (h) clearInterval(h);
+    if (mo) mo.disconnect();
+    try { console.log('[fleet-prefill] stopped: ' + reason); } catch (e) {}
+  }
+
+  function tick() {
+    if (dbg.stopped) return;
+    dbg.ticks++;
+    if (dbg.ticks > 320) { stop('lifetime'); return; }
+    if (!onSignupPage()) return;
+
+    var u = findUser(), ps = findPass(), sels = findSelects();
+    var passPresent = !!ps;
+
+    if (u && !owned.has(u)) {
+      if (u.value !== vals.u) setNative(u, vals.u);
+      dbg.filled.u = (u.value === vals.u);
+    }
+    if (ps && !owned.has(ps)) {
+      if (ps.value !== vals.p) setNative(ps, vals.p);
+      dbg.filled.p = (ps.value === vals.p);
+    }
+    if (sels.month && !owned.has(sels.month)) { if (sels.month.value !== vals.m) setSelect(sels.month, vals.m); dbg.filled.m = (sels.month.value === vals.m); }
+    if (sels.day && !owned.has(sels.day)) { if (sels.day.value !== vals.d) setSelect(sels.day, vals.d); dbg.filled.d = (sels.day.value === vals.d); }
+    if (sels.year && !owned.has(sels.year)) { if (sels.year.value !== vals.y) setSelect(sels.year, vals.y); dbg.filled.y = (sels.year.value === vals.y); }
+    dbg.filled.g = clickGender();
+
+    if (dbg.filled.u && dbg.filled.m && dbg.filled.d && dbg.filled.y && (!passPresent || dbg.filled.p) && !allFilledAt) {
+      allFilledAt = Date.now();
+    }
+
+    // Once the captcha shows, the user is driving: no more automatic step-1
+    // clicks, but the driver keeps filling (some flows ask for the password
+    // only after the captcha) and may finish one final password step.
+    if (captchaVisible() && !dbg.captchaSeen) {
+      dbg.captchaSeen = true;
+      try { console.log('[fleet-prefill] captcha reached - user takes it from here'); } catch (e) {}
+    }
+
+    // Auto-advance: one click when everything is filled and the user has not
+    // taken over. A single retry covers a click swallowed mid-transition;
+    // after the captcha exactly one more click finishes a trailing password
+    // step. After that the form stays in the user's hands.
+    var clickBudget = dbg.captchaSeen ? 3 : 2;
+    if (allFilledAt && !dbg.take && dbg.clickedAdvance < clickBudget
+        && Date.now() - allFilledAt > 1200 && Date.now() - lastAdvanceAttempt > 6000) {
+      if (dbg.captchaSeen && (!passPresent || !dbg.filled.p)) return;
+      var btns = advanceButtons();
+      var target = null, other = null;
+      for (var i = 0; i < btns.length; i++) {
+        var b = btns[i];
+        var t2 = String(b.textContent || '').trim();
+        if (/^add password$/i.test(t2)) { target = b; break; }
+        if (!other && !b.disabled && b.getAttribute('aria-disabled') !== 'true') other = b;
+      }
+      if (!target) target = other;
+      if (target && !target.disabled && target.getAttribute('aria-disabled') !== 'true') {
+        dbg.clickedAdvance++; lastAdvanceAttempt = Date.now();
+        try { console.log('[fleet-prefill] clicking: ' + String(target.textContent || '').trim()); } catch (e) {}
+        try { target.click(); } catch (e) {}
+      }
+    }
+  }
+
+  h = setInterval(tick, 600);
+  tick();
+
+  var moQueued = false;
+  function startObserver() {
+    if (mo || !document.body) return;
+    mo = new MutationObserver(function() {
+      if (moQueued) return;
+      moQueued = true;
+      setTimeout(function() { moQueued = false; tick(); }, 200);
+    });
+    mo.observe(document.body, { childList: true, subtree: true });
+  }
+  if (document.body) startObserver();
+  else {
+    var bh = setInterval(function() {
+      if (document.body) { clearInterval(bh); startObserver(); }
+    }, 300);
+  }
+})();"#;
 
 fn valid_signup_username(name: &str) -> bool {
     (SIGNUP_USERNAME_MIN..=SIGNUP_USERNAME_MAX).contains(&name.chars().count())
@@ -479,56 +717,21 @@ async fn accounts_create(
         Err(err) => return Ok(json!({ "ok": false, "error": err.to_string() })),
     };
 
-    // The prefill script fills Roblox's real signup form once its React app
-    // mounts: username + password inputs, the month/day/year selects and the
-    // optional gender toggle. Values are embedded as JSON string literals, so
-    // nothing user-supplied can break out of the script. The password lives
-    // only in memory (webview session) — it is never logged or stored; the
-    // session cookie Roblox sets afterwards is what gets saved, exactly like
-    // the sign-in flow.
+    // Values are spliced into PREFILL_SCRIPT as one JSON object — see the
+    // const's doc comment above. The script is injected twice (an
+    // initialization script that runs at document start on every load, plus
+    // an on-page-load eval as backup); both are idempotent via a window
+    // guard, so double injection is harmless.
     const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    let fill_script = format!(
-        r#"(function() {{
-  if (window.__fleetPrefill) return; window.__fleetPrefill = true;
-  var vals = {{ u: {u}, p: {p}, m: {m}, d: {d}, y: {y}, g: {g} }};
-  var setNative = function(el, value) {{
-    var proto = el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
-    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
-    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-  }};
-  var tries = 0;
-  var fill = function() {{
-    var user = document.querySelector('#signup-username');
-    var pass = document.querySelector('#signup-password');
-    var sels = document.querySelectorAll('select');
-    if (user && pass && sels.length >= 3) {{
-      setNative(user, vals.u);
-      setNative(pass, vals.p);
-      setNative(sels[0], vals.m);
-      setNative(sels[1], vals.d);
-      setNative(sels[2], vals.y);
-      if (vals.g === 'Male' || vals.g === 'Female') {{
-        var btn = Array.prototype.slice.call(document.querySelectorAll('button'))
-          .find(function(b) {{ return b.textContent.trim() === vals.g; }});
-        if (btn) btn.click();
-      }}
-      return true;
-    }}
-    return false;
-  }};
-  var h = setInterval(function() {{
-    if (fill() || ++tries > 90) clearInterval(h);
-  }}, 500);
-  fill();
-}})();"#,
-        u = js_string(&username),
-        p = js_string(&password),
-        m = js_string(MONTHS[(month - 1) as usize]),
-        d = js_string(&format!("{:02}", day)),
-        y = js_string(&year.to_string()),
-        g = js_string(&gender),
-    );
+    let vals = json!({
+        "u": username,
+        "p": password,
+        "m": MONTHS[(month - 1) as usize],
+        "d": format!("{:02}", day),
+        "y": year.to_string(),
+        "g": gender,
+    });
+    let fill_script = PREFILL_SCRIPT.replace("__FLEET_VALS__", &vals.to_string());
 
     let data_dir = std::env::temp_dir().join(&label);
     let window = match WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url))
@@ -539,6 +742,7 @@ async fn accounts_create(
         .focused(true)
         .user_agent(LOGIN_UA)
         .data_directory(data_dir.clone())
+        .initialization_script(fill_script.clone())
         .on_page_load(move |webview, payload| {
             if let tauri::webview::PageLoadEvent::Finished = payload.event() {
                 let _ = webview.eval(&fill_script);
@@ -670,6 +874,8 @@ pub fn run() {
             keeper_disarm_all,
             keeper_status,
             accounts_list,
+            signup_check_username,
+            signup_suggest_usernames,
             accounts_add,
             accounts_create,
             accounts_remove,

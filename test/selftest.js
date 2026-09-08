@@ -410,6 +410,66 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     global.fetch = signupFetchOriginal;
   }
 
+  // Password generator: rules must hold over many draws, lengths clamp to
+  // Roblox's 8-20 window, and the alphabet avoids ambiguous glyphs.
+  {
+    let ruleHolds = true, charsetOk = true;
+    for (let i = 0; i < 200; i++) {
+      const p = signup.generatePassword(14);
+      if (!signup.validatePasswordLocal(p).ok) ruleHolds = false;
+      if (!/^[A-HJ-NP-Za-km-np-z2-9]+$/.test(p)) charsetOk = false;
+    }
+    check('generated passwords always satisfy Roblox rules', ruleHolds);
+    check('generated passwords use unambiguous glyphs only', charsetOk);
+    check('generator length clamps into the 8-20 window',
+      signup.generatePassword(4).length >= 8 && signup.generatePassword(99).length <= 20);
+    const seen = new Set();
+    for (let i = 0; i < 20; i++) seen.add(signup.generatePassword(10));
+    check('generator is actually random (20 draws, >1 distinct)', seen.size > 1, seen.size + ' distinct');
+  }
+
+  // Suggested usernames: valid, never equal to the taken base, deduped.
+  {
+    let ok = true;
+    for (let i = 0; i < 50; i++) {
+      const cands = signup.suggestionCandidates('CoolGuy');
+      if (!cands.length || new Set(cands).size !== cands.length) ok = false;
+      if (cands.some(c => c === 'CoolGuy' || !signup.validateUsernameLocal(c).ok || c.length > 20)) ok = false;
+    }
+    check('suggestion candidates are valid, deduped and never the base name', ok);
+    check('suggestions keep room for the suffix inside the 20-char cap',
+      signup.suggestionCandidates('a'.repeat(20)).every(c => c.length <= 20 && c.length >= 3));
+    check('a garbage base produces no candidates', signup.suggestionCandidates('!!!').length === 0);
+  }
+
+  // suggestUsernames with a mocked validate endpoint: only available names
+  // come back, capped at the requested count, network failures degrade.
+  {
+    const fetchOrig = global.fetch;
+    try {
+      let calls = 0;
+      global.fetch = async (url) => {
+        calls++;
+        const name = decodeURIComponent(String(url).split('username=')[1].split('&')[0]);
+        // Odd calls report taken, even calls report free — a deterministic mix.
+        const code = name.length % 2 === 0 ? 0 : 1;
+        return { ok: true, status: 200, json: async () => ({ code, message: code === 0 ? 'Username is valid' : 'taken' }) };
+      };
+      const r = await signup.suggestUsernames('CoolGuy', adultBday, 3);
+      check('suggestUsernames returns only endpoint-verified free names',
+        r.ok && Array.isArray(r.suggestions) && r.suggestions.length <= 3
+          && r.suggestions.every(s => /^[A-Za-z0-9_]{3,20}$/.test(s) && s !== 'CoolGuy'),
+        JSON.stringify(r.suggestions));
+      check('suggestUsernames probes the endpoint (sequential, gentle)', calls >= 2, calls + ' calls');
+      global.fetch = async () => { throw new Error('down'); };
+      const down = await signup.suggestUsernames('CoolGuy', adultBday, 3);
+      check('suggestUsernames survives a dead network with an empty list',
+        down.ok && Array.isArray(down.suggestions) && down.suggestions.length === 0);
+    } finally {
+      global.fetch = fetchOrig;
+    }
+  }
+
   /* 9. Public people data normalization */
   await section('People profiles');
   check('people rejects unsafe user ids', people.numericId('nope') === null && people.numericId(-2) === null);
@@ -557,7 +617,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && rendererModel.parseRobloxTarget('not a Roblox target').invalid === true
     && rendererModel.parseRobloxTarget('').invalid === false);
   check('Account-less installs can search public profiles without exposing account cookies',
-    peopleSource.includes("'User-Agent': 'Fleet/1.8.0'")
+    peopleSource.includes("'User-Agent': 'Fleet/1.8.1'")
     && peopleSource.includes('search-api/omni-search')
     && peopleSource.includes("verticalType: 'user'")
     && peopleSource.includes("presence: 'Unknown'")
@@ -1333,8 +1393,57 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     check('prefill script fills the real Roblox form via React native setters',
       lib.includes('#signup-username') && lib.includes('#signup-password')
         && lib.includes('HTMLSelectElement.prototype') && lib.includes('on_page_load'));
-    check('prefill values are JSON-escaped into the injected script',
-      /fn js_string/.test(lib) && /serde_json::to_string/.test(lib));
+    check('prefill values arrive as one JSON object spliced into the script',
+      lib.includes('__FLEET_VALS__') && /PREFILL_SCRIPT\.replace\("__FLEET_VALS__", &vals\.to_string\(\)\)/.test(lib));
+
+    // The 1.8.0 gap this release fixes: the renderer invoked
+    // signup_check_username with no Rust command registered, so the live
+    // availability check silently no-oped. Every bridge channel must now
+    // resolve to a registered Rust command.
+    const bridgeChannels = new Set();
+    for (const m of bridge.matchAll(/(?:tauriInvoke|invokeWithNumbers)\(\s*'([a-z0-9_]+)'/g)) bridgeChannels.add(m[1]);
+    const handlerBlock = (lib.match(/generate_handler!\[([\s\S]*?)\]/) || [])[1] || '';
+    const registered = new Set();
+    for (const m of handlerBlock.matchAll(/\b([a-z0-9_]+)\s*,/g)) registered.add(m[1]);
+    const unrouted = Array.from(bridgeChannels).filter(ch => !registered.has(ch));
+    check('every bridge invoke channel is registered as a Rust command',
+      bridgeChannels.size > 20 && unrouted.length === 0,
+      unrouted.length ? 'unrouted: ' + unrouted.join(', ') : bridgeChannels.size + ' channels routed');
+    check('signup availability and suggestions have Rust passthrough commands',
+      /backend_command!\(signup_check_username, "signup_check_username"/.test(lib)
+        && /backend_command!\(signup_suggest_usernames, "signup_suggest_usernames"/.test(lib)
+        && /signup_check_username,/.test(handlerBlock) && /signup_suggest_usernames,/.test(handlerBlock));
+
+    // The prefill driver must survive Roblox's A/B-tested signup variants
+    // and hand control back on first real user input.
+    check('prefill targets both signup variants (wizard v2 + classic ids)',
+      lib.includes('#signup-v2-password') && lib.includes('#signup-password')
+        && lib.includes('signupUsername') && lib.includes('aria-pressed')
+        && /input\[type=radio\]/.test(lib));
+    check('prefill fingerprints the birthday selects by option values',
+      /has\('Jan'\)/.test(lib) && /has\('01'\) && has\('15'\) && has\('31'\)/.test(lib)
+        && /\\d\{4\}/.test(lib));
+    check('prefill auto-advances the form and stops at the captcha',
+      /ADV_RE = \/\^\(sign up\|sign up now\|continue\|next\|add password\|register\|create account\)\$\/i/.test(lib)
+        && lib.includes('captchaSeen') && /\^add password\$\/i\.test/.test(lib)
+        && /verification.*arkose.*funcaptcha/s.test(lib));
+    check('first real user input stops every automatic action',
+      lib.includes('isTrusted') && lib.includes('WeakSet') && lib.includes('dbg.take = true'));
+    check('prefill injected at document start AND on page load (idempotent guard)',
+      /\.initialization_script\(fill_script\.clone\(\)\)/.test(lib)
+        && /window\.__fleetPrefill\) return/.test(lib));
+    check('creator modal offers password generation and one-click name fixes',
+      /case 'create-gen-pass'/.test(js) && /function generateCreatePassword/.test(js)
+        && /case 'create-pick-user'/.test(js) && /data-action="create-pick-user"/.test(js)
+        && /api\.signup\.suggestUsernames/.test(js));
+    check('birthday and profile defaults persist between accounts',
+      /CREATE_DEFAULTS_KEY/.test(js) && /saveCreateDefaults\(d\)/.test(js) && /loadCreateDefaults\(\)/.test(js));
+    check('bridge exposes the suggestions channel',
+      /suggestUsernames: \(username, birthday\) => tauriInvoke\('signup_suggest_usernames'/.test(bridge));
+    check('backend handles the suggestions probe',
+      /async signup_suggest_usernames\(payload\)/.test(backend));
+    check('suggestion chips styled',
+      /\.suggest-chip/.test(css) && /\.suggest-row/.test(css));
     check('signup form styles cover password and date inputs',
       /input\[type=password\], input\[type=date\]/.test(css) && /\.field-status/.test(css) && /\.pass-row/.test(css));
   }

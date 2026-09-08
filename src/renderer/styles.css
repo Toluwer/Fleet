@@ -559,6 +559,16 @@ table.data td .mono, table.data td.mono { font-family: var(--mono); color: var(-
 .field-status.ok { color: var(--success-text); }
 .field-status.bad { color: var(--danger); }
 .field-status.dim { color: var(--ink-3); }
+
+/* Username suggestions under a taken name — one-click adoption. */
+.suggest-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.suggest-row .spinner { width: 12px; height: 12px; border-width: 2px; }
+.suggest-note { color: var(--ink-3); font-size: 12px; }
+.suggest-chip { display: inline-flex; align-items: center; padding: 2px 10px; border-radius: var(--r-pill);
+  font-size: 12px; font-weight: 500; font-family: inherit; color: var(--ink-2); background: var(--surface-2);
+  border: 1px solid var(--hair-2); cursor: pointer; }
+.suggest-chip:hover { border-color: var(--accent-ring); color: var(--accent-text); background: var(--accent-soft); }
+.suggest-chip:focus-visible { outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 26%, transparent); }
 input[type=checkbox] { accent-color: var(--accent); margin: 0; }
 input[type=text], input[type=number], input[type=password], input[type=date], textarea, select {
   width: 100%; min-height: var(--control-h); padding: 5px 11px; border: 1px solid var(--hair-2); border-radius: var(--r); font: inherit;

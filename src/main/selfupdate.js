@@ -64,7 +64,7 @@ function buildApplyScript(opts) {
     '    $r | ConvertTo-Json -Compress | Set-Content -LiteralPath $ResultPath -Encoding UTF8',
     '  } catch { Log ("could not write result file: " + $_) }',
     '}',
-    '# First three version numbers of "1.8.0" / "1.8.0.0" / "1.8" for compare.',
+    '# First three version numbers of "1.8.1" / "1.8.1.0" / "1.8" for compare.',
     'function Ver3([string]$s) {',
     "  if ($s -match '^\\s*(\\d+)\\.(\\d+)(?:\\.(\\d+))?') {",
     "    $p = if ($matches[3]) { $matches[3] } else { '0' }",

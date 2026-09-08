@@ -150,6 +150,100 @@ function birthdayToFormValues(birthday) {
   return { month: MONTHS[month - 1], day: String(day).padStart(2, '0'), year: m[1] };
 }
 
+/* ------------------------- Password generator ------------------------- */
+
+/**
+ * Random int in [0, n) — crypto-quality when available (Node 20 and modern
+ * webviews always have globalThis.crypto), Math.random as a last resort.
+ * Rejection sampling keeps the distribution even.
+ */
+function randomInt(n) {
+  const c = globalThis.crypto;
+  if (c && typeof c.getRandomValues === 'function') {
+    const limit = Math.floor(0x100000000 / n) * n;
+    const buf = new Uint32Array(1);
+    do { c.getRandomValues(buf); } while (buf[0] >= limit);
+    return buf[0] % n;
+  }
+  return Math.floor(Math.random() * n);
+}
+
+// Unambiguous glyphs only — no 0/O, 1/I/l — so the password reads back by eye.
+const PASSWORD_LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz';
+const PASSWORD_DIGITS = '23456789';
+
+/**
+ * A Roblox-legal password: 8-20 characters with at least one letter and one
+ * digit (two letters + one digit are seeded first so the rule always holds,
+ * then the pool fills the rest and a Fisher-Yates shuffle spreads them).
+ */
+function generatePassword(length) {
+  const len = Math.min(Math.max(Number(length) || 14, PASSWORD_MIN), PASSWORD_MAX);
+  const pick = (set) => set[randomInt(set.length)];
+  const chars = [pick(PASSWORD_LETTERS), pick(PASSWORD_LETTERS), pick(PASSWORD_DIGITS)];
+  const pool = PASSWORD_LETTERS + PASSWORD_DIGITS;
+  while (chars.length < len) chars.push(pick(pool));
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1);
+    const tmp = chars[i]; chars[i] = chars[j]; chars[j] = tmp;
+  }
+  return chars.join('');
+}
+
+/* ------------------------ Username suggestions ------------------------ */
+
+/**
+ * Candidate usernames for a taken name: number / underscore suffixes that
+ * stay inside Roblox's 3-20 character rule, deduped and never equal to the
+ * base name.
+ */
+function suggestionCandidates(base) {
+  const clean = String(base || '').trim();
+  const stem = clean.replace(/[^A-Za-z0-9_]/g, '').slice(0, 17);
+  const out = [];
+  const push = (name) => {
+    if (validateUsernameLocal(name).ok && name !== clean && !out.includes(name)) out.push(name);
+  };
+  if (stem) {
+    push(stem + (randomInt(90) + 10));
+    push(stem + (randomInt(900) + 100));
+    push(stem + '_' + (randomInt(90) + 10));
+    push(stem + (randomInt(90) + 10));
+    push(stem + '_' + (randomInt(90) + 10));
+    push(stem + (randomInt(9000) + 1000));
+  }
+  return out;
+}
+
+function defaultAdultBirthday() {
+  // 18 years back, "YYYY-MM-DD" — satisfies the validate endpoint's
+  // anonymous-call requirement when no valid birthday is at hand.
+  const now = new Date();
+  return (now.getUTCFullYear() - 18) + '-' + String(now.getUTCMonth() + 1).padStart(2, '0')
+    + '-' + String(now.getUTCDate()).padStart(2, '0');
+}
+
+/**
+ * Check suffix variants of a taken username against Roblox and return up to
+ * `count` available ones: { ok, suggestions: [username, ...] }. Network
+ * problems never throw — whatever was verified comes back, possibly none.
+ */
+async function suggestUsernames(base, birthday, count) {
+  const want = Math.min(Math.max(Number(count) || 3, 1), 5);
+  const candidates = suggestionCandidates(base);
+  if (!candidates.length) return { ok: true, suggestions: [] };
+  const bdayOk = validateBirthdayLocal(birthday).ok;
+  const bdayStr = bdayOk ? String(birthday).trim() : defaultAdultBirthday();
+  const suggestions = [];
+  for (const name of candidates) {
+    if (suggestions.length >= want) break;
+    const r = await checkUsername(name, bdayStr);
+    if (r && r.available === true) suggestions.push(name);
+    await new Promise((resolve) => setTimeout(resolve, 150)); // stay gentle with the endpoint
+  }
+  return { ok: true, suggestions };
+}
+
 module.exports = {
   configure,
   validateInput,
@@ -159,5 +253,9 @@ module.exports = {
   validateGenderLocal,
   checkUsername,
   birthdayToFormValues,
+  generatePassword,
+  randomInt,
+  suggestUsernames,
+  suggestionCandidates,
   GENDERS, MONTHS, USERNAME_MIN, USERNAME_MAX, PASSWORD_MIN, PASSWORD_MAX, MIN_AGE,
 };
