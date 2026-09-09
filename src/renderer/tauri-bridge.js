@@ -90,6 +90,7 @@ window.fleet = {
     status: () => tauriInvoke('updater_status'),
     check: () => tauriInvoke('updater_check'),
     install: () => tauriInvoke('updater_install'),
+    restart: () => tauriInvoke('updater_restart'),
   },
   launch: {
     quick: (count) => invokeWithNumbers('launch_quick', ['count'], { count }),

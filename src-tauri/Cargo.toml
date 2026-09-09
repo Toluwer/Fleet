@@ -1,6 +1,6 @@
 [package]
 name = "fleet"
-version = "1.8.1"
+version = "1.8.2"
 description = "Fleet - a clean, minimalist multi-instance launcher for Roblox"
 authors = ["Toluwa"]
 license = "MIT"
@@ -21,3 +21,7 @@ log = "0.4"
 tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
 tokio = { version = "1", features = ["time"] }
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }

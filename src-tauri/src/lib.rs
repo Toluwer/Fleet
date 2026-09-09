@@ -316,6 +316,141 @@ backend_command!(roblox_detect, "roblox_detect", (), Value::Null);
 backend_command!(updater_status, "updater_status", (), Value::Null);
 backend_command!(updater_check, "updater_check", (), Value::Null);
 backend_command!(updater_install, "updater_install", (), Value::Null);
+
+/* ------------------- shared Roblox webview profile ------------------- */
+
+/// One persistent WebView2 profile shared by the Roblox sign-in and sign-up
+/// windows. A brand-new profile per window reads as a "first-ever browser"
+/// to Roblox's anti-bot scoring — which is exactly when their human
+/// verification is at its most aggressive. A returning profile is what a
+/// real person's browser looks like, so the checks usually stay short (and
+/// the window also opens faster, since the profile is warm).
+///
+/// The session cookie is purged before each window opens, so Roblox always
+/// serves the logged-out page and the cookie watcher can never import a
+/// stale session by accident.
+fn roblox_webview_profile(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("roblox-web-profile");
+    // Cap runaway cache growth: a profile that somehow exceeds ~150 MB is
+    // reset (the cost is a colder browser identity, never a broken flow).
+    if dir.is_dir() {
+        let mut total: u64 = 0;
+        fn walk(dir: &std::path::Path, total: &mut u64) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    match entry.file_type() {
+                        Ok(t) if t.is_dir() => walk(&entry.path(), total),
+                        Ok(t) if t.is_file() => {
+                            if let Ok(meta) = entry.metadata() {
+                                *total += meta.len();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        walk(&dir, &mut total);
+        if total > 150 * 1024 * 1024 {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+    Ok(dir)
+}
+
+/// Deletes every `.ROBLOSECURITY` cookie for roblox.com from a webview's
+/// profile. Call BEFORE navigating: a stale session would make Roblox serve
+/// the logged-in page (and the signup form would never appear).
+fn purge_roblox_session_cookies(window: &tauri::WebviewWindow) {
+    let Ok(url) = Url::parse("https://www.roblox.com/") else { return; };
+    if let Ok(cookies) = window.cookies_for_url(url) {
+        for cookie in cookies {
+            if cookie.name() == ".ROBLOSECURITY" {
+                let _ = window.delete_cookie(cookie);
+            }
+        }
+    }
+}
+
+/// Builds the Roblox webview on the shared persistent profile, purges its
+/// session cookies, and only then navigates to `url` — so the page always
+/// loads logged-out, through a browser identity that has been here before.
+/// `init_script` (the signup prefill driver) is injected both at document
+/// start and on page load, exactly as before.
+fn open_roblox_webview(
+    app: &AppHandle,
+    label: &str,
+    title: &str,
+    width: f64,
+    height: f64,
+    min_width: f64,
+    min_height: f64,
+    url: Url,
+    init_script: Option<String>,
+) -> Result<tauri::WebviewWindow, String> {
+    let profile_dir = roblox_webview_profile(app)?;
+    let blank = Url::parse("about:blank").map_err(|e| e.to_string())?;
+    let mut builder = WebviewWindowBuilder::new(
+        app,
+        label,
+        WebviewUrl::External(blank),
+    )
+    .title(title)
+    .inner_size(width, height)
+    .min_inner_size(min_width, min_height)
+    .center()
+    .focused(true)
+    .user_agent(LOGIN_UA)
+    .data_directory(profile_dir);
+    if let Some(script) = init_script {
+        let backup = script.clone();
+        builder = builder
+            .initialization_script(script)
+            .on_page_load(move |webview, payload| {
+                if let tauri::webview::PageLoadEvent::Finished = payload.event() {
+                    let _ = webview.eval(&backup);
+                }
+            });
+    }
+    let window = builder.build().map_err(|e| e.to_string())?;
+    purge_roblox_session_cookies(&window);
+    window
+        .navigate(url)
+        .map_err(|e| format!("Could not open {title}: {e}"))?;
+    Ok(window)
+}
+
+/// Finishes a self-update restart. The updater already swapped the files on
+/// disk while the app was open (in-use binaries renamed aside), so
+/// `<install>/Fleet.exe` is the NEW version — spawn it with
+/// `--takeover=<our pid>` so it waits for us to die, then close the main
+/// window, which runs the normal shutdown path (backend included).
+#[tauri::command]
+async fn updater_restart(app: AppHandle) -> Value {
+    let new_exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|dir| dir.join("Fleet.exe")))
+        .filter(|p| p.exists());
+    let mut relaunched = false;
+    if let Some(exe) = new_exe {
+        let mut command = Command::new(&exe);
+        command.arg(format!("--takeover={}", std::process::id()));
+        #[cfg(target_os = "windows")]
+        command.creation_flags(CREATE_NO_WINDOW);
+        relaunched = command.spawn().is_ok();
+        if !relaunched {
+            eprintln!("updater_restart: could not relaunch {}", exe.display());
+        }
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.close();
+    }
+    json!({ "ok": true, "relaunched": relaunched })
+}
 backend_command!(launch_quick, "launch_quick", (count: Option<i64>), json!({ "count": count }));
 backend_command!(launch_accounts, "launch_accounts", (account_ids: Vec<String>, place_id: Option<String>), json!({ "accountIds": account_ids, "placeId": place_id }));
 backend_command!(launch_join, "launch_join", (account_ids: Vec<String>, place_id: Option<String>, game_id: Option<String>), json!({ "accountIds": account_ids, "placeId": place_id, "gameId": game_id }));
@@ -346,17 +481,19 @@ async fn accounts_add(app: AppHandle) -> Result<Value, String> {
         Ok(url) => url,
         Err(err) => return Ok(json!({ "ok": false, "error": err.to_string() })),
     };
-    let data_dir = std::env::temp_dir().join(&label);
-    let window = match WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url))
-        .title("Sign in to Roblox")
-        .inner_size(520.0, 720.0)
-        .min_inner_size(460.0, 560.0)
-        .center()
-        .focused(true)
-        .user_agent(LOGIN_UA)
-        .data_directory(data_dir.clone())
-        .build()
-    {
+    // Shared persistent profile: Roblox sees a returning browser (see
+    // roblox_webview_profile), and the session cookie is purged first.
+    let window = match open_roblox_webview(
+        &app,
+        &label,
+        "Sign in to Roblox",
+        520.0,
+        720.0,
+        460.0,
+        560.0,
+        url,
+        None,
+    ) {
         Ok(window) => window,
         Err(err) => {
             return Ok(
@@ -398,7 +535,6 @@ async fn accounts_add(app: AppHandle) -> Result<Value, String> {
         json!({ "cookie": cookie }),
     )
     .await;
-    let _ = std::fs::remove_dir_all(data_dir);
     Ok(result)
 }
 
@@ -733,23 +869,20 @@ async fn accounts_create(
     });
     let fill_script = PREFILL_SCRIPT.replace("__FLEET_VALS__", &vals.to_string());
 
-    let data_dir = std::env::temp_dir().join(&label);
-    let window = match WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url))
-        .title("Create a Roblox account")
-        .inner_size(520.0, 760.0)
-        .min_inner_size(460.0, 600.0)
-        .center()
-        .focused(true)
-        .user_agent(LOGIN_UA)
-        .data_directory(data_dir.clone())
-        .initialization_script(fill_script.clone())
-        .on_page_load(move |webview, payload| {
-            if let tauri::webview::PageLoadEvent::Finished = payload.event() {
-                let _ = webview.eval(&fill_script);
-            }
-        })
-        .build()
-    {
+    // Shared persistent profile (a returning browser usually gets Roblox's
+    // gentler checks) + session-cookie purge, then the real signup page with
+    // the prefill driver injected.
+    let window = match open_roblox_webview(
+        &app,
+        &label,
+        "Create a Roblox account",
+        520.0,
+        760.0,
+        460.0,
+        600.0,
+        url,
+        Some(fill_script),
+    ) {
         Ok(window) => window,
         Err(err) => {
             return Ok(json!({ "ok": false, "error": format!("Could not open the Roblox signup window: {err}") }));
@@ -787,7 +920,6 @@ async fn accounts_create(
         json!({ "cookie": cookie }),
     )
     .await;
-    let _ = std::fs::remove_dir_all(data_dir);
     Ok(result)
 }
 backend_command!(accounts_remove, "accounts_remove", (id: Option<String>), json!({ "id": id }));
@@ -822,6 +954,67 @@ backend_command!(logs_open_folder, "logs_open_folder", (), Value::Null);
 backend_command!(diag_get, "diag_get", (), Value::Null);
 backend_command!(app_open_external, "app_open_external", (url: Option<String>), json!({ "url": url }));
 backend_command!(app_open_user_data, "app_open_user_data", (), Value::Null);
+
+/* --------------------- self-update restart plumbing --------------------- */
+
+/// Parses `--takeover=<pid>` from the command line (spawned by the previous
+/// version after an in-place update).
+pub fn parse_takeover_pid(args: &[String]) -> Option<u32> {
+    args.iter().find_map(|arg| {
+        arg.strip_prefix("--takeover=")?.parse::<u32>().ok()
+    })
+}
+
+/// Blocks until `pid` exits (or `max` elapses). Used by the new instance so
+/// the retiring one can finish its shutdown without two windows coexisting.
+#[cfg(target_os = "windows")]
+pub fn wait_for_process_exit(pid: u32, max: std::time::Duration) {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_ACCESS_RIGHTS,
+    };
+    unsafe {
+        // 0x0010_0000 == SYNCHRONIZE (same access right the installer uses).
+        let access = PROCESS_ACCESS_RIGHTS(0x0010_0000);
+        let Ok(handle) = OpenProcess(access, false, pid) else {
+            return; // already gone (or not ours) — nothing to wait for
+        };
+        let ms = max.as_millis().min(u32::MAX as u128) as u32;
+        let _ = WaitForSingleObject(handle, ms);
+        let _ = CloseHandle(handle);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn wait_for_process_exit(_pid: u32, _max: std::time::Duration) {}
+
+/// Deletes the files an in-place update retired ("<name>.fleet-old") or
+/// staged ("<name>.fleet-new") in the install folder. By the time the new
+/// version runs, the processes that held those files are gone, so this is
+/// the one moment they can actually be removed. Failures are ignored — a
+/// still-locked file is swept by a later start.
+pub fn cleanup_retired_update_files() {
+    fn sweep(dir: &std::path::Path) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else { continue };
+            if file_type.is_dir() {
+                sweep(&entry.path());
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            if name.ends_with(".fleet-old") || name.ends_with(".fleet-new") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+    {
+        sweep(&dir);
+    }
+}
 
 pub fn run() {
     let mut context = tauri::generate_context!();
@@ -863,6 +1056,7 @@ pub fn run() {
             updater_status,
             updater_check,
             updater_install,
+            updater_restart,
             launch_quick,
             launch_accounts,
             launch_join,

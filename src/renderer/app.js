@@ -523,7 +523,7 @@ function renderCreateAccountModal() {
   if (!d) return;
   openModal(`
     <div class="m-head"><h3>Create a Roblox account</h3>
-      <p>Fleet fills and advances Roblox's signup — solve the captcha there and the new account lands here, already signed in.</p></div>
+      <p>Fleet fills and advances Roblox's signup. Roblox will ask one quick human check in its window — that part is theirs, not Fleet's — then the new account lands here, already signed in.</p></div>
     <div class="m-body">
       <div class="field">
         <label for="create-username">Username</label>
@@ -2603,7 +2603,7 @@ views.settings = async function () {
   }
   const up = state.updater || { state: 'disabled' };
   const updateText = updaterStatusText(up, st.appVersion);
-  const busy = up.state === 'checking' || up.state === 'downloading' || up.state === 'staging' || up.state === 'restarting';
+  const busy = up.state === 'checking' || up.state === 'downloading' || up.state === 'staging' || up.state === 'applying' || up.state === 'restarting';
   const updateActions = up.state === 'ready' || up.state === 'available'
     ? `<button class="btn primary" data-action="update-install">${icon('refresh')} Install update</button>`
     : up.state === 'error'
@@ -2698,7 +2698,8 @@ function updaterStatusText(up, appVersion) {
     if (up.total) return `Downloading update - ${fmtBytes(up.received)} of ${fmtBytes(up.total)}${up.percent != null ? ` (${up.percent}%)` : ''}`;
     return 'Downloading update…';
   }
-  if (up.state === 'restarting') return 'Installing - Fleet will restart in a moment';
+  if (up.state === 'restarting') return 'Update installed - Fleet is restarting';
+  if (up.state === 'applying') return 'Installing the new files - Fleet stays open';
   if (up.state === 'staging') return 'Unpacking the update…';
   if (up.state === 'checking') return 'Checking for updates…';
   if (up.state === 'error') return `Update failed: ${up.error || 'unknown error'}`;
@@ -3564,13 +3565,19 @@ if (api) {
     }
     if (state.view === 'settings') views.settings();
     if (status && status.state === 'restarting') {
-      // The applier is already waiting: close the app so it can swap the
-      // files and relaunch the new version. No installer window exists.
-      toast('Fleet is restarting to finish the update', 'good');
-      setTimeout(() => { try { api.ui.window.close(); } catch (_) {} }, 900);
+      // The new files are already on disk (the swap happens while Fleet runs);
+      // restart into them. updater_restart spawns the new Fleet.exe with
+      // --takeover=<pid> and closes this window; the fallback covers older
+      // builds where the command is missing.
+      toast('Update installed - restarting Fleet', 'good');
+      setTimeout(() => {
+        call(() => api.updater.restart(), { ok: false })
+          .then((r) => { if (!r || !r.ok) { try { api.ui.window.close(); } catch (_) {} } })
+          .catch(() => { try { api.ui.window.close(); } catch (_) {} });
+      }, 900);
     }
     if (status && status.state === 'ready') toast(`Fleet ${status.availableVersion || 'update'} is ready`, 'good');
-    if (status && status.state === 'error' && (prev === 'downloading' || prev === 'staging' || prev === 'restarting' || prev === 'checking')) {
+    if (status && status.state === 'error' && (prev === 'downloading' || prev === 'staging' || prev === 'applying' || prev === 'restarting' || prev === 'checking')) {
       toast('Update failed - see Settings for details', 'bad');
     }
   });

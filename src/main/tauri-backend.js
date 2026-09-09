@@ -498,10 +498,14 @@ function makeBackend(ctx) {
 
   /** Runs the whole update flow and reports every step via updater:status.
    *  The update is applied entirely in place: download the portable package,
-   *  verify its digest, unpack it, arm the hidden applier - and only once the
-   *  applier is alive and waiting does the app close its window, so the swap
-   *  can never be orphaned by an early exit (that race is what made updates
-   *  "download, close, never come back" before). */
+   *  verify its digest, unpack it, and swap it over the install folder WHILE
+   *  FLEET IS STILL OPEN (locked files are renamed aside, like VS Code does
+   *  it). Only after the files on disk are verifiably the new version does
+   *  the state move to 'restarting' — the renderer then triggers the
+   *  updater_restart command, which launches the new Fleet.exe and closes
+   *  this one. No helper process exists between "armed" and "applied", so
+   *  security software can no longer orphan the update, and a failure at
+   *  any step is an error the still-alive UI can show. */
   async function installUpdate() {
     try {
       if (updateState.state !== 'available' && updateState.state !== 'restarting') {
@@ -517,8 +521,9 @@ function makeBackend(ctx) {
         ? asset
         : `https://github.com/Toluwer/Fleet/releases/latest/download/${asset}`;
       const updatesDir = path.join(userData, 'updates');
-      // Sweep any leftovers from an earlier run (the applier also cleans up
-      // after itself, but a failed run must not poison the next one).
+      // Sweep any leftovers from an earlier run. The retired "*.fleet-old"
+      // files from the swap live in the INSTALL folder and are swept by the
+      // new version at startup; this only clears the download stage.
       try { fs.rmSync(updatesDir, { recursive: true, force: true }); } catch (_) { /* nothing to sweep */ }
       const zipPath = path.join(updatesDir, 'FleetUpdate.zip');
 
@@ -528,10 +533,6 @@ function makeBackend(ctx) {
       await downloadUpdatePackage(url, zipPath, updateState.portableSize, updateState.portableSha512);
       updateState.downloadedPath = zipPath;
 
-      // Unpack and verify the package BEFORE announcing a restart: the
-      // renderer closes the window on 'restarting', and the window close
-      // tears this process down - so everything time-consuming happens
-      // first, while the app is still open and can still report errors.
       updateState.state = 'staging';
       updateState.received = null;
       updateState.total = null;
@@ -545,20 +546,23 @@ function makeBackend(ctx) {
       const install = selfupdate.resolveInstallDir(process.execPath);
       if (!install.ok) throw new Error(install.error);
 
-      const armed = await selfupdate.applyUpdate({
+      // The in-place swap: copies every new file over the install folder
+      // while Fleet keeps running; in-use files are renamed aside and
+      // cleaned up by the next start.
+      updateState.state = 'applying';
+      emitUpdate();
+      const applied = selfupdate.applyUpdate({
         installDir: install.dir,
         stageDir,
-        updatesDir,
         resultPath: updateResultPath,
-        appPid: process.ppid,
-        nodePid: process.pid,
         version: updateState.latestVersion,
       });
-      if (!armed.ok) throw new Error(armed.error);
-      logger.info(`Update armed: v${updateState.latestVersion} will replace ${install.dir} on restart`);
+      if (!applied.ok) throw new Error(applied.error);
+      logger.info(`Update applied in place: v${updateState.latestVersion} now on disk in ${install.dir} (${applied.copied} files, ${applied.retired.length} swapped while running)`);
 
-      // The applier is now alive and waiting for our pids to disappear, so
-      // it is finally safe to let the renderer close the window.
+      // The files on disk are the new version; the restart (renderer calls
+      // updater_restart -> new Fleet.exe --takeover=<pid> + window close)
+      // just switches which binary is running.
       updateState.state = 'restarting';
       emitUpdate();
     } catch (err) {
@@ -579,7 +583,7 @@ function makeBackend(ctx) {
       catch (err) { updateState.state = 'error'; updateState.error = (err && err.message) || String(err); emitUpdate(); return Object.assign({ ok: false }, updateState); }
     },
     async updater_install() {
-      if (updateState.state === 'downloading' || updateState.state === 'staging' || updateState.state === 'restarting') {
+      if (updateState.state === 'downloading' || updateState.state === 'staging' || updateState.state === 'applying' || updateState.state === 'restarting') {
         return Object.assign({ ok: false, error: 'An update is already in progress.' }, updateState);
       }
       // Fire and forget: the download can take minutes, so the IPC call must

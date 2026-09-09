@@ -617,7 +617,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && rendererModel.parseRobloxTarget('not a Roblox target').invalid === true
     && rendererModel.parseRobloxTarget('').invalid === false);
   check('Account-less installs can search public profiles without exposing account cookies',
-    peopleSource.includes("'User-Agent': 'Fleet/1.8.1'")
+    peopleSource.includes("'User-Agent': 'Fleet/1.8.2'")
     && peopleSource.includes('search-api/omni-search')
     && peopleSource.includes("verticalType: 'user'")
     && peopleSource.includes("presence: 'Unknown'")
@@ -804,6 +804,9 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     rendererModel.normalizeThemePreference('DARK') === 'dark'
     && rendererModel.normalizeThemePreference('unknown') === 'system');
   const ipcSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'tauri-backend.js'), 'utf8');
+  const bridgeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'tauri-bridge.js'), 'utf8');
+  const rustSource = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'lib.rs'), 'utf8')
+    + fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'main.rs'), 'utf8');
   check('player join no longer requires presence-visible server ids',
     ipcSource.includes('getPersonJoinLaunchInfo(accountIds[i], targetUserId)')
     && ipcSource.includes('return doLaunch({ accountIds, targetUserId });'));
@@ -879,16 +882,26 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && ipcSource.includes('portableSha512')
     && ipcSource.includes("state = 'restarting'"));
 
-  check('In-app update never spawns an installer window',
+  check('In-app update never spawns an installer window or a helper process',
     !ipcSource.includes('startInstaller')
     && !ipcSource.includes("state = 'launched'")
     && !ipcSource.includes("state = 'installing'")
-    && !/spawn\(\s*(exe|updateState\.downloadedPath)/.test(ipcSource));
+    && !/spawn\(\s*(exe|updateState\.downloadedPath)/.test(ipcSource)
+    && !ipcSource.includes('powershell'));
 
-  check('Renderer closes the app when the update is armed (installer-free restart)',
-    rendererSource.includes("status.state === 'restarting'")
-    && rendererSource.includes('api.ui.window.close()')
-    && !rendererSource.includes('The installer window is open'));
+  check('The swap is applied in place while Fleet runs, before any restart',
+    ipcSource.includes("state = 'applying'")
+    && ipcSource.includes('selfupdate.applyUpdate({')
+    && ipcSource.includes('resultPath: updateResultPath')
+    && ipcSource.includes("state = 'restarting'"));
+
+  check('Renderer restarts via the updater_restart command (new exe waits for the old pid)',
+    rendererSource.includes('api.updater.restart()')
+    && bridgeSource.includes('updater_restart')
+    && rustSource.includes('updater_restart')
+    && rustSource.includes('parse_takeover_pid')
+    && rustSource.includes('cleanup_retired_update_files')
+    && rustSource.includes('--takeover='));
 
   // ---- self-update engine (unzip + staging + applier) ----
   {
@@ -1023,42 +1036,128 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
       check('resolveInstallDir finds the install folder next to node.exe',
         located.ok && located.dir === realInstall);
 
-      // 8. The applier script: swaps files without the installer, keeps the
-      //    uninstaller, syncs Add/Remove Programs and relaunches Fleet.
-      const script = selfupdate.buildApplyScript({
-        installDir: 'C:\\Apps\\Fleet', stageDir: 'C:\\Users\\t\\AppData\\staged',
-        updatesDir: 'C:\\Users\\t\\AppData\\updates', appPid: 100, nodePid: 200, version: '1.5.14',
-      });
-      check('Applier mirrors the staged version and preserves uninstall.exe',
-        script.includes('robocopy $StageDir $InstallDir /MIR /XF uninstall.exe')
-        && script.includes('Stop-Process -Id $p -Force'));
-      check('Applier waits for Fleet to exit, then relaunches the new version',
-        script.includes('Wait-Process -Timeout 45')
-        && script.includes("Start-Process -FilePath $fleetExe"));
-      check('Applier syncs the Add/Remove Programs version',
-        script.includes('DisplayVersion -Value $Version')
-        && script.includes('InstallLocation -Value $InstallDir'));
-      check('Applier log lives in TEMP for support diagnostics',
-        script.includes("Join-Path $env:TEMP 'FleetUpdate.log'"));
+      // 8. The in-place swap: staged files replace the install folder while
+      //    Fleet is running. Locked files (a running exe, a loaded native
+      //    module) are renamed aside as "*.fleet-old"; stale files are
+      //    removed; the uninstaller is kept; the result file round-trips.
+      const swapRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-swap-'));
+      try {
+        const install = path.join(swapRoot, 'install');
+        const stage = path.join(swapRoot, 'stage');
+        const big = (fill) => Buffer.alloc(600 * 1024, fill); // > 500KB exe sanity floor
+        fs.mkdirSync(path.join(install, 'src', 'main'), { recursive: true });
+        fs.mkdirSync(path.join(install, 'node_modules', 'koffi', 'build'), { recursive: true });
+        fs.writeFileSync(path.join(install, 'Fleet.exe'), big(0x41));
+        fs.writeFileSync(path.join(install, 'node.exe'), Buffer.from('MZ node old'));
+        fs.writeFileSync(path.join(install, 'src', 'main', 'host.js'), 'old host');
+        fs.writeFileSync(path.join(install, 'node_modules', 'koffi', 'build', 'koffi.node'), Buffer.from('native old'));
+        fs.writeFileSync(path.join(install, 'stale-only-in-old.txt'), 'delete me');
+        fs.writeFileSync(path.join(install, 'uninstall.exe'), 'MZ uninstall');
 
-      // The applier itself only ever runs on Windows (checked statically so
-      // the selftest never spawns a real PowerShell process on any platform).
-      const selfupdateSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'selfupdate.js'), 'utf8');
-      check('The Windows-only applier is guarded and runs hidden',
-        selfupdateSource.includes("process.platform !== 'win32'")
-        && selfupdateSource.includes("spawn('powershell.exe'")
-        && selfupdateSource.includes('windowsHide: true')
-        && selfupdateSource.includes('-ExecutionPolicy')
-        && selfupdateSource.includes('Bypass'));
+        fs.mkdirSync(path.join(stage, 'src', 'main'), { recursive: true });
+        fs.mkdirSync(path.join(stage, 'node_modules', 'koffi', 'build'), { recursive: true });
+        fs.writeFileSync(path.join(stage, 'Fleet.exe'), big(0x42));
+        fs.writeFileSync(path.join(stage, 'node.exe'), Buffer.from('MZ node new'));
+        fs.writeFileSync(path.join(stage, 'src', 'main', 'host.js'), 'new host');
+        fs.writeFileSync(path.join(stage, 'node_modules', 'koffi', 'build', 'koffi.node'), Buffer.from('native new'));
+        fs.writeFileSync(path.join(stage, 'fresh-only-in-new.txt'), 'add me');
 
-      // 9. installUpdate wires the pieces in order (static: sandbox has no
-      //    Fleet.exe, so the flow is proven by structure + the units above).
-      check('installUpdate downloads, stages and arms the applier in order',
-        ipcSource.includes('downloadUpdatePackage(url, zipPath, updateState.portableSize, updateState.portableSha512)')
-        && ipcSource.includes('selfupdate.stageZip(zipPath, stageDir)')
-        && ipcSource.includes('selfupdate.resolveInstallDir(process.execPath)')
-        && ipcSource.includes('appPid: process.ppid')
-        && ipcSource.includes('nodePid: process.pid'));
+        // A file that is read-only in the old install (a stand-in for one a
+        // running process holds open): Phase A stages beside it and Phase B
+        // renames it aside, so read-only/locked destinations never block.
+        fs.chmodSync(path.join(install, 'node_modules', 'koffi', 'build', 'koffi.node'), 0o444);
+
+        const applied = selfupdate.applyStaged(stage, install);
+        check('applyStaged swaps the whole tree over the install folder',
+          applied.ok === true
+          && applied.copied === 5
+          && fs.readFileSync(path.join(install, 'Fleet.exe')).equals(big(0x42))
+          && fs.readFileSync(path.join(install, 'node.exe'), 'utf8') === 'MZ node new'
+          && fs.readFileSync(path.join(install, 'src', 'main', 'host.js'), 'utf8') === 'new host'
+          && fs.readFileSync(path.join(install, 'fresh-only-in-new.txt'), 'utf8') === 'add me');
+
+        check('Every replaced file is retired (renamed aside), old bytes preserved for the startup sweep',
+          fs.existsSync(path.join(install, 'Fleet.exe.fleet-old'))
+          && fs.existsSync(path.join(install, 'node.exe.fleet-old'))
+          && fs.existsSync(path.join(install, 'node_modules', 'koffi', 'build', 'koffi.node.fleet-old'))
+          && fs.readFileSync(path.join(install, 'Fleet.exe.fleet-old')).equals(big(0x41)));
+
+        check('No staged .fleet-new leftovers survive a successful swap',
+          (() => {
+            const leftovers = [];
+            const walk = (dir) => {
+              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                const abs = path.join(dir, entry.name);
+                if (entry.isDirectory()) walk(abs);
+                else if (entry.name.endsWith('.fleet-new')) leftovers.push(abs);
+              }
+            };
+            walk(install);
+            return leftovers.length === 0;
+          })());
+
+        check('Files that only existed in the old version are removed; the uninstaller is kept',
+          !fs.existsSync(path.join(install, 'stale-only-in-old.txt'))
+          && fs.existsSync(path.join(install, 'uninstall.exe')));
+
+        check('A staging failure aborts the swap with the install untouched',
+          (() => {
+            const probe = path.join(install, 'src', 'main', 'host.js.fleet-new');
+            try { fs.rmSync(probe, { force: true }); } catch (_) {}
+            // A directory where a staged file must land makes the copy fail
+            // (EISDIR) after some files were already staged.
+            fs.mkdirSync(probe, { recursive: true });
+            const r = selfupdate.applyStaged(stage, install);
+            fs.rmdirSync(probe);
+            const untouched =
+              fs.readFileSync(path.join(install, 'Fleet.exe')).equals(big(0x42)) &&
+              fs.readFileSync(path.join(install, 'src', 'main', 'host.js'), 'utf8') === 'new host';
+            let leftovers = [];
+            const walk = (dir) => {
+              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                const abs = path.join(dir, entry.name);
+                if (entry.isDirectory()) { if (!entry.name.includes('host.js.fleet-new')) walk(abs); }
+                else if (entry.name.endsWith('.fleet-new')) leftovers.push(abs);
+              }
+            };
+            walk(install);
+            return !r.ok && /Could not prepare/.test(r.error) && untouched && leftovers.length === 0;
+          })());
+
+        check('A swap without Fleet.exe in the stage is refused before anything is touched',
+          (() => {
+            const noExe = path.join(swapRoot, 'stage-noexe');
+            fs.mkdirSync(noExe, { recursive: true });
+            fs.writeFileSync(path.join(noExe, 'readme.txt'), 'nope');
+            const r = selfupdate.applyStaged(noExe, install);
+            return !r.ok && /Fleet\.exe/.test(r.error);
+          })());
+
+        check('applyUpdate writes the one-shot result file the next start reads',
+          (() => {
+            const resultPath = path.join(swapRoot, 'update-result.json');
+            const r = selfupdate.applyUpdate({ installDir: install, stageDir: stage, resultPath, version: '1.8.2' });
+            const read = selfupdate.readResultFile(resultPath);
+            return r.ok === true && read && read.ok === true && read.to === '1.8.2'
+              && !fs.existsSync(resultPath) && selfupdate.readResultFile(resultPath) === null;
+          })());
+
+        // The Rust startup sweep is what deletes the retired files once the
+        // processes holding them are gone; its behavior is pinned by source
+        // checks (registered in the wiring section above).
+        const selfupdateSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'selfupdate.js'), 'utf8');
+        check('The updater swaps files in place — no PowerShell, no helper process',
+          !selfupdateSource.includes('powershell')
+          && !selfupdateSource.includes('spawn(')
+          && !selfupdateSource.includes('robocopy')
+          && selfupdateSource.includes('copyFileSync')
+          && selfupdateSource.includes('renameSync'));
+        check('Retired files use a dedicated suffix the startup sweep knows',
+          selfupdateSource.includes("RETIRED_SUFFIX = '.fleet-old'")
+          && rustSource.includes('ends_with(".fleet-old")'));
+      } finally {
+        try { fs.rmSync(swapRoot, { recursive: true, force: true }); } catch (_) {}
+      }
     } finally {
       try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
       try { fs.rmSync(path.join(os.tmpdir(), 'fleet-install-'), { recursive: true, force: true }); } catch (_) {}
@@ -1431,7 +1530,14 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
       lib.includes('isTrusted') && lib.includes('WeakSet') && lib.includes('dbg.take = true'));
     check('prefill injected at document start AND on page load (idempotent guard)',
       /\.initialization_script\(fill_script\.clone\(\)\)/.test(lib)
+        || /\.initialization_script\(script\)/.test(lib)
         && /window\.__fleetPrefill\) return/.test(lib));
+    check('signup and sign-in share a persistent webview profile with purged sessions',
+      lib.includes('roblox-web-profile')
+        && /fn purge_roblox_session_cookies/.test(lib)
+        && /fn open_roblox_webview/.test(lib)
+        && /window\s*\.navigate\(url\)/.test(lib)
+        && !lib.includes('env::temp_dir().join(&label)'));
     check('creator modal offers password generation and one-click name fixes',
       /case 'create-gen-pass'/.test(js) && /function generateCreatePassword/.test(js)
         && /case 'create-pick-user'/.test(js) && /data-action="create-pick-user"/.test(js)
@@ -1446,6 +1552,43 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
       /\.suggest-chip/.test(css) && /\.suggest-row/.test(css));
     check('signup form styles cover password and date inputs',
       /input\[type=password\], input\[type=date\]/.test(css) && /\.field-status/.test(css) && /\.pass-row/.test(css));
+
+    // The icon-size regression: a bare svg.ico used to fall back to the SVG
+    // default (300x150) in containers without their own size rule - the
+    // giant "Watching" eye and the giant username-status icon.
+    check('icons have a default size so unsized contexts stay small',
+      /svg\.ico \{ width: 16px; height: 16px;/.test(css)
+        && /\.field-status \.ico \{ width: 13px; height: 13px;/.test(css)
+        && /\.watch-card > \.row-split \.ico/.test(css));
+  }
+
+  /* 11. Installer: an old installer exe must install the NEWEST release */
+  {
+    await section('Installer is version-aware');
+    const installerMain = fs.readFileSync(path.join(__dirname, '..', 'installer', 'src', 'main.rs'), 'utf8');
+    const installerNet = fs.readFileSync(path.join(__dirname, '..', 'installer', 'src', 'net.rs'), 'utf8');
+    const installerPayload = fs.readFileSync(path.join(__dirname, '..', 'installer', 'src', 'payload.rs'), 'utf8');
+    const installerCargo = fs.readFileSync(path.join(__dirname, '..', 'installer', 'Cargo.toml'), 'utf8');
+
+    check('installer checks the GitHub release feed before deciding what to install',
+      installerNet.includes('https://github.com/Toluwer/Fleet/releases/latest/download/latest.yml')
+        && /fn fetch_latest\(\)/.test(installerNet)
+        && /version_to_install/.test(installerMain)
+        && /parse_latest_yml/.test(installerNet));
+    check('a published release newer than the embedded payload is downloaded and installed',
+      /net::http_get\(&url, &mut progress\)/.test(installerMain)
+        && /Package::from_bytes\(bytes\)/.test(installerMain)
+        && /net::asset_url\(&l\.zip_name\)/.test(installerMain)
+        && /fn from_bytes\(data: Vec<u8>\) -> Package/.test(installerPayload));
+    check('the downloaded release is verified against the feed digest before extraction',
+      /net::sha512_matches\(&bytes, &l\.sha512_b64\)/.test(installerMain)
+        && /Sha512::digest/.test(installerNet)
+        && /fn b64_decode/.test(installerNet));
+    check('the installer uses WinHTTP (native, no helper process) and honors a slow or offline feed',
+      /Win32_Networking_WinHttp/.test(installerCargo)
+        && installerNet.includes('WinHttpOpen')
+        && /poll_resolve/.test(installerMain)
+        && /feed check timed out/.test(installerMain));
   }
 
   /* 11. Live launch (opt-in) */
