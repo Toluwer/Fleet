@@ -123,6 +123,10 @@ body.window-maximized .window-shell { border-radius: 0; clip-path: none; }
 svg.ico, svg.b-ico, svg.t-ico {
   fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round;
 }
+/* Default glyph box: an .ico with no container-specific size rule must never
+   fall back to the SVG default (300x150) — that is what made the username
+   status icons and the Watching-card eye render enormous. */
+svg.ico { width: 16px; height: 16px; flex: none; }
 ::selection { background: rgba(59, 130, 246, .3); }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -416,6 +420,8 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 
 /* Activity watcher (People home) */
 .watch-card { margin-top: 12px; }
+.watch-card > .row-split > div { display: flex; align-items: center; gap: 8px; }
+.watch-card > .row-split .ico { width: 15px; height: 15px; color: var(--accent-text, var(--ink-2)); }
 .watch-list { display: flex; flex-direction: column; gap: 2px; }
 .watch-row { display: flex; align-items: center; gap: 10px; padding: 5px 8px; border-radius: var(--r-sm); }
 .watch-row:hover { background: var(--surface-2); }
@@ -555,6 +561,7 @@ table.data td .mono, table.data td.mono { font-family: var(--mono); color: var(-
 .pass-row input { flex: 1; min-width: 0; }
 .field-status { font-size: 12px; line-height: 1.4; margin-top: 6px; min-height: 0; display: flex; align-items: center; gap: 5px; }
 .field-status:empty { display: none; }
+.field-status .ico { width: 13px; height: 13px; flex: none; }
 .field-status .spinner { width: 12px; height: 12px; border-width: 2px; }
 .field-status.ok { color: var(--success-text); }
 .field-status.bad { color: var(--danger); }
