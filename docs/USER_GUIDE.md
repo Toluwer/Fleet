@@ -19,6 +19,8 @@ Add account opens Roblox's real login page, 2FA included. Sessions are encrypted
 
 Create account builds a brand-new Roblox account instead: fill in the username, password, birthday and profile field, and Fleet opens Roblox's real signup form already filled in — it even clicks Continue and Add password for you. Roblox then asks its one human check (that's Roblox's, and no tool is allowed to do it for you); the account is saved, signed in. Fleet keeps the same browser identity between sign-ups, which usually keeps Roblox's checks short. Usernames are checked against Roblox while you type, taken names get one-click available alternatives, the dice button generates a strong password for you, and your birthday and profile-field choices are remembered for the next account.
 
+Make several set the count above 1: Fleet lines up that many usernames (the exact base plus numbered variants, each verified against Roblox) and then opens one signup window per account — solve each human check and the next window appears automatically, until the whole batch lands. The password and birthday are shared across the batch, a progress banner tracks which account is up (account 2 of 5, say), and closing a signup window stops the rest of the batch cleanly. A taken base name only ever stops a single create; in a batch the accounts simply all ride verified variants.
+
 Each card has Launch, Refresh, Remove and Select (for multi-launch). Expired sessions offer Sign in again.
 
 ## Sessions

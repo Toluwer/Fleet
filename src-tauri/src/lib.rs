@@ -464,6 +464,7 @@ backend_command!(keeper_status, "keeper_status", (), Value::Null);
 backend_command!(accounts_list, "accounts_list", (), Value::Null);
 backend_command!(signup_check_username, "signup_check_username", (username: Option<String>, birthday: Option<String>), json!({ "username": username, "birthday": birthday }));
 backend_command!(signup_suggest_usernames, "signup_suggest_usernames", (username: Option<String>, birthday: Option<String>), json!({ "username": username, "birthday": birthday }));
+backend_command!(signup_batch_usernames, "signup_batch_usernames", (username: Option<String>, birthday: Option<String>, count: Option<usize>), json!({ "username": username, "birthday": birthday, "count": count }));
 #[tauri::command]
 async fn accounts_add(app: AppHandle) -> Result<Value, String> {
     let label = format!(
@@ -1070,6 +1071,7 @@ pub fn run() {
             accounts_list,
             signup_check_username,
             signup_suggest_usernames,
+            signup_batch_usernames,
             accounts_add,
             accounts_create,
             accounts_remove,

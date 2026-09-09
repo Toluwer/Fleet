@@ -419,7 +419,11 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 .clip-offer span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Activity watcher (People home) */
-.watch-card { margin-top: 12px; }
+/* Own vertical rhythm both sides: the card sits between the "Browse" title
+   and the Friends entry — without the bottom margin the two containers ride
+   each other's edges the moment the watching card appears. */
+.watch-card { margin: 12px 0; }
+.watch-card[hidden] { display: none; }
 .watch-card > .row-split > div { display: flex; align-items: center; gap: 8px; }
 .watch-card > .row-split .ico { width: 15px; height: 15px; color: var(--accent-text, var(--ink-2)); }
 .watch-list { display: flex; flex-direction: column; gap: 2px; }

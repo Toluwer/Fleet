@@ -215,6 +215,78 @@ function suggestionCandidates(base) {
   return out;
 }
 
+/* --------------------------- Batch creation ---------------------------- */
+
+/** Upper bound on one batch: every account still needs its own human check,
+ *  so the queue stays inside what a person reasonably wants to solve. */
+const BATCH_MAX = 10;
+
+/**
+ * Suffix variants for a batch: the stem plus randomized number / underscore
+ * endings that stay inside Roblox's 3-20 character rule. Generates enough
+ * spares that a few taken names can't starve a full batch.
+ */
+function batchCandidates(base, want) {
+  const clean = String(base || '').trim();
+  const stem = clean.replace(/[^A-Za-z0-9_]/g, '').slice(0, 17);
+  const out = [];
+  const seen = new Set([clean]);
+  const push = (name) => {
+    if (!seen.has(name) && validateUsernameLocal(name).ok) { seen.add(name); out.push(name); }
+  };
+  if (stem) {
+    const target = Math.max(Number(want) || 1, 1) + 10;
+    for (let i = 0; out.length < target && i < 40; i++) {
+      push(stem + (randomInt(90) + 10));
+      push(stem + '_' + (randomInt(90) + 10));
+      push(stem + (randomInt(900) + 100));
+      push(stem + (randomInt(9000) + 1000));
+    }
+  }
+  return out;
+}
+
+/**
+ * Build a batch roster with an injected availability check (so tests can run
+ * it without the network). `check` resolves { available: true | false | null };
+ * null (rate-limited / unreachable) parks the name in `unverified` instead of
+ * discarding it — the caller decides whether to trust those.
+ * Returns { ok, requested, names: [available names], unverified: [unknown names] }.
+ */
+async function batchUsernamesWith(check, base, count) {
+  const want = Math.min(Math.max(Number(count) || 1, 1), BATCH_MAX);
+  const clean = String(base || '').trim();
+  const names = [];
+  const unverified = [];
+  const checkName = async (name) => {
+    let r = null;
+    try { r = await check(name); } catch (_) { r = null; }
+    if (r && r.available === true) names.push(name);
+    else if (!r || r.available !== false) unverified.push(name);
+  };
+  // The exact name leads the batch when Roblox confirms it free; a taken or
+  // unknown base simply means every account rides a verified variant.
+  await checkName(clean);
+  for (const name of batchCandidates(clean, want)) {
+    if (names.length >= want) break;
+    await checkName(name);
+    await new Promise((resolve) => setTimeout(resolve, 150)); // stay gentle with the endpoint
+  }
+  return { ok: true, requested: want, names: names.slice(0, want), unverified: unverified.slice(0, want) };
+}
+
+/**
+ * Verified usernames for a multi-account batch: the base itself when free,
+ * then randomized suffix variants checked live against Roblox. Network
+ * problems never throw — whatever was verified comes back, plus the names
+ * that could not be checked in `unverified`.
+ */
+async function batchUsernames(base, birthday, count) {
+  const bdayOk = validateBirthdayLocal(birthday).ok;
+  const bdayStr = bdayOk ? String(birthday).trim() : defaultAdultBirthday();
+  return batchUsernamesWith((name) => checkUsername(name, bdayStr), base, count);
+}
+
 function defaultAdultBirthday() {
   // 18 years back, "YYYY-MM-DD" — satisfies the validate endpoint's
   // anonymous-call requirement when no valid birthday is at hand.
@@ -257,5 +329,9 @@ module.exports = {
   randomInt,
   suggestUsernames,
   suggestionCandidates,
+  batchUsernames,
+  batchUsernamesWith,
+  batchCandidates,
+  BATCH_MAX,
   GENDERS, MONTHS, USERNAME_MIN, USERNAME_MAX, PASSWORD_MIN, PASSWORD_MAX, MIN_AGE,
 };

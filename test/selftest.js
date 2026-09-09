@@ -470,6 +470,68 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     }
   }
 
+  // Multi-account batch: candidate generation and roster building.
+  {
+    check('BATCH_MAX caps batches at 10', signup.BATCH_MAX === 10);
+    let ok = true;
+    for (let i = 0; i < 30; i++) {
+      const cands = signup.batchCandidates('CoolGuy', 6);
+      if (!cands.length || new Set(cands).size !== cands.length) ok = false;
+      if (cands.some(c => c === 'CoolGuy' || !signup.validateUsernameLocal(c).ok || c.length > 20)) ok = false;
+      // Enough spares that a few taken names can't starve a batch.
+      if (cands.length < 6) ok = false;
+    }
+    check('batch candidates are valid, deduped and numerous', ok);
+    check('batch candidates cap at 20 characters for any base',
+      signup.batchCandidates('a'.repeat(20), 10).every(c => c.length <= 20 && c.length >= 3));
+    check('a garbage base produces no batch candidates', signup.batchCandidates('!!!', 5).length === 0);
+
+    // A free base leads the roster; a taken base rides variants only.
+    const free = await signup.batchUsernamesWith(async (n) => ({ available: n !== 'CoolGuy' ? true : true }), 'CoolGuy', 3);
+    check('a free base is account 1 of the roster', free.ok && free.names[0] === 'CoolGuy' && free.names.length === 3);
+    const taken = await signup.batchUsernamesWith(async (n) => ({ available: n === 'CoolGuy' ? false : true }), 'CoolGuy', 3);
+    check('a taken base is skipped and variants fill the batch',
+      taken.ok && !taken.names.includes('CoolGuy') && taken.names.length === 3);
+    // Mostly-taken endpoint: keeps probing until the roster is full.
+    let probes = 0;
+    const mixed = await signup.batchUsernamesWith(async (n) => { probes++; return { available: probes % 3 === 0 }; }, 'CoolGuy', 2);
+    check('a hostile endpoint still yields the requested roster', mixed.ok && mixed.names.length === 2, probes + ' probes');
+    // Rate-limited / offline: names land in `unverified`, nothing throws.
+    const offline = await signup.batchUsernamesWith(async () => ({ available: null }), 'CoolGuy', 3);
+    check('unverifiable names are parked, not dropped',
+      offline.ok && offline.names.length === 0 && offline.unverified.length >= 3);
+    const throwing = await signup.batchUsernamesWith(async () => { throw new Error('boom'); }, 'CoolGuy', 2);
+    check('a throwing checker never crashes the batch', throwing.ok && throwing.unverified.length >= 2);
+    // Requested count clamps to BATCH_MAX.
+    const capped = await signup.batchUsernamesWith(async () => ({ available: true }), 'CoolGuy', 99);
+    check('batch size clamps to 10', capped.requested === 10 && capped.names.length === 10);
+    check('batch names are always username-legal', capped.names.every(n => /^[A-Za-z0-9_]{3,20}$/.test(n)));
+  }
+
+  // batchUsernames end-to-end with a mocked validate endpoint.
+  {
+    const fetchOrig = global.fetch;
+    try {
+      let calls = 0;
+      global.fetch = async (url) => {
+        calls++;
+        const name = decodeURIComponent(String(url).split('username=')[1].split('&')[0]);
+        // The exact base and names without a 7 come back free; 7s are taken.
+        const code = name === 'batchguy' || !name.includes('7') ? 0 : 1;
+        return { ok: true, status: 200, json: async () => ({ code, message: code === 0 ? 'valid' : 'taken' }) };
+      };
+      const r = await signup.batchUsernames('batchguy', adultBday, 4);
+      check('batchUsernames returns the free base plus verified variants',
+        r.ok && r.names[0] === 'batchguy' && r.names.length === 4
+          && r.names.every(n => /^[A-Za-z0-9_]{3,20}$/.test(n) && (n === 'batchguy' || !n.includes('7'))),
+        JSON.stringify(r.names));
+      check('batchUsernames probes the endpoint sequentially', calls >= 4, calls + ' calls');
+      check('batchUsernames never includes unverified names when checks succeed', r.unverified.length === 0);
+    } finally {
+      global.fetch = fetchOrig;
+    }
+  }
+
   /* 9. Public people data normalization */
   await section('People profiles');
   check('people rejects unsafe user ids', people.numericId('nope') === null && people.numericId(-2) === null);
@@ -617,7 +679,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && rendererModel.parseRobloxTarget('not a Roblox target').invalid === true
     && rendererModel.parseRobloxTarget('').invalid === false);
   check('Account-less installs can search public profiles without exposing account cookies',
-    peopleSource.includes("'User-Agent': 'Fleet/1.8.2'")
+    peopleSource.includes("'User-Agent': 'Fleet/1.8.3'")
     && peopleSource.includes('search-api/omni-search')
     && peopleSource.includes("verticalType: 'user'")
     && peopleSource.includes("presence: 'Unknown'")
@@ -1552,6 +1614,31 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
       /\.suggest-chip/.test(css) && /\.suggest-row/.test(css));
     check('signup form styles cover password and date inputs',
       /input\[type=password\], input\[type=date\]/.test(css) && /\.field-status/.test(css) && /\.pass-row/.test(css));
+
+    // Multi-account batch creation: quantity stepper -> roster resolve ->
+    // one signup per account, with a live progress banner and stop-on-close.
+    check('creator offers a quantity stepper wired into the draft',
+      /id="create-count"/.test(js) && /CREATE_MAX_ACCOUNTS/.test(js) && /syncCreateBatchUi/.test(js)
+        && /data-target="create-count"/.test(js));
+    check('batch mode rebrands the base username without blocking on it',
+      /Base username/.test(js) && /d\.qty \|\| 1\) === 1/.test(js) && /fine for a batch/.test(js));
+    check('submit drives a roster resolve then one signup per account',
+      /api\.signup\.batchNames/.test(js) && /state\.createQueue = \{ index: i \+ 1/.test(js)
+        && /Batch done: /.test(js) && /Batch of \$\{queue\.length\}/.test(js));
+    check('accounts view shows the live batch progress banner',
+      /state\.createQueue/.test(js) && /Creating account \$\{q\.index\} of \$\{q\.total\}/.test(js)
+        && /Close that window to stop the batch/.test(js));
+    check('batch stops early when a signup window closes or fails',
+      /signup window closed/.test(js) && /stopped early/.test(js));
+    check('bridge exposes the batch names channel',
+      /batchNames: \(username, birthday, count\) => tauriInvoke\('signup_batch_usernames'/.test(bridge));
+    check('backend handles the batch names probe',
+      /async signup_batch_usernames\(payload\)/.test(backend) && /signup\.batchUsernames\(/.test(backend));
+    check('Rust registers the batch names passthrough',
+      /backend_command!\(signup_batch_usernames, "signup_batch_usernames"/.test(lib)
+        && /signup_batch_usernames,/.test(handlerBlock));
+    check('people home keeps space between the watching card and Friends entry',
+      /\.watch-card\s*\{[^}]*margin:\s*12px 0/.test(css));
 
     // The icon-size regression: a bare svg.ico used to fall back to the SVG
     // default (300x150) in containers without their own size rule - the

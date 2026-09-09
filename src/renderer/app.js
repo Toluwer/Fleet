@@ -74,6 +74,7 @@ const state = {
   addingAccount: false,
   creatingAccount: false,
   createDraft: null,
+  createQueue: null,       // active multi-create batch: { index, total, name }
   followTargetId: null,
   followSelected: new Set(),
   following: false,
@@ -452,6 +453,7 @@ function openFollowDialog(targetId) {
 
 const CREATE_GENDERS = ['Male', 'Female', 'Skip'];
 const CREATE_DEFAULTS_KEY = 'fleet-create-defaults-v1';
+const CREATE_MAX_ACCOUNTS = 10;   // mirrors BATCH_MAX in main/signup.js
 let createCheckTimer = null;
 
 function defaultCreateBirthday() {
@@ -510,6 +512,7 @@ function openCreateAccountModal() {
   const defaults = loadCreateDefaults();
   state.createDraft = {
     username: '', password: '', confirm: '',
+    qty: 1,
     birthday: (defaults && defaults.birthday) || defaultCreateBirthday(),
     gender: (defaults && defaults.gender) || 'Skip',
     check: null, checking: false, submitting: false, showPass: false,
@@ -521,17 +524,29 @@ function openCreateAccountModal() {
 function renderCreateAccountModal() {
   const d = state.createDraft;
   if (!d) return;
+  const multi = (d.qty || 1) > 1;
   openModal(`
-    <div class="m-head"><h3>Create a Roblox account</h3>
-      <p>Fleet fills and advances Roblox's signup. Roblox will ask one quick human check in its window — that part is theirs, not Fleet's — then the new account lands here, already signed in.</p></div>
+    <div class="m-head"><h3 id="create-modal-title">${multi ? `Create ${d.qty} Roblox accounts` : 'Create a Roblox account'}</h3>
+      <p id="create-modal-sub">Fleet fills and advances Roblox's signup. Roblox will ask one quick human check in its window — that part is theirs, not Fleet's — ${multi ? 'one per account, solved in turn' : 'then the new account lands here, already signed in'}.</p></div>
     <div class="m-body">
       <div class="field">
-        <label for="create-username">Username</label>
+        <label for="create-username" id="create-username-label">${multi ? 'Base username' : 'Username'}</label>
         <input id="create-username" type="text" maxlength="20" autocomplete="off" spellcheck="false"
-          placeholder="3-20 characters" value="${esc(d.username)}">
+          placeholder="${multi ? 'e.g. shadow — variants get auto-added' : '3-20 characters'}" value="${esc(d.username)}">
         <div class="field-status" id="create-username-status"></div>
         <div class="suggest-row" id="create-suggest" hidden></div>
-        <p class="hint">Checked against Roblox as you type.</p>
+        <p class="hint" id="create-username-hint">${multi ? 'Account 1 keeps this name when it\'s free; the rest get numbered variants, each checked live.' : 'Checked against Roblox as you type.'}</p>
+      </div>
+      <div class="field">
+        <label for="create-count">How many accounts?</label>
+        <div class="inline" style="gap:10px;flex-wrap:wrap">
+          <div class="stepper" data-tip="Accounts to create in this batch">
+            <button type="button" data-action="step" data-dir="-1" data-target="create-count" aria-label="Fewer accounts">-</button>
+            <input id="create-count" type="number" min="1" max="${CREATE_MAX_ACCOUNTS}" value="${d.qty || 1}" inputmode="numeric">
+            <button type="button" data-action="step" data-dir="1" data-target="create-count" aria-label="More accounts">+</button>
+          </div>
+          <p class="hint" style="margin:0;flex:1;min-width:180px" id="create-count-hint">${multi ? 'The same password and birthday are used for every account.' : 'Raise this to make several at once — one signup window each.'}</p>
+        </div>
       </div>
       <div class="field">
         <label for="create-password">Password</label>
@@ -569,7 +584,7 @@ function renderCreateAccountModal() {
     <div class="m-foot">
       <button class="btn" data-action="modal-cancel">Cancel</button>
       <button class="btn primary" data-action="create-account-submit" id="create-submit">
-        ${d.submitting ? '<span class="spinner"></span> Opening Roblox…' : `${icon('user-plus')} Create account`}
+        ${d.submitting ? (multi ? '<span class="spinner"></span> Finding usernames…' : '<span class="spinner"></span> Opening Roblox…') : `${icon('user-plus')} ${multi ? `Create ${d.qty} accounts` : 'Create account'}`}
       </button>
     </div>`, 'create-modal');
   wireCreateModal();
@@ -585,6 +600,7 @@ function wireCreateModal() {
   const password = $('#create-password');
   const confirm = $('#create-confirm');
   const birthday = $('#create-birthday');
+  const count = $('#create-count');
 
   username.addEventListener('input', () => {
     d.username = username.value;
@@ -596,6 +612,13 @@ function wireCreateModal() {
     renderCreateSuggestions();
     updateCreateValidation();
     scheduleCreateUsernameCheck();
+  });
+  if (count) count.addEventListener('input', () => {
+    const v = Math.max(1, Math.min(CREATE_MAX_ACCOUNTS, parseInt(count.value, 10) || 1));
+    if (String(v) !== count.value) count.value = v;
+    d.qty = v;
+    syncCreateBatchUi();
+    updateCreateValidation();
   });
   password.addEventListener('input', () => {
     d.password = password.value;
@@ -611,6 +634,34 @@ function wireCreateModal() {
     updateCreateValidation();
     scheduleCreateUsernameCheck();
   });
+}
+
+/* Quantity-driven copy inside the creator: one account is the classic flow,
+   more flips the username into a base name and announces the batch rules —
+   patched in place so focus and typing are never disturbed. */
+function syncCreateBatchUi() {
+  const d = state.createDraft;
+  if (!d) return;
+  const multi = (d.qty || 1) > 1;
+  const title = $('#create-modal-title');
+  if (title) title.textContent = multi ? `Create ${d.qty} Roblox accounts` : 'Create a Roblox account';
+  const sub = $('#create-modal-sub');
+  if (sub) sub.textContent = "Fleet fills and advances Roblox's signup. Roblox will ask one quick human check in its window — that part is theirs, not Fleet's — "
+    + (multi ? 'one per account, solved in turn' : 'then the new account lands here, already signed in.');
+  const label = $('#create-username-label');
+  if (label) label.textContent = multi ? 'Base username' : 'Username';
+  const input = $('#create-username');
+  if (input) input.placeholder = multi ? 'e.g. shadow — variants get auto-added' : '3-20 characters';
+  const hint = $('#create-username-hint');
+  if (hint) hint.textContent = multi
+    ? "Account 1 keeps this name when it's free; the rest get numbered variants, each checked live."
+    : 'Checked against Roblox as you type.';
+  const countHint = $('#create-count-hint');
+  if (countHint) countHint.textContent = multi
+    ? 'The same password and birthday are used for every account.'
+    : 'Raise this to make several at once — one signup window each.';
+  const btn = $('#create-submit');
+  if (btn && !d.submitting) btn.innerHTML = `${icon('user-plus')} ${multi ? `Create ${d.qty} accounts` : 'Create account'}`;
 }
 
 function scheduleCreateUsernameCheck() {
@@ -721,7 +772,11 @@ function updateCreateStatusLine() {
   if (!d || !line) return;
   if (d.checking) { line.className = 'field-status dim'; line.innerHTML = '<span class="spinner"></span> Checking availability…'; return; }
   if (d.check && d.check.available === true) { line.className = 'field-status ok'; line.innerHTML = `${icon('check-circle')} ${esc(d.check.message || 'Username is available')}`; return; }
-  if (d.check && d.check.available === false) { line.className = 'field-status bad'; line.innerHTML = `${icon('alert-circle')} ${esc(d.check.message || 'That username is already taken')}`; return; }
+  if (d.check && d.check.available === false) {
+    const batchNote = (d.qty || 1) > 1 ? ' — fine for a batch: every account gets a verified variant' : '';
+    line.className = 'field-status bad'; line.innerHTML = `${icon('alert-circle')} ${esc(d.check.message || 'That username is already taken')}${batchNote}`;
+    return;
+  }
   if (d.check) { line.className = 'field-status dim'; line.textContent = d.check.message || 'Availability unknown — Roblox validates at sign-up.'; return; }
   line.className = 'field-status'; line.innerHTML = '';
 }
@@ -730,7 +785,9 @@ function updateCreateValidation() {
   const d = state.createDraft;
   if (!d || !$('#create-submit')) return;   // modal closed
   const errors = createValidationErrors(d);
-  const taken = d.check && d.check.available === false;
+  // A taken base only blocks the single-account flow; in a batch the
+  // remaining accounts simply ride verified variants of the name.
+  const taken = d.check && d.check.available === false && (d.qty || 1) === 1;
   const btn = $('#create-submit');
   btn.disabled = !!Object.keys(errors).length || taken || d.checking || d.submitting;
   const mark = (field, err) => {
@@ -1377,6 +1434,16 @@ views.accounts = function () {
   const list = state.accounts || [];
   const selectedCount = state.selected.size;
 
+  // A running multi-create batch gets its own live banner: which account is
+  // up, how many remain, and how to stop (close the Roblox signup window).
+  const q = state.createQueue;
+  const batchBanner = q ? `
+    <div class="banner good" style="margin-bottom:14px">
+      <svg class="b-ico"><use href="#i-user-plus"/></svg>
+      <div class="b-text"><b>Creating account ${q.index} of ${q.total}</b>
+        <span>Up next: @${esc(q.name)} — solve the human check in the Roblox window and the next one opens. Close that window to stop the batch.</span></div>
+    </div>` : '';
+
   const cards = list.length ? `<div class="acct-grid" data-account-grid>` + list.map(a => renderAccountCard(a)).join('') + `</div>`
     : `<div class="card"><div class="empty"><div class="e-ico">${icon('users')}</div>
         <h3>No accounts yet</h3><p>Add an existing Roblox account or create a brand-new one without leaving Fleet.</p>
@@ -1390,6 +1457,7 @@ views.accounts = function () {
       <h1>Accounts</h1>
       <p>Sign in once, then launch any account — alone or several at a time. Sessions are stored encrypted on this PC.</p>
     </div>
+    ${batchBanner}
     <div class="row-split" style="margin-bottom:16px">
       <div class="section-title" style="margin:0">Your accounts${(() => { const t = list.reduce((n, x) => n + (x.robux || 0), 0); return list.some(x => x.robux != null) ? ` <span class="robux-total" data-tip="Total Robux across all accounts">${icon('box')} ${fmtNum(t)}</span>` : ''; })()}</div>
       <div class="inline" data-account-launch-actions>
@@ -2740,7 +2808,7 @@ views.help = function () {
 
       <h2>Quick start</h2>
       <div class="step"><div class="n">1</div><div>On <b>Accounts</b>, click <b>Add account</b>. Fleet opens a Tauri Roblox sign-in window and saves the account after Roblox sets the session.</div></div>
-      <div class="step"><div class="n">2</div><div>Need a fresh account instead? Click <b>Create account</b>, fill in the username, password and birthday, and Fleet opens Roblox's signup form already filled in — it clicks through the steps too, so just solve the captcha and the new account is saved here, signed in.</div></div>
+      <div class="step"><div class="n">2</div><div>Need a fresh account instead? Click <b>Create account</b>, fill in the username, password and birthday, and Fleet opens Roblox's signup form already filled in — it clicks through the steps too, so just solve the captcha and the new account is saved here, signed in. Set the count above 1 and Fleet makes several in a row, each with its own checked username.</div></div>
       <div class="step"><div class="n">3</div><div>On <b>Instances</b>, choose <b>With account</b> or <b>Signed out</b>. Optionally paste a Place ID, game URL, or exact-server link, then click <b>Launch</b>.</div></div>
       <div class="step"><div class="n">4</div><div>Every client appears under <b>Running clients</b>, where you can focus, restart or end it.</div></div>
 
@@ -2802,6 +2870,8 @@ document.addEventListener('click', async (e) => {
       if (inp) {
         const min = parseInt(inp.min, 10) || 1, max = parseInt(inp.max, 10) || 99;
         inp.value = Math.max(min, Math.min(max, (parseInt(inp.value, 10) || min) + parseInt(elAction.dataset.dir, 10)));
+        // Let live listeners (the creator's count) react to stepped values.
+        inp.dispatchEvent(new Event('input', { bubbles: true }));
       }
       break;
     }
@@ -2968,21 +3038,109 @@ document.addEventListener('click', async (e) => {
       const d = state.createDraft;
       if (!d || d.submitting || state.creatingAccount) break;
       const errors = createValidationErrors(d);
-      if (Object.keys(errors).length || (d.check && d.check.available === false)) { updateCreateValidation(); break; }
+      // A taken base only blocks the single-account flow (see validation).
+      if (Object.keys(errors).length || (d.check && d.check.available === false && (d.qty || 1) === 1)) { updateCreateValidation(); break; }
 
-      d.submitting = true;
-      saveCreateDefaults(d);
-      const btn = $('#create-submit');
-      if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Opening Roblox…'; }
-      state.creatingAccount = true;
-      closeCreateModal();
-      if (state.view === 'accounts') views.accounts();
-      toast('Opening Roblox signup — Fleet fills and clicks through; just solve the captcha');
-      const r = await call(() => api.accounts.create({
+      const payload = {
         username: String(d.username || '').trim(),
         password: String(d.password || ''),
         birthday: String(d.birthday || ''),
         gender: d.gender,
+      };
+      const qty = Math.max(1, Math.min(CREATE_MAX_ACCOUNTS, d.qty || 1));
+
+      d.submitting = true;
+      saveCreateDefaults(d);
+      state.creatingAccount = true;
+      const btn = $('#create-submit');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = qty > 1 ? '<span class="spinner"></span> Finding usernames…' : '<span class="spinner"></span> Opening Roblox…';
+      }
+
+      if (qty > 1) {
+        // Multi-account batch: line up verified usernames first (the modal
+        // shows the roster search), then drive Roblox's signup once per
+        // account — each window imports its session the moment it lands.
+        toast(`Checking ${qty} usernames against Roblox…`);
+        const roster = await call(() => api.signup.batchNames(payload.username, payload.birthday, qty), null, 120000);
+        if (!roster || !roster.ok) {
+          state.creatingAccount = false;
+          closeCreateModal();
+          toast((roster && roster.error) || 'Could not line up usernames — try again', 'bad');
+          if (state.view === 'accounts') views.accounts();
+          break;
+        }
+        const queue = [];
+        for (const n of (Array.isArray(roster.names) ? roster.names : [])) {
+          if (queue.length >= qty) break;
+          if (typeof n === 'string' && /^[A-Za-z0-9_]{3,20}$/.test(n) && !queue.includes(n)) queue.push(n);
+        }
+        // Names Roblox could not verify (rate-limited / offline) still fill
+        // the batch — Roblox re-validates every name at sign-up anyway.
+        for (const n of (Array.isArray(roster.unverified) ? roster.unverified : [])) {
+          if (queue.length >= qty) break;
+          if (typeof n === 'string' && /^[A-Za-z0-9_]{3,20}$/.test(n) && !queue.includes(n)) queue.push(n);
+        }
+        if (!queue.length) {
+          state.creatingAccount = false;
+          closeCreateModal();
+          toast('No usable usernames came back — try a different base name', 'bad');
+          if (state.view === 'accounts') views.accounts();
+          break;
+        }
+        closeCreateModal();
+        if (state.view === 'accounts') views.accounts();
+        if (queue.length < qty) toast(`Could only line up ${queue.length} of ${qty} names — creating ${queue.length}`);
+        toast(`Batch of ${queue.length}: one Roblox signup each — solve the human check in every window`);
+
+        let created = 0;
+        let stopped = false;
+        let stopNote = '';
+        for (let i = 0; i < queue.length; i++) {
+          state.createQueue = { index: i + 1, total: queue.length, name: queue[i] };
+          if (state.view === 'accounts') views.accounts();
+          toast(`Account ${i + 1} of ${queue.length}: opening signup for @${queue[i]}`);
+          const r = await call(() => api.accounts.create({
+            username: queue[i],
+            password: payload.password,
+            birthday: payload.birthday,
+            gender: payload.gender,
+          }), undefined, 0);
+          if (r && r.ok) {
+            created++;
+            await loadAccounts();
+            toast((r.updated ? 'Account updated: ' : 'Account created: ') + (r.account ? r.account.username : queue[i]), 'good');
+          } else if (r && r.canceled) {
+            stopped = true;
+            stopNote = 'signup window closed';
+            break;
+          } else {
+            stopped = true;
+            stopNote = (r && r.error) || 'signup failed';
+            toast((r && r.error) || `Could not create @${queue[i]}`, 'bad');
+            break;
+          }
+        }
+        state.createQueue = null;
+        state.creatingAccount = false;
+        if (state.view === 'accounts') views.accounts();
+        if (created) {
+          toast(`Batch done: ${created} of ${queue.length} created${stopped ? ` — stopped early (${stopNote})` : ''}`, 'good');
+        } else if (!stopped) {
+          toast('No accounts were created', 'bad');
+        }
+        break;
+      }
+
+      closeCreateModal();
+      if (state.view === 'accounts') views.accounts();
+      toast('Opening Roblox signup — Fleet fills and clicks through; just solve the captcha');
+      const r = await call(() => api.accounts.create({
+        username: payload.username,
+        password: payload.password,
+        birthday: payload.birthday,
+        gender: payload.gender,
       }), undefined, 0);
       state.creatingAccount = false;
       if (r && r.ok) {

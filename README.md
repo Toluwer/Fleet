@@ -14,7 +14,7 @@ A multi-instance launcher and account manager for Roblox.
 
 - Launch multiple Roblox clients at once, each signed into a different account or signed out
 - Sign in through Roblox's real login page, keep several accounts saved, launch them together by Place ID, game URL or server link
-- Create new accounts without leaving Fleet: enter the username, password, birthday and profile field, Fleet fills Roblox's signup (whichever layout Roblox serves), clicks through to Roblox's one human check, and imports the account when it's done — with a strong-password generator, one-click fixes for taken usernames, and remembered defaults
+- Create new accounts without leaving Fleet: enter the username, password, birthday and profile field, Fleet fills Roblox's signup (whichever layout Roblox serves), clicks through to Roblox's one human check, and imports the account when it's done — with a strong-password generator, one-click fixes for taken usernames, remembered defaults, and multi-account batches (up to 10 at once, each username verified against Roblox)
 - Update in place: the updater swaps the new version in while Fleet is running (no installer window, no helper script), and old installer exes always fetch and install the newest release
 - Save an account group plus game setup as a session and relaunch it with one click
 - Watchdog: when a client crashes, disconnects or gets kicked, Fleet puts that account straight back into the same server, with a fresh login ticket and a retry backoff that gives up instead of looping forever
