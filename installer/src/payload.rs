@@ -33,6 +33,12 @@ pub struct Progress<'a> {
 }
 
 impl Package {
+    /// A package held in memory - a downloaded release zip that must install
+    /// through the exact same extraction path as the embedded payload.
+    pub fn from_bytes(data: Vec<u8>) -> Package {
+        Package { data }
+    }
+
     /// Cheap payload check: reads only the 16-byte trailer.
     pub fn exists() -> bool {
         let exe = match std::env::current_exe() {

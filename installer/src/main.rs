@@ -17,9 +17,11 @@
 
 mod payload;
 mod shell;
+mod net;
 
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -71,6 +73,7 @@ const IDT_FADE: usize = 1;
 const IDT_HELLO: usize = 2;
 const IDT_DEMO: usize = 3;
 const IDT_POLL: usize = 4;
+const IDT_RESOLVE: usize = 5;
 
 // Static control ids (drive per-control colors)
 const IDC_HEAD: i32 = 1;
@@ -175,6 +178,15 @@ struct App {
     installed: Option<(PathBuf, String)>,
     /// True when this run replaces an older installed version.
     updating: bool,
+    /// The newest release published on GitHub, when the feed could be read.
+    /// None until the check finishes (or fails, in which case it stays None
+    /// and the embedded payload is what gets installed).
+    latest: Option<net::Latest>,
+    /// Shared with the feed thread: None = still checking, Some(None) = the
+    /// feed could not be read, Some(Some(latest)) = resolved.
+    feed: Arc<Mutex<Option<Option<net::Latest>>>>,
+    /// GetTickCount64 deadline after which a slow feed check gives up.
+    resolve_deadline: u64,
 }
 
 // ------------------------------------------------------------------ helpers
@@ -274,11 +286,44 @@ fn run_install(
     desktop: bool,
     version: &str,
     is_update: bool,
+    latest: Option<net::Latest>,
     tx: &Sender<Msg>,
 ) -> Result<(), String> {
     debug_log("run_install start");
-    let pkg = Package::open()
-        .ok_or("This copy of the installer is missing its files.\nPlease download Fleet again.")?;
+    // A published release newer than this installer's embedded payload gets
+    // installed instead of it: that is what makes an old installer exe still
+    // hand out the newest Fleet. Same folder, same flow, same verification.
+    let fetch_latest = latest
+        .as_ref()
+        .map(|l| version_cmp(&l.version, FLEET_VERSION) == std::cmp::Ordering::Greater)
+        .unwrap_or(false);
+    let pkg = if fetch_latest {
+        let l = latest.as_ref().unwrap();
+        let _ = tx.send(Msg::Note(format!(
+            "Downloading Fleet v{} - the newest release…",
+            l.version
+        )));
+        let url = net::asset_url(&l.zip_name);
+        debug_log(&format!("fetching newer release {url}"));
+        let tx_progress = tx.clone();
+        let mut progress = move |done: u64, total: u64| {
+            let _ = tx_progress.send(Msg::Bytes(done, total));
+        };
+        let bytes = net::http_get(&url, &mut progress)?;
+        if !net::sha512_matches(&bytes, &l.sha512_b64) {
+            return Err(
+                "The downloaded release failed its checksum verification.\nThe connection may have been interrupted - try again.".into(),
+            );
+        }
+        if l.size > 0 && bytes.len() as u64 != l.size {
+            return Err("The downloaded release has an unexpected size.\nTry again in a moment.".into());
+        }
+        let _ = tx.send(Msg::Note("Unpacking the new version…".into()));
+        Package::from_bytes(bytes)
+    } else {
+        Package::open()
+            .ok_or("This copy of the installer is missing its files.\nPlease download Fleet again.")?
+    };
     let entries = pkg.entries()?;
     let total: u64 = entries.iter().map(|e| e.raw_size).sum();
 
@@ -429,6 +474,29 @@ unsafe extern "system" fn wnd_proc(
             // An existing install decides the whole flow: older version ->
             // update, same or newer -> up to date, nothing -> fresh install.
             let installed = if uninstall { None } else { shell::installed_fleet() };
+
+            // The release feed check runs on its own thread while "Hello!"
+            // plays; an old installer learns the newest version this way and
+            // installs it instead of its embedded payload. Uninstall never
+            // needs the network.
+            let feed: Arc<Mutex<Option<Option<net::Latest>>>> =
+                Arc::new(Mutex::new(None));
+            if !uninstall {
+                let slot = Arc::clone(&feed);
+                std::thread::spawn(move || {
+                    let result = match net::fetch_latest() {
+                        Ok(latest) => Some(Some(latest)),
+                        Err(err) => {
+                            debug_log(&format!("feed check failed: {err}"));
+                            Some(None)
+                        }
+                    };
+                    if let Ok(mut guard) = slot.lock() {
+                        *guard = result;
+                    }
+                });
+            }
+
             let updating = installed
                 .as_ref()
                 .map(|(_, v)| version_cmp(v, FLEET_VERSION) == std::cmp::Ordering::Less)
@@ -482,6 +550,9 @@ unsafe extern "system" fn wnd_proc(
                 fade: Fade { active: false, from: 0, to: 255, t0: 0, dur: 1, after: After::None },
                 installed,
                 updating,
+                latest: None,
+                feed,
+                resolve_deadline: 0,
             });
             let raw = Box::into_raw(app);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, raw as isize);
@@ -505,13 +576,14 @@ unsafe extern "system" fn wnd_proc(
                     IDT_FADE => step_fade(a),
                     IDT_HELLO => {
                         let _ = KillTimer(Some(hwnd), IDT_HELLO);
-                        goto_stage(a, first_stage(a));
+                        start_resolve(a);
                     }
                     IDT_DEMO => {
                         let _ = KillTimer(Some(hwnd), IDT_DEMO);
                         demo_advance(a);
                     }
                     IDT_POLL => poll_worker(a),
+                    IDT_RESOLVE => poll_resolve(a),
                     _ => {}
                 }
             }
@@ -775,14 +847,84 @@ fn goto_stage(a: &mut App, next: Stage) {
 /// The stage after the Hello beat: fresh install picks a folder, an older
 /// install updates, a same/newer install is told it's already up to date.
 fn first_stage(a: &App) -> Stage {
+    let effective = a.version_to_install();
     match &a.installed {
         None => Stage::Location,
         Some((_, v)) => {
-            if version_cmp(v, FLEET_VERSION) == std::cmp::Ordering::Less {
+            if version_cmp(v, &effective) == std::cmp::Ordering::Less {
                 Stage::UpdateReady
             } else {
                 Stage::UpToDate
             }
+        }
+    }
+}
+
+/// Waits (bounded) for the release-feed thread, then decides the real first
+/// stage against the version that will actually be installed.
+fn start_resolve(a: &mut App) {
+    a.resolve_deadline = unsafe { GetTickCount64() } + 6000;
+    poll_resolve(a);
+}
+
+fn poll_resolve(a: &mut App) {
+    let resolved = a.feed.lock().ok().and_then(|guard| guard.clone());
+    match resolved {
+        None => {
+            let now = unsafe { GetTickCount64() };
+            if now >= a.resolve_deadline {
+                // The feed is too slow; proceed offline (embedded payload).
+                debug_log("feed check timed out - installing the embedded payload");
+                if let Ok(mut guard) = a.feed.lock() {
+                    *guard = Some(None);
+                }
+                finish_resolve(a);
+            } else {
+                unsafe {
+                    let _ = SetTimer(Some(a.hwnd), IDT_RESOLVE, 100, None);
+                }
+            }
+        }
+        Some(_) => finish_resolve(a),
+    }
+}
+
+fn finish_resolve(a: &mut App) {
+    unsafe {
+        let _ = KillTimer(Some(a.hwnd), IDT_RESOLVE);
+    }
+    if let Ok(guard) = a.feed.lock() {
+        if let Some(inner) = guard.clone() {
+            a.latest = inner;
+        }
+    }
+    if let Some(latest) = &a.latest {
+        debug_log(&format!(
+            "feed: latest is v{} (embedded: v{FLEET_VERSION})",
+            latest.version
+        ));
+    }
+    // "Updating" is decided against the version that will be installed - the
+    // newer of the embedded payload and the release feed.
+    let effective = a.version_to_install();
+    a.updating = a
+        .installed
+        .as_ref()
+        .map(|(_, v)| version_cmp(v, &effective) == std::cmp::Ordering::Less)
+        .unwrap_or(false);
+    goto_stage(a, first_stage(a));
+}
+
+impl App {
+    /// The version this run installs: the newest of the embedded payload and
+    /// the GitHub release feed (when the feed is unreachable or older, the
+    /// embedded payload is what exists on disk, so it wins).
+    fn version_to_install(&self) -> String {
+        match &self.latest {
+            Some(l) if version_cmp(&l.version, FLEET_VERSION) == std::cmp::Ordering::Greater => {
+                l.version.clone()
+            }
+            _ => FLEET_VERSION.to_string(),
         }
     }
 }
@@ -913,6 +1055,13 @@ fn build_stage(a: &mut App) {
                 // NOTE: SS_CENTER | SS_CENTERIMAGE equals SS_ICON (0x3), which
                 // renders nothing for text - so the rect is hand-centered.
                 static_text!(a, "Hello!", 0x1, Some(f.hello), 0, 148, WIN_W, 64, IDC_HELLO);
+                static_text!(
+                    a,
+                    "Checking for the latest version…",
+                    0x1, // SS_CENTER
+                    Some(f.small),
+                    0, 220, WIN_W, 20, IDC_SUB
+                );
             }
 
             Stage::Location => {
@@ -984,10 +1133,11 @@ fn build_stage(a: &mut App) {
                     .as_ref()
                     .map(|(_, v)| v.clone())
                     .unwrap_or_default();
+                let new_version = a.version_to_install();
                 let sub = if old.is_empty() {
-                    format!("Fleet will be updated to v{FLEET_VERSION}.")
+                    format!("Fleet will be updated to v{new_version}.")
                 } else {
-                    format!("Fleet v{old} will be updated to v{FLEET_VERSION}.")
+                    format!("Fleet v{old} will be updated to v{new_version}.")
                 };
                 let path_text = a.path.clone();
                 static_text!(a, "New version detected", 0, Some(f.head), 36, 44, 428, 32, IDC_HEAD);
@@ -1014,8 +1164,11 @@ fn build_stage(a: &mut App) {
                     .as_ref()
                     .map(|(_, v)| v.clone())
                     .unwrap_or_default();
-                let sub = if version_cmp(&cur, FLEET_VERSION) == std::cmp::Ordering::Equal {
-                    format!("The latest version (v{FLEET_VERSION}) is already installed.")
+                let eff = a.version_to_install();
+                // cur > eff can only happen when the feed was unreachable
+                // AND a newer Fleet than this installer is installed.
+                let sub = if version_cmp(&cur, &eff) == std::cmp::Ordering::Equal {
+                    format!("The latest version (v{eff}) is already installed.")
                 } else {
                     format!("A newer version (v{cur}) is already installed.")
                 };
@@ -1023,7 +1176,7 @@ fn build_stage(a: &mut App) {
                 static_text!(a, &sub, 0, Some(f.body), 36, 136, 410, 44, IDC_SUB);
                 static_text!(
                     a,
-                    "This installer is only as new as its download - if a newer release is out, it's on the releases page.",
+                    "This installer checked GitHub for the newest release before installing, so old installers stay useful.",
                     0x2000, // SS_EDITCONTROL (wraps)
                     Some(f.small),
                     36, 196, 410, 40,
@@ -1031,7 +1184,9 @@ fn build_stage(a: &mut App) {
                 );
 
                 divider!(a);
-                button!(a, "Get newer version", 0, 196, 298, 144, 32, IDC_RELEASES, f.body);
+                if version_cmp(&cur, &eff) == std::cmp::Ordering::Greater {
+                    button!(a, "Get newer version", 0, 196, 298, 144, 32, IDC_RELEASES, f.body);
+                }
                 button!(a, "Close", 0x1, 344, 298, 120, 32, IDC_CLOSE, f.body);
                 focus_ctrl(a, IDC_CLOSE);
             }
@@ -1068,10 +1223,11 @@ fn build_stage(a: &mut App) {
 
             Stage::Done => {
                 let dest_text = a.install_dest.to_string_lossy().to_string();
+                let installed_version = a.version_to_install();
                 let (head, sub) = if a.updating {
                     (
                         "Fleet is updated.",
-                        format!("You're on the latest version - v{FLEET_VERSION}."),
+                        format!("You're on the latest version - v{installed_version}."),
                     )
                 } else {
                     ("Fleet is installed.", "Launch it whenever you're ready.".to_string())
@@ -1292,21 +1448,24 @@ fn demo_advance(a: &mut App) {
 fn start_install(a: &mut App) {
     let dest = a.install_dest.clone();
     let desktop = a.desktop_shortcut;
-    let version = FLEET_VERSION.to_string();
+    let version = a.version_to_install();
     let is_update = a.updating;
+    let latest = a.latest.clone();
     let (tx, rx) = channel::<Msg>();
     a.rx = Some(rx);
     a.busy = true;
     unsafe {
         let _ = SetTimer(Some(a.hwnd), IDT_POLL, 40, None);
     }
-    std::thread::spawn(move || match run_install(&dest, desktop, &version, is_update, &tx) {
-        Ok(()) => {
-            let _ = tx.send(Msg::Done);
-        }
-        Err(e) => {
-            debug_log(&format!("install error: {e}"));
-            let _ = tx.send(Msg::Err(e));
+    std::thread::spawn(move || {
+        match run_install(&dest, desktop, &version, is_update, latest, &tx) {
+            Ok(()) => {
+                let _ = tx.send(Msg::Done);
+            }
+            Err(e) => {
+                debug_log(&format!("install error: {e}"));
+                let _ = tx.send(Msg::Err(e));
+            }
         }
     });
 }
