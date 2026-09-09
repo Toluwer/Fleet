@@ -43,6 +43,14 @@ Fleet's approach:
 
 Sign-in opens a Tauri WebView on Roblox's login page. Fleet watches for `.ROBLOSECURITY`, stores records through the backend, and strips cookies from all renderer responses. Launches mint an auth ticket and build the `roblox-player:` deep link.
 
+Sign-in and sign-up share one persistent WebView2 profile (`%APPDATA%/com.toluwa.fleet/roblox-web-profile`), so Roblox sees a returning browser instead of a brand-new one; the `.ROBLOSECURITY` session cookie is purged before each window opens so the logged-out page always loads and a stale session can never be imported by accident.
+
+## Updating
+
+The in-app updater downloads the release's portable zip, verifies its sha512 against `latest.yml`, stages it, then **swaps it over the install folder while Fleet is still running** — the technique VS Code uses. Files Windows holds open (the two running exes, loaded native modules) are renamed aside as `*.fleet-old`; the new copy takes the name immediately, and the new version deletes the retired files at startup. There is no helper process: the old design armed a hidden script host after closing the window, and when security software killed it the update silently died. Now every step runs inside the app, every failure is visible in Settings, and by the time Fleet restarts (the `updater_restart` command launches the new `Fleet.exe --takeover=<pid>` and closes this window) the files on disk are already the new version.
+
+The installer checks `latest.yml` through WinHTTP (native, no extra process) and, when a published release is newer than its embedded payload, downloads and installs that instead — so running an old `FleetInstaller.exe` still installs the newest Fleet. The download is digest-verified before extraction.
+
 ## Watchdog (auto-rejoin)
 
 `src/main/keeper.js` watches armed accounts with two signals: the process monitor's snapshot (a fleet-launched pid carries its `accountId`) and the 12 s account presence sweep as a fallback for pid-less watches after a Fleet restart. A dead pid schedules a rejoin that mints a **fresh** auth ticket — replaying the original deep link would fail because tickets expire minutes after issue. Retries back off exponentially (10 s doubling, 5 min cap) and stop after N straight tries without a five-minute stable run. Manual kills disarm or blind the affected watch, and armed records persist to `keeper.json`, coming back **paused** after a restart so Fleet only adopts clients it sees running, never launches new ones. `settings.json` holds the knobs (`autoRejoinDelaySec`, `autoRejoinMaxAttempts`, `autoRestartHungSec`).
@@ -59,6 +67,7 @@ Sign-in opens a Tauri WebView on Roblox's login page. Fleet watches for `.ROBLOS
 | `settings.json`, `accounts.json`, `history.json`, `keeper.json` | State |
 | `logs/fleet-YYYY-MM-DD.log` | Daily logs |
 | `clones/instance-N` | Per-instance junctions |
+| `roblox-web-profile/` | Persistent WebView2 profile for Roblox sign-in/sign-up windows |
 
 ## Known limits
 
