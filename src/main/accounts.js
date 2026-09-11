@@ -94,6 +94,12 @@ function sanitize(a) {
     game: a.game || null,            // { name, placeId, rootPlaceId, gameId } when in a game
     robux: typeof a.robux === 'number' ? a.robux : null,
     premium: !!a.premium,
+    // Public profile extras (fetched lazily, see fetchProfileExtras).
+    verified: !!a.verified,
+    created: a.created || null,       // ISO signup date -> "account age"
+    friends: typeof a.friends === 'number' ? a.friends : null,
+    followers: typeof a.followers === 'number' ? a.followers : null,
+    following: typeof a.following === 'number' ? a.following : null,
     addedAt: a.addedAt,
   };
 }
@@ -430,9 +436,37 @@ function remove(id) {
   return { ok: true, accounts: list() };
 }
 
+/** Public profile extras — account age, verified badge, social counts.
+ *  All four endpoints are public (no cookie), cheap and separately optional:
+ *  whatever answers lands, the rest stays as-is until the next TTL window. */
+const PROFILE_TTL_MS = 30 * 60 * 1000;
+async function fetchProfileExtras(a) {
+  const id = a.userId;
+  if (!id) return;
+  const grab = async (url) => {
+    try {
+      const res = await fetch(url, { headers: { 'User-Agent': 'Fleet', 'Accept': 'application/json' }, signal: AbortSignal.timeout(8000) });
+      return res.ok ? await res.json() : null;
+    } catch (_) { return null; }
+  };
+  const [user, fr, fo, fg] = await Promise.all([
+    grab(`https://users.roblox.com/v1/users/${id}`),
+    grab(`https://friends.roblox.com/v1/users/${id}/friends/count`),
+    grab(`https://friends.roblox.com/v1/users/${id}/followers/count`),
+    grab(`https://friends.roblox.com/v1/users/${id}/followings/count`),
+  ]);
+  if (user && user.created) a.created = user.created;
+  if (user && typeof user.hasVerifiedBadge === 'boolean') a.verified = user.hasVerifiedBadge;
+  if (fr && typeof fr.count === 'number') a.friends = fr.count;
+  if (fo && typeof fo.count === 'number') a.followers = fo.count;
+  if (fg && typeof fg.count === 'number') a.following = fg.count;
+  a.profileAt = Date.now();
+}
+
 /**
- * Refresh accounts. Presence is always re-fetched (cheap); avatar/name only
- * when missing or when `full` is set — so periodic presence polling is light.
+ * Refresh accounts. Presence is always re-fetched (cheap); avatar/name and
+ * public profile extras only when missing or when `full` is set — so
+ * periodic presence polling is light.
  */
 async function refresh(id, full) {
   const raw = readRaw();
@@ -448,6 +482,7 @@ async function refresh(id, full) {
       const avatar = await getAvatar(a.userId);
       if (avatar) a.avatar = avatar;
     }
+    if (full || !a.profileAt) await fetchProfileExtras(a);
     const pres = await getPresence(a.userId, cookie);
     a.presence = pres.status;
     a.presenceError = pres.error || null;
@@ -507,6 +542,15 @@ function startPolling(opts) {
           const beforeRobux = a.robux, beforePremium = a.premium;
           await fetchEconomy(a, cookie);
           if (a.robux !== beforeRobux || a.premium !== beforePremium) { changed = true; onUpdate(sanitize(a)); }
+        }
+        if (!a.profileAt || Date.now() - a.profileAt > PROFILE_TTL_MS) {
+          const before = { verified: a.verified, created: a.created, friends: a.friends, followers: a.followers, following: a.following };
+          await fetchProfileExtras(a);
+          if (a.verified !== before.verified || a.created !== before.created
+            || a.friends !== before.friends || a.followers !== before.followers || a.following !== before.following) {
+            changed = true;
+            onUpdate(sanitize(a));
+          }
         }
         const pres = await getPresence(a.userId, cookie);
         if (pres.expired) {

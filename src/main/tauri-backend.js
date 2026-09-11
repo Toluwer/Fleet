@@ -647,9 +647,6 @@ function makeBackend(ctx) {
     async signup_suggest_usernames(payload) {
       return signup.suggestUsernames(String((payload && payload.username) || ''), String((payload && payload.birthday) || ''));
     },
-    async signup_batch_usernames(payload) {
-      return signup.batchUsernames(String((payload && payload.username) || ''), String((payload && payload.birthday) || ''), Number(payload && payload.count));
-    },
     async accounts_remove(payload) { return accounts.remove(payload.id); },
     async accounts_refresh(payload) { return accounts.refresh(payload.id, payload.full); },
     async accounts_follow(payload) {

@@ -74,7 +74,6 @@ const state = {
   addingAccount: false,
   creatingAccount: false,
   createDraft: null,
-  createQueue: null,       // active multi-create batch: { index, total, name }
   followTargetId: null,
   followSelected: new Set(),
   following: false,
@@ -453,7 +452,6 @@ function openFollowDialog(targetId) {
 
 const CREATE_GENDERS = ['Male', 'Female', 'Skip'];
 const CREATE_DEFAULTS_KEY = 'fleet-create-defaults-v1';
-const CREATE_MAX_ACCOUNTS = 10;   // mirrors BATCH_MAX in main/signup.js
 let createCheckTimer = null;
 
 function defaultCreateBirthday() {
@@ -512,7 +510,6 @@ function openCreateAccountModal() {
   const defaults = loadCreateDefaults();
   state.createDraft = {
     username: '', password: '', confirm: '',
-    qty: 1,
     birthday: (defaults && defaults.birthday) || defaultCreateBirthday(),
     gender: (defaults && defaults.gender) || 'Skip',
     check: null, checking: false, submitting: false, showPass: false,
@@ -524,29 +521,17 @@ function openCreateAccountModal() {
 function renderCreateAccountModal() {
   const d = state.createDraft;
   if (!d) return;
-  const multi = (d.qty || 1) > 1;
   openModal(`
-    <div class="m-head"><h3 id="create-modal-title">${multi ? `Create ${d.qty} Roblox accounts` : 'Create a Roblox account'}</h3>
-      <p id="create-modal-sub">Fleet fills and advances Roblox's signup. Roblox will ask one quick human check in its window — that part is theirs, not Fleet's — ${multi ? 'one per account, solved in turn' : 'then the new account lands here, already signed in'}.</p></div>
+    <div class="m-head"><h3 id="create-modal-title">Create a Roblox account</h3>
+      <p id="create-modal-sub">Fleet fills and advances Roblox's signup. Roblox will ask one quick human check in its window — that part is theirs, not Fleet's — then the new account lands here, already signed in.</p></div>
     <div class="m-body">
       <div class="field">
-        <label for="create-username" id="create-username-label">${multi ? 'Base username' : 'Username'}</label>
+        <label for="create-username" id="create-username-label">Username</label>
         <input id="create-username" type="text" maxlength="20" autocomplete="off" spellcheck="false"
-          placeholder="${multi ? 'e.g. shadow — variants get auto-added' : '3-20 characters'}" value="${esc(d.username)}">
+          placeholder="3-20 characters" value="${esc(d.username)}">
         <div class="field-status" id="create-username-status"></div>
         <div class="suggest-row" id="create-suggest" hidden></div>
-        <p class="hint" id="create-username-hint">${multi ? 'Account 1 keeps this name when it\'s free; the rest get numbered variants, each checked live.' : 'Checked against Roblox as you type.'}</p>
-      </div>
-      <div class="field">
-        <label for="create-count">How many accounts?</label>
-        <div class="inline" style="gap:10px;flex-wrap:wrap">
-          <div class="stepper" data-tip="Accounts to create in this batch">
-            <button type="button" data-action="step" data-dir="-1" data-target="create-count" aria-label="Fewer accounts">-</button>
-            <input id="create-count" type="number" min="1" max="${CREATE_MAX_ACCOUNTS}" value="${d.qty || 1}" inputmode="numeric">
-            <button type="button" data-action="step" data-dir="1" data-target="create-count" aria-label="More accounts">+</button>
-          </div>
-          <p class="hint" style="margin:0;flex:1;min-width:180px" id="create-count-hint">${multi ? 'The same password and birthday are used for every account.' : 'Raise this to make several at once — one signup window each.'}</p>
-        </div>
+        <p class="hint" id="create-username-hint">Checked against Roblox as you type.</p>
       </div>
       <div class="field">
         <label for="create-password">Password</label>
@@ -584,7 +569,7 @@ function renderCreateAccountModal() {
     <div class="m-foot">
       <button class="btn" data-action="modal-cancel">Cancel</button>
       <button class="btn primary" data-action="create-account-submit" id="create-submit">
-        ${d.submitting ? (multi ? '<span class="spinner"></span> Finding usernames…' : '<span class="spinner"></span> Opening Roblox…') : `${icon('user-plus')} ${multi ? `Create ${d.qty} accounts` : 'Create account'}`}
+        ${d.submitting ? '<span class="spinner"></span> Opening Roblox…' : `${icon('user-plus')} Create account`}
       </button>
     </div>`, 'create-modal');
   wireCreateModal();
@@ -600,7 +585,6 @@ function wireCreateModal() {
   const password = $('#create-password');
   const confirm = $('#create-confirm');
   const birthday = $('#create-birthday');
-  const count = $('#create-count');
 
   username.addEventListener('input', () => {
     d.username = username.value;
@@ -612,13 +596,6 @@ function wireCreateModal() {
     renderCreateSuggestions();
     updateCreateValidation();
     scheduleCreateUsernameCheck();
-  });
-  if (count) count.addEventListener('input', () => {
-    const v = Math.max(1, Math.min(CREATE_MAX_ACCOUNTS, parseInt(count.value, 10) || 1));
-    if (String(v) !== count.value) count.value = v;
-    d.qty = v;
-    syncCreateBatchUi();
-    updateCreateValidation();
   });
   password.addEventListener('input', () => {
     d.password = password.value;
@@ -634,34 +611,6 @@ function wireCreateModal() {
     updateCreateValidation();
     scheduleCreateUsernameCheck();
   });
-}
-
-/* Quantity-driven copy inside the creator: one account is the classic flow,
-   more flips the username into a base name and announces the batch rules —
-   patched in place so focus and typing are never disturbed. */
-function syncCreateBatchUi() {
-  const d = state.createDraft;
-  if (!d) return;
-  const multi = (d.qty || 1) > 1;
-  const title = $('#create-modal-title');
-  if (title) title.textContent = multi ? `Create ${d.qty} Roblox accounts` : 'Create a Roblox account';
-  const sub = $('#create-modal-sub');
-  if (sub) sub.textContent = "Fleet fills and advances Roblox's signup. Roblox will ask one quick human check in its window — that part is theirs, not Fleet's — "
-    + (multi ? 'one per account, solved in turn' : 'then the new account lands here, already signed in.');
-  const label = $('#create-username-label');
-  if (label) label.textContent = multi ? 'Base username' : 'Username';
-  const input = $('#create-username');
-  if (input) input.placeholder = multi ? 'e.g. shadow — variants get auto-added' : '3-20 characters';
-  const hint = $('#create-username-hint');
-  if (hint) hint.textContent = multi
-    ? "Account 1 keeps this name when it's free; the rest get numbered variants, each checked live."
-    : 'Checked against Roblox as you type.';
-  const countHint = $('#create-count-hint');
-  if (countHint) countHint.textContent = multi
-    ? 'The same password and birthday are used for every account.'
-    : 'Raise this to make several at once — one signup window each.';
-  const btn = $('#create-submit');
-  if (btn && !d.submitting) btn.innerHTML = `${icon('user-plus')} ${multi ? `Create ${d.qty} accounts` : 'Create account'}`;
 }
 
 function scheduleCreateUsernameCheck() {
@@ -773,8 +722,7 @@ function updateCreateStatusLine() {
   if (d.checking) { line.className = 'field-status dim'; line.innerHTML = '<span class="spinner"></span> Checking availability…'; return; }
   if (d.check && d.check.available === true) { line.className = 'field-status ok'; line.innerHTML = `${icon('check-circle')} ${esc(d.check.message || 'Username is available')}`; return; }
   if (d.check && d.check.available === false) {
-    const batchNote = (d.qty || 1) > 1 ? ' — fine for a batch: every account gets a verified variant' : '';
-    line.className = 'field-status bad'; line.innerHTML = `${icon('alert-circle')} ${esc(d.check.message || 'That username is already taken')}${batchNote}`;
+    line.className = 'field-status bad'; line.innerHTML = `${icon('alert-circle')} ${esc(d.check.message || 'That username is already taken')}`;
     return;
   }
   if (d.check) { line.className = 'field-status dim'; line.textContent = d.check.message || 'Availability unknown — Roblox validates at sign-up.'; return; }
@@ -785,9 +733,7 @@ function updateCreateValidation() {
   const d = state.createDraft;
   if (!d || !$('#create-submit')) return;   // modal closed
   const errors = createValidationErrors(d);
-  // A taken base only blocks the single-account flow; in a batch the
-  // remaining accounts simply ride verified variants of the name.
-  const taken = d.check && d.check.available === false && (d.qty || 1) === 1;
+  const taken = d.check && d.check.available === false;
   const btn = $('#create-submit');
   btn.disabled = !!Object.keys(errors).length || taken || d.checking || d.submitting;
   const mark = (field, err) => {
@@ -1320,13 +1266,21 @@ function renderInstanceSummary(items) {
   if (!el) return;
   const sum = state.summary;
   if (sum && items.length) {
-    const key = [sum.total, sum.fleet, sum.external, sum.notResponding, sum.totalMemBytes].join('|');
+    // Longest-running client right now — "how long has the fleet been up".
+    let longestStarted = 0;
+    for (const item of items) {
+      const started = Number(item.startedAt) || 0;
+      if (started && (!longestStarted || started < longestStarted)) longestStarted = started;
+    }
+    const uptime = longestStarted ? fmtDur(Date.now() - longestStarted) : '0m';
+    const key = [sum.total, sum.fleet, sum.external, sum.notResponding, sum.totalMemBytes, uptime].join('|');
     if (el.dataset.summaryKey !== key) el.innerHTML = `
       <div class="stat"><span class="v">${sum.total}</span><span class="k">Total</span></div>
       <div class="stat"><span class="v">${sum.fleet}</span><span class="k">Fleet</span></div>
       <div class="stat"><span class="v">${sum.external}</span><span class="k">External</span></div>
       <div class="stat"><span class="v">${sum.notResponding}</span><span class="k">Not responding</span></div>
-      <div class="stat"><span class="v">${fmtBytes(sum.totalMemBytes)}</span><span class="k">Memory</span></div>`;
+      <div class="stat"><span class="v">${fmtBytes(sum.totalMemBytes)}</span><span class="k">Memory</span></div>
+      <div class="stat"><span class="v">${uptime}</span><span class="k">Longest up</span></div>`;
     el.dataset.summaryKey = key;
     el.hidden = false;
   } else {
@@ -1406,6 +1360,8 @@ function refreshInstanceElapsedTimes() {
   if (state.view !== 'instances' || document.hidden) return;
   const root = $('#ilist');
   if (!root) return;
+  // The "Longest up" stat rolls forward with the clock, not just with data.
+  renderInstanceSummary(state.instances || []);
   for (const item of state.instances || []) {
     const row = findByData(root, 'pid', item.pid);
     const when = row && row.querySelector('.when');
@@ -1434,16 +1390,6 @@ views.accounts = function () {
   const list = state.accounts || [];
   const selectedCount = state.selected.size;
 
-  // A running multi-create batch gets its own live banner: which account is
-  // up, how many remain, and how to stop (close the Roblox signup window).
-  const q = state.createQueue;
-  const batchBanner = q ? `
-    <div class="banner good" style="margin-bottom:14px">
-      <svg class="b-ico"><use href="#i-user-plus"/></svg>
-      <div class="b-text"><b>Creating account ${q.index} of ${q.total}</b>
-        <span>Up next: @${esc(q.name)} — solve the human check in the Roblox window and the next one opens. Close that window to stop the batch.</span></div>
-    </div>` : '';
-
   const cards = list.length ? `<div class="acct-grid" data-account-grid>` + list.map(a => renderAccountCard(a)).join('') + `</div>`
     : `<div class="card"><div class="empty"><div class="e-ico">${icon('users')}</div>
         <h3>No accounts yet</h3><p>Add an existing Roblox account or create a brand-new one without leaving Fleet.</p>
@@ -1457,7 +1403,6 @@ views.accounts = function () {
       <h1>Accounts</h1>
       <p>Sign in once, then launch any account — alone or several at a time. Sessions are stored encrypted on this PC.</p>
     </div>
-    ${batchBanner}
     <div class="row-split" style="margin-bottom:16px">
       <div class="section-title" style="margin:0">Your accounts${(() => { const t = list.reduce((n, x) => n + (x.robux || 0), 0); return list.some(x => x.robux != null) ? ` <span class="robux-total" data-tip="Total Robux across all accounts">${icon('box')} ${fmtNum(t)}</span>` : ''; })()}</div>
       <div class="inline" data-account-launch-actions>
@@ -1475,6 +1420,19 @@ views.accounts = function () {
   `);
 };
 
+/* Compact public-profile facts for an account card: social counts and
+   account age, each shown only when Roblox reported it. */
+function accountFactsHtml(a) {
+  const facts = [];
+  if (a.friends != null) facts.push(`<span>${icon('users-group')} ${fmtNum(a.friends)} friends</span>`);
+  if (a.followers != null) facts.push(`<span>${icon('users')} ${fmtNum(a.followers)} followers</span>`);
+  if (a.created) {
+    const age = accountAge(a.created);
+    if (age && age !== 'today') facts.push(`<span>${icon('clock')} ${age} old</span>`);
+  }
+  return facts.join('');
+}
+
 function renderAccountCard(a) {
   const allAccounts = state.accounts || [];
   const presRaw = a.presence || 'Offline';
@@ -1486,12 +1444,13 @@ function renderAccountCard(a) {
   const followTip = allAccounts.length < 2 ? 'Add another account to use Follow'
     : (canFollow ? 'Choose other accounts to join this exact server' : 'This account must be in a game');
   const id = safeAttr(a.id);
+  const facts = accountFactsHtml(a);
   return `
     <div class="acct ${state.selected.has(a.id) ? 'selected' : ''}" data-id="${id}">
       <div class="top">
         ${a.avatar ? `<img class="avatar" src="${esc(a.avatar)}" alt="">` : `<div class="avatar"></div>`}
         <div class="who">
-          <div class="dname">${esc(a.displayName || a.username)}</div>
+          <div class="dname" data-acct-dname="${id}">${esc(a.displayName || a.username)}${a.verified ? ` <span class="vbadge" data-tip="Verified account">${icon('check-circle')}</span>` : ''}</div>
           <div class="uname">@${esc(a.username)}</div>
         </div>
         <div class="check" data-action="toggle-account" data-id="${id}" data-tip="Select for launch">${icon('check')}</div>
@@ -1501,6 +1460,7 @@ function renderAccountCard(a) {
           <span class="presence ${presClass}"${presTip} data-acct-presence="${id}"><span class="pd"></span>${esc(presRaw)}</span>
           <span class="robux-chip" data-acct-robux="${id}"${a.robux == null ? ' hidden' : ''} data-tip="Robux balance${a.premium ? ' - Premium member' : ''}">${a.premium ? '<b class="prem">P</b>' : ''}${icon('box')} ${a.robux == null ? '' : fmtNum(a.robux)}</span>
         </div>
+        ${facts ? `<div class="acct-facts" data-acct-facts="${id}">${facts}</div>` : ''}
         <div class="acct-game" data-acct-game="${id}"${a.game ? '' : ' hidden'}>${a.game ? icon('compass') + ' ' + esc(a.game.name) : ''}</div>
       </div>
       <div class="acct-actions">
@@ -1565,6 +1525,15 @@ function applyAccountUpdate(acc) {
   if (structureChanged && state.view === 'accounts') {
     replaceAccountCard(merged);
     return;
+  }
+
+  const dnameEl = findByData(document, 'acct-dname', acc.id);
+  if (dnameEl) dnameEl.innerHTML = `${esc(acc.displayName || acc.username)}${acc.verified ? ` <span class="vbadge" data-tip="Verified account">${icon('check-circle')}</span>` : ''}`;
+  const factsEl = findByData(document, 'acct-facts', acc.id);
+  if (factsEl) {
+    const facts = accountFactsHtml(acc);
+    factsEl.innerHTML = facts;
+    factsEl.hidden = !facts;
   }
 
   const presEl = findByData(document, 'acct-presence', acc.id);
@@ -2532,6 +2501,43 @@ function fmtDur(ms) {
   return `${d}d ${h % 24}h`;
 }
 
+const DOW_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+function hourLabel(h) {
+  if (h === 0) return '12 AM';
+  if (h === 12) return '12 PM';
+  return h < 12 ? `${h} AM` : `${h - 12} PM`;
+}
+
+/* The 14-day activity chart: one column per day, height proportional to
+   that day's playtime, today accented. Pure divs on the existing grid. */
+function activityChartHtml(daily) {
+  const max = Math.max.apply(null, daily.map(d => d.ms));
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const bars = daily.map(d => {
+    const date = new Date(d.start);
+    const isToday = d.start === today.getTime();
+    const pct = max > 0 && d.ms > 0 ? Math.max(4, Math.round((d.ms / max) * 100)) : 0;
+    const tip = `${DOW_SHORT[date.getDay()]} ${date.getMonth() + 1}/${date.getDate()} — ${d.ms > 0 ? fmtDur(d.ms) : 'no playtime'}`;
+    return `<div class="act-col"><div class="act-bar${isToday ? ' now' : ''}" style="height:${pct}%" data-tip="${esc(tip)}"></div></div>`;
+  }).join('');
+  const labels = daily.map(d => {
+    const date = new Date(d.start);
+    return `<span>${DOW_SHORT[date.getDay()].slice(0, 1)}${date.getDate()}</span>`;
+  }).join('');
+  return `<div class="act-chart"><div class="act-bars">${bars}</div><div class="act-labels">${labels}</div></div>`;
+}
+
+function insightsLineHtml(ins) {
+  if (!ins) return '';
+  const parts = [];
+  if (ins.peakHour != null) parts.push(`Peak hour <b>${esc(hourLabel(ins.peakHour))}</b>`);
+  if (ins.busiestDayStart) {
+    const d = new Date(ins.busiestDayStart);
+    parts.push(`Busiest day <b>${DOW_SHORT[d.getDay()]}</b> — ${fmtDur(ins.busiestDayMs)}`);
+  }
+  return parts.length ? `<div class="act-foot">${parts.join('<i>·</i>')}</div>` : '';
+}
+
 views.stats = async function () {
   mount(`
     <div class="page-head"><h1>Stats</h1><p>Playtime per game and account, tracked locally from live presence.</p></div>
@@ -2542,24 +2548,31 @@ views.stats = async function () {
   if (!root || state.view !== 'stats') return;
   if (!r || !r.ok) { root.innerHTML = `<div class="games-end">Could not load stats.</div>`; return; }
   const t = r.totals || {};
+  const ins = r.insights || {};
   const statCell = (label, value, sub) => `<div class="stat-cell"><div class="stat-value">${value}</div><div class="stat-label">${esc(label)}</div>${sub ? `<div class="stat-sub">${esc(sub)}</div>` : ''}</div>`;
-  const row = (cells, live) => `<div class="setting stat-row"><div><div class="s-label">${live ? '<span class="pd live-dot"></span>' : ''}${esc(cells.name)}</div><div class="s-desc">${esc(cells.desc)}</div></div>
+  const maxTotal = (r.perGame || []).reduce((m, g) => Math.max(m, g.totalMs), 0);
+  const row = (cells, live, meterPct) => `<div class="setting stat-row"><div><div class="s-label">${live ? '<span class="pd live-dot"></span>' : ''}${esc(cells.name)}</div><div class="s-desc">${esc(cells.desc)}</div>${meterPct != null ? `<div class="stat-meter"><i style="width:${meterPct}%"></i></div>` : ''}</div>
     <div class="s-control stat-cells"><span data-tip="Today">${fmtDur(cells.today)}</span><span data-tip="Last 7 days">${fmtDur(cells.week)}</span><b data-tip="All time">${fmtDur(cells.total)}</b></div></div>`;
-  const games = (r.perGame || []).slice(0, 15).map(g => row({ name: g.label, desc: `${g.sessions} session${g.sessions === 1 ? '' : 's'}`, today: g.todayMs, week: g.weekMs, total: g.totalMs }, g.live)).join('');
+  const games = (r.perGame || []).slice(0, 15).map(g => row({ name: g.label, desc: `${g.sessions} session${g.sessions === 1 ? '' : 's'}`, today: g.todayMs, week: g.weekMs, total: g.totalMs }, g.live, maxTotal > 0 ? Math.max(3, Math.round((g.totalMs / maxTotal) * 100)) : null)).join('');
   const accountsRows = (r.perAccount || []).map(a => row({ name: a.label, desc: `${a.sessions} session${a.sessions === 1 ? '' : 's'}`, today: a.todayMs, week: a.weekMs, total: a.totalMs }, a.live)).join('');
   const recent = (r.recent || []).map(s => `<div class="setting stat-row"><div><div class="s-label">${s.live ? '<span class="pd live-dot"></span>' : ''}${esc(s.game)}</div>
     <div class="s-desc">${esc(s.username)} - ${new Date(s.start).toLocaleString()}</div></div><div class="s-control"><b>${fmtDur(s.ms)}</b></div></div>`).join('');
+  const hasAny = (r.perGame || []).length || recent.length;
   root.innerHTML = `
     <div class="card stat-grid">
       ${statCell('Today', fmtDur(t.todayMs))}
       ${statCell('Last 7 days', fmtDur(t.weekMs))}
       ${statCell('All time', fmtDur(t.totalMs), `${t.sessions || 0} sessions`)}
       ${statCell('Tracking now', String(r.tracking || 0), r.tracking ? 'accounts in game' : 'no one in game')}
+      ${ins.avgMs ? statCell('Avg session', fmtDur(ins.avgMs), `${t.sessions || 0} tracked`) : ''}
+      ${ins.longestMs ? statCell('Longest session', fmtDur(ins.longestMs), ins.longestGame ? ins.longestGame.slice(0, 28) : '') : ''}
     </div>
+    ${hasAny && (r.daily || []).length ? `<div class="section-title">Last 14 days <span class="stat-cols">playtime per day</span></div>
+      <div class="card">${activityChartHtml(r.daily)}${insightsLineHtml(ins)}</div>` : ''}
     ${games ? `<div class="section-title">By game <span class="stat-cols">today - 7 days - all time</span></div><div class="card pad">${games}</div>` : ''}
     ${accountsRows ? `<div class="section-title">By account <span class="stat-cols">today - 7 days - all time</span></div><div class="card pad">${accountsRows}</div>` : ''}
-    ${recent ? `<div class="section-title">Recent sessions</div><div class="card pad">${recent}</div>` : ''}
-    ${!games && !recent ? `<div class="games-end">No playtime yet. Stats build up automatically while your accounts play - launch a game and check back.</div>` : ''}
+    ${recent ? `<div class="section-title">Recent sessions</span><div class="card pad">${recent}</div>` : ''}
+    ${!hasAny ? `<div class="games-end">No playtime yet. Stats build up automatically while your accounts play - launch a game and check back.</div>` : ''}
     <div class="inline" style="margin-top:16px"><div class="spacer" style="flex:1"></div>
       <button class="btn sm" data-action="stats-refresh">${icon('refresh')} Refresh</button>
       <button class="btn sm ghost danger" data-action="stats-clear">${icon('trash')} Clear playtime data</button></div>`;
@@ -2808,7 +2821,7 @@ views.help = function () {
 
       <h2>Quick start</h2>
       <div class="step"><div class="n">1</div><div>On <b>Accounts</b>, click <b>Add account</b>. Fleet opens a Tauri Roblox sign-in window and saves the account after Roblox sets the session.</div></div>
-      <div class="step"><div class="n">2</div><div>Need a fresh account instead? Click <b>Create account</b>, fill in the username, password and birthday, and Fleet opens Roblox's signup form already filled in — it clicks through the steps too, so just solve the captcha and the new account is saved here, signed in. Set the count above 1 and Fleet makes several in a row, each with its own checked username.</div></div>
+      <div class="step"><div class="n">2</div><div>Need a fresh account instead? Click <b>Create account</b>, fill in the username, password and birthday, and Fleet opens Roblox's signup form already filled in — it clicks through the steps too, so just solve the captcha and the new account is saved here, signed in.</div></div>
       <div class="step"><div class="n">3</div><div>On <b>Instances</b>, choose <b>With account</b> or <b>Signed out</b>. Optionally paste a Place ID, game URL, or exact-server link, then click <b>Launch</b>.</div></div>
       <div class="step"><div class="n">4</div><div>Every client appears under <b>Running clients</b>, where you can focus, restart or end it.</div></div>
 
@@ -3038,8 +3051,7 @@ document.addEventListener('click', async (e) => {
       const d = state.createDraft;
       if (!d || d.submitting || state.creatingAccount) break;
       const errors = createValidationErrors(d);
-      // A taken base only blocks the single-account flow (see validation).
-      if (Object.keys(errors).length || (d.check && d.check.available === false && (d.qty || 1) === 1)) { updateCreateValidation(); break; }
+      if (Object.keys(errors).length || (d.check && d.check.available === false)) { updateCreateValidation(); break; }
 
       const payload = {
         username: String(d.username || '').trim(),
@@ -3047,7 +3059,6 @@ document.addEventListener('click', async (e) => {
         birthday: String(d.birthday || ''),
         gender: d.gender,
       };
-      const qty = Math.max(1, Math.min(CREATE_MAX_ACCOUNTS, d.qty || 1));
 
       d.submitting = true;
       saveCreateDefaults(d);
@@ -3055,82 +3066,7 @@ document.addEventListener('click', async (e) => {
       const btn = $('#create-submit');
       if (btn) {
         btn.disabled = true;
-        btn.innerHTML = qty > 1 ? '<span class="spinner"></span> Finding usernames…' : '<span class="spinner"></span> Opening Roblox…';
-      }
-
-      if (qty > 1) {
-        // Multi-account batch: line up verified usernames first (the modal
-        // shows the roster search), then drive Roblox's signup once per
-        // account — each window imports its session the moment it lands.
-        toast(`Checking ${qty} usernames against Roblox…`);
-        const roster = await call(() => api.signup.batchNames(payload.username, payload.birthday, qty), null, 120000);
-        if (!roster || !roster.ok) {
-          state.creatingAccount = false;
-          closeCreateModal();
-          toast((roster && roster.error) || 'Could not line up usernames — try again', 'bad');
-          if (state.view === 'accounts') views.accounts();
-          break;
-        }
-        const queue = [];
-        for (const n of (Array.isArray(roster.names) ? roster.names : [])) {
-          if (queue.length >= qty) break;
-          if (typeof n === 'string' && /^[A-Za-z0-9_]{3,20}$/.test(n) && !queue.includes(n)) queue.push(n);
-        }
-        // Names Roblox could not verify (rate-limited / offline) still fill
-        // the batch — Roblox re-validates every name at sign-up anyway.
-        for (const n of (Array.isArray(roster.unverified) ? roster.unverified : [])) {
-          if (queue.length >= qty) break;
-          if (typeof n === 'string' && /^[A-Za-z0-9_]{3,20}$/.test(n) && !queue.includes(n)) queue.push(n);
-        }
-        if (!queue.length) {
-          state.creatingAccount = false;
-          closeCreateModal();
-          toast('No usable usernames came back — try a different base name', 'bad');
-          if (state.view === 'accounts') views.accounts();
-          break;
-        }
-        closeCreateModal();
-        if (state.view === 'accounts') views.accounts();
-        if (queue.length < qty) toast(`Could only line up ${queue.length} of ${qty} names — creating ${queue.length}`);
-        toast(`Batch of ${queue.length}: one Roblox signup each — solve the human check in every window`);
-
-        let created = 0;
-        let stopped = false;
-        let stopNote = '';
-        for (let i = 0; i < queue.length; i++) {
-          state.createQueue = { index: i + 1, total: queue.length, name: queue[i] };
-          if (state.view === 'accounts') views.accounts();
-          toast(`Account ${i + 1} of ${queue.length}: opening signup for @${queue[i]}`);
-          const r = await call(() => api.accounts.create({
-            username: queue[i],
-            password: payload.password,
-            birthday: payload.birthday,
-            gender: payload.gender,
-          }), undefined, 0);
-          if (r && r.ok) {
-            created++;
-            await loadAccounts();
-            toast((r.updated ? 'Account updated: ' : 'Account created: ') + (r.account ? r.account.username : queue[i]), 'good');
-          } else if (r && r.canceled) {
-            stopped = true;
-            stopNote = 'signup window closed';
-            break;
-          } else {
-            stopped = true;
-            stopNote = (r && r.error) || 'signup failed';
-            toast((r && r.error) || `Could not create @${queue[i]}`, 'bad');
-            break;
-          }
-        }
-        state.createQueue = null;
-        state.creatingAccount = false;
-        if (state.view === 'accounts') views.accounts();
-        if (created) {
-          toast(`Batch done: ${created} of ${queue.length} created${stopped ? ` — stopped early (${stopNote})` : ''}`, 'good');
-        } else if (!stopped) {
-          toast('No accounts were created', 'bad');
-        }
-        break;
+        btn.innerHTML = '<span class="spinner"></span> Opening Roblox…';
       }
 
       closeCreateModal();

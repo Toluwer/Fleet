@@ -470,66 +470,19 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     }
   }
 
-  // Multi-account batch: candidate generation and roster building.
+  // The multi-account batch creator was removed: the signup surface must
+  // stay single-account end to end.
   {
-    check('BATCH_MAX caps batches at 10', signup.BATCH_MAX === 10);
-    let ok = true;
-    for (let i = 0; i < 30; i++) {
-      const cands = signup.batchCandidates('CoolGuy', 6);
-      if (!cands.length || new Set(cands).size !== cands.length) ok = false;
-      if (cands.some(c => c === 'CoolGuy' || !signup.validateUsernameLocal(c).ok || c.length > 20)) ok = false;
-      // Enough spares that a few taken names can't starve a batch.
-      if (cands.length < 6) ok = false;
-    }
-    check('batch candidates are valid, deduped and numerous', ok);
-    check('batch candidates cap at 20 characters for any base',
-      signup.batchCandidates('a'.repeat(20), 10).every(c => c.length <= 20 && c.length >= 3));
-    check('a garbage base produces no batch candidates', signup.batchCandidates('!!!', 5).length === 0);
-
-    // A free base leads the roster; a taken base rides variants only.
-    const free = await signup.batchUsernamesWith(async (n) => ({ available: n !== 'CoolGuy' ? true : true }), 'CoolGuy', 3);
-    check('a free base is account 1 of the roster', free.ok && free.names[0] === 'CoolGuy' && free.names.length === 3);
-    const taken = await signup.batchUsernamesWith(async (n) => ({ available: n === 'CoolGuy' ? false : true }), 'CoolGuy', 3);
-    check('a taken base is skipped and variants fill the batch',
-      taken.ok && !taken.names.includes('CoolGuy') && taken.names.length === 3);
-    // Mostly-taken endpoint: keeps probing until the roster is full.
-    let probes = 0;
-    const mixed = await signup.batchUsernamesWith(async (n) => { probes++; return { available: probes % 3 === 0 }; }, 'CoolGuy', 2);
-    check('a hostile endpoint still yields the requested roster', mixed.ok && mixed.names.length === 2, probes + ' probes');
-    // Rate-limited / offline: names land in `unverified`, nothing throws.
-    const offline = await signup.batchUsernamesWith(async () => ({ available: null }), 'CoolGuy', 3);
-    check('unverifiable names are parked, not dropped',
-      offline.ok && offline.names.length === 0 && offline.unverified.length >= 3);
-    const throwing = await signup.batchUsernamesWith(async () => { throw new Error('boom'); }, 'CoolGuy', 2);
-    check('a throwing checker never crashes the batch', throwing.ok && throwing.unverified.length >= 2);
-    // Requested count clamps to BATCH_MAX.
-    const capped = await signup.batchUsernamesWith(async () => ({ available: true }), 'CoolGuy', 99);
-    check('batch size clamps to 10', capped.requested === 10 && capped.names.length === 10);
-    check('batch names are always username-legal', capped.names.every(n => /^[A-Za-z0-9_]{3,20}$/.test(n)));
-  }
-
-  // batchUsernames end-to-end with a mocked validate endpoint.
-  {
-    const fetchOrig = global.fetch;
-    try {
-      let calls = 0;
-      global.fetch = async (url) => {
-        calls++;
-        const name = decodeURIComponent(String(url).split('username=')[1].split('&')[0]);
-        // The exact base and names without a 7 come back free; 7s are taken.
-        const code = name === 'batchguy' || !name.includes('7') ? 0 : 1;
-        return { ok: true, status: 200, json: async () => ({ code, message: code === 0 ? 'valid' : 'taken' }) };
-      };
-      const r = await signup.batchUsernames('batchguy', adultBday, 4);
-      check('batchUsernames returns the free base plus verified variants',
-        r.ok && r.names[0] === 'batchguy' && r.names.length === 4
-          && r.names.every(n => /^[A-Za-z0-9_]{3,20}$/.test(n) && (n === 'batchguy' || !n.includes('7'))),
-        JSON.stringify(r.names));
-      check('batchUsernames probes the endpoint sequentially', calls >= 4, calls + ' calls');
-      check('batchUsernames never includes unverified names when checks succeed', r.unverified.length === 0);
-    } finally {
-      global.fetch = fetchOrig;
-    }
+    check('signup module no longer exposes batch roster builders',
+      typeof signup.batchUsernames !== 'function'
+        && typeof signup.batchUsernamesWith !== 'function'
+        && typeof signup.batchCandidates !== 'function'
+        && signup.BATCH_MAX === undefined);
+    check('single-account validation surface stays intact',
+      typeof signup.validateInput === 'function'
+        && typeof signup.checkUsername === 'function'
+        && typeof signup.suggestUsernames === 'function'
+        && typeof signup.generatePassword === 'function');
   }
 
   /* 9. Public people data normalization */
@@ -679,7 +632,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && rendererModel.parseRobloxTarget('not a Roblox target').invalid === true
     && rendererModel.parseRobloxTarget('').invalid === false);
   check('Account-less installs can search public profiles without exposing account cookies',
-    peopleSource.includes("'User-Agent': 'Fleet/1.8.3'")
+    peopleSource.includes("'User-Agent': 'Fleet/1.8.4'")
     && peopleSource.includes('search-api/omni-search')
     && peopleSource.includes("verticalType: 'user'")
     && peopleSource.includes("presence: 'Unknown'")
@@ -821,6 +774,40 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && concurrentStats.totals.sessions === 2
     && concurrentStats.totals.totalMs === 90000
     && concurrentStats.perAccount.length === 2);
+
+  // ---- Advanced stats slice: 14-day daily totals + hour histogram ----
+  {
+    const dayMs = 86400000;
+    const at = new Date(); at.setHours(12, 0, 0, 0);
+    const noon = at.getTime();
+    // Two sessions: 3h yesterday 10:00->13:00, 1h today 14:00->15:00.
+    const yStart = noon - dayMs - 2 * 3600000; // yesterday 10:00
+    const sessions = [
+      { start: yStart, end: yStart + 3 * 3600000, ms: 3 * 3600000, game: 'Farm Sim', username: 'alt1' },
+      { start: noon + 2 * 3600000, end: noon + 3 * 3600000, ms: 3600000, game: 'Farm Sim', username: 'alt1' },
+    ];
+    const daily = playtimeMod.dailyTotals(sessions, 14, noon + 3 * 3600000);
+    check('dailyTotals returns 14 oldest-first day buckets',
+      daily.length === 14 && daily[0].start < daily[1].start);
+    check('yesterday gets its 3h and today its 1h',
+      daily[12].ms === 3 * 3600000 && daily[13].ms === 3600000
+        && daily.slice(0, 12).every(d => d.ms === 0));
+    // A session crossing midnight (23:00 -> 01:00) splits between both days.
+    const midnight = new Date(noon); midnight.setHours(0, 0, 0, 0);
+    const mStart = midnight.getTime();
+    const cross = [{ start: mStart - 3600000, end: mStart + 3600000, ms: 2 * 3600000, game: 'X', username: 'u' }];
+    const split = playtimeMod.dailyTotals(cross, 2, noon);
+    check('a midnight-crossing session splits across both days',
+      split[0].ms === 3600000 && split[1].ms === 3600000);
+    const hours = playtimeMod.hourHistogram(sessions);
+    check('hourHistogram attributes each hour-slice to its own bucket',
+      hours[10] === 3600000 && hours[11] === 3600000 && hours[12] === 3600000 && hours[14] === 3600000);
+    const fullStats = playtimeMod.stats();
+    check('stats ships the advanced slice (daily + insights)',
+      Array.isArray(fullStats.daily) && fullStats.daily.length === 14
+        && fullStats.insights && typeof fullStats.insights.avgMs === 'number'
+        && typeof fullStats.insights.longestMs === 'number');
+  }
 
   const realPlaytimeDir = path.join(os.tmpdir(), 'fleet-playtime-store-' + Date.now());
   store.configure(realPlaytimeDir, console);
@@ -1615,28 +1602,43 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     check('signup form styles cover password and date inputs',
       /input\[type=password\], input\[type=date\]/.test(css) && /\.field-status/.test(css) && /\.pass-row/.test(css));
 
-    // Multi-account batch creation: quantity stepper -> roster resolve ->
-    // one signup per account, with a live progress banner and stop-on-close.
-    check('creator offers a quantity stepper wired into the draft',
-      /id="create-count"/.test(js) && /CREATE_MAX_ACCOUNTS/.test(js) && /syncCreateBatchUi/.test(js)
-        && /data-target="create-count"/.test(js));
-    check('batch mode rebrands the base username without blocking on it',
-      /Base username/.test(js) && /d\.qty \|\| 1\) === 1/.test(js) && /fine for a batch/.test(js));
-    check('submit drives a roster resolve then one signup per account',
-      /api\.signup\.batchNames/.test(js) && /state\.createQueue = \{ index: i \+ 1/.test(js)
-        && /Batch done: /.test(js) && /Batch of \$\{queue\.length\}/.test(js));
-    check('accounts view shows the live batch progress banner',
-      /state\.createQueue/.test(js) && /Creating account \$\{q\.index\} of \$\{q\.total\}/.test(js)
-        && /Close that window to stop the batch/.test(js));
-    check('batch stops early when a signup window closes or fails',
-      /signup window closed/.test(js) && /stopped early/.test(js));
-    check('bridge exposes the batch names channel',
-      /batchNames: \(username, birthday, count\) => tauriInvoke\('signup_batch_usernames'/.test(bridge));
-    check('backend handles the batch names probe',
-      /async signup_batch_usernames\(payload\)/.test(backend) && /signup\.batchUsernames\(/.test(backend));
-    check('Rust registers the batch names passthrough',
-      /backend_command!\(signup_batch_usernames, "signup_batch_usernames"/.test(lib)
-        && /signup_batch_usernames,/.test(handlerBlock));
+    const accountsSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'accounts.js'), 'utf8');
+    const playtimeSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'playtime.js'), 'utf8');
+    // Advanced account cards: verified badge, social counts, account age.
+    check('account cards surface verified badge and profile facts',
+      /accountFactsHtml/.test(js) && /data-acct-dname/.test(js) && /data-acct-facts/.test(js)
+        && /\.vbadge/.test(css) && /\.acct-facts/.test(css));
+    check('sanitize ships the public profile extras',
+      /verified: !!a\.verified/.test(accountsSrc) && /created: a\.created \|\| null/.test(accountsSrc)
+        && /friends: typeof a\.friends === 'number'/.test(accountsSrc));
+    check('profile extras refresh on a 30-minute TTL in the poller',
+      /PROFILE_TTL_MS = 30 \* 60 \* 1000/.test(accountsSrc) && /fetchProfileExtras\(a\)/.test(accountsSrc));
+
+    // Stats 2.0: 14-day chart, insights line, share meters, avg/longest cells.
+    check('stats view renders the 14-day activity chart',
+      /activityChartHtml/.test(js) && /act-bars/.test(js) && /Last 14 days/.test(js));
+    check('stats view shows avg + longest session cells and insights',
+      /Avg session/.test(js) && /Longest session/.test(js) && /insightsLineHtml/.test(js)
+        && /Peak hour/.test(js) && /Busiest day/.test(js));
+    check('playtime exposes daily totals and the hour histogram',
+      /function dailyTotals/.test(playtimeSrc) && /function hourHistogram/.test(playtimeSrc));
+    check('by-game rows carry a share-of-playtime meter',
+      /stat-meter/.test(js) && /\.stat-meter/.test(css));
+    check('instances summary gains a longest-uptime stat',
+      /Longest up/.test(js) && /renderInstanceSummary\(state\.instances \|\| \[\]\);\n  for/.test(js));
+
+    // The multi-account creator is gone end to end: no stepper in the modal,
+    // no roster resolve, no batch banner, no passthrough command.
+    check('creator modal has no quantity stepper',
+      !/id="create-count"/.test(js) && !/CREATE_MAX_ACCOUNTS/.test(js) && !/syncCreateBatchUi/.test(js));
+    check('submit opens exactly one Roblox signup',
+      !/api\.signup\.batchNames/.test(js) && !/state\.createQueue/.test(js)
+        && /Opening Roblox signup/.test(js));
+    check('bridge and backend dropped the batch channel',
+      !/batchNames/.test(bridge) && !/signup_batch_usernames/.test(backend));
+    check('Rust dropped the batch names passthrough',
+      !/signup_batch_usernames/.test(lib));
+
     check('people home keeps space between the watching card and Friends entry',
       /\.watch-card\s*\{[^}]*margin:\s*12px 0/.test(css));
 

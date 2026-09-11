@@ -172,6 +172,51 @@ function fmtWindowSum(sessions, from) {
   return total;
 }
 
+/** Overlap of one session with a [from, to) window, clamped at zero. */
+function overlapMs(session, from, to) {
+  return Math.max(0, Math.min(session.end, to) - Math.max(session.start, from));
+}
+
+/**
+ * Per-day playtime for the last `days` calendar days (local time, oldest
+ * first): [{ start, ms }]. Sessions spanning midnight are split correctly.
+ */
+function dailyTotals(sessions, days, at) {
+  const base = new Date(at);
+  base.setHours(0, 0, 0, 0);
+  const out = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const start = new Date(base);
+    start.setDate(base.getDate() - i);
+    const from = start.getTime();
+    const to = from + 86400000;
+    let ms = 0;
+    for (const session of sessions) ms += overlapMs(session, from, to);
+    out.push({ start: from, ms });
+  }
+  return out;
+}
+
+/**
+ * Which hours of the day the playing happens (local time): 24 buckets of
+ * played milliseconds. Long sessions are attributed hour-slice by hour-slice
+ * so an all-nighter lands in every bucket it actually touched.
+ */
+function hourHistogram(sessions) {
+  const buckets = new Array(24).fill(0);
+  for (const session of sessions) {
+    let cursor = Number(session.start) || 0;
+    const end = Number(session.end) || cursor;
+    while (cursor < end) {
+      const boundary = Math.floor(cursor / 3600000) * 3600000 + 3600000;
+      const segEnd = Math.min(end, boundary);
+      buckets[new Date(cursor).getHours()] += segEnd - cursor;
+      cursor = segEnd;
+    }
+  }
+  return buckets;
+}
+
 function stats() {
   const at = now();
   const dayStart = new Date(at); dayStart.setHours(0, 0, 0, 0);
@@ -206,6 +251,26 @@ function stats() {
     return Array.from(rows.values()).sort((a, b) => b.totalMs - a.totalMs);
   };
 
+  // Advanced slice: 14-day trend, hour-of-day habits, session-quality facts.
+  const daily = dailyTotals(all, 14, at);
+  let longest = null;
+  for (const session of all) if (!longest || session.ms > longest.ms) longest = session;
+  const hours = hourHistogram(all);
+  let peakHour = -1;
+  for (let h = 0; h < 24; h++) if (hours[h] > (peakHour < 0 ? -1 : hours[peakHour])) peakHour = h;
+  let busiestDay = null;
+  for (const d of daily) if (!busiestDay || d.ms > busiestDay.ms) busiestDay = d;
+  const insights = {
+    avgMs: all.length ? all.reduce((sum, session) => sum + session.ms, 0) / all.length : 0,
+    longestMs: longest ? longest.ms : 0,
+    longestGame: longest ? (longest.game || '') : '',
+    longestUser: longest ? (longest.username || '') : '',
+    peakHour: peakHour >= 0 && hours[peakHour] > 0 ? peakHour : null,
+    peakHourMs: peakHour >= 0 ? hours[peakHour] : 0,
+    busiestDayStart: busiestDay && busiestDay.ms > 0 ? busiestDay.start : null,
+    busiestDayMs: busiestDay ? busiestDay.ms : 0,
+  };
+
   return {
     ok: true,
     tracking: active.size,
@@ -215,6 +280,8 @@ function stats() {
       totalMs: all.reduce((sum, session) => sum + session.ms, 0),
       sessions: all.length,
     },
+    daily,
+    insights,
     perGame: aggregate(session => session.game, session => session.game).slice(0, 40),
     perAccount: aggregate(session => session.userId, session => session.username),
     recent: all.slice(-12).reverse(),
@@ -229,4 +296,4 @@ function clear() {
   return { ok: true };
 }
 
-module.exports = { configure, observe, flush, stats, clear, checkpointNow };
+module.exports = { configure, observe, flush, stats, clear, checkpointNow, dailyTotals, hourHistogram };

@@ -398,6 +398,27 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 .stat-cols { font-size: 11px; color: var(--ink-4); font-weight: 400; margin-left: 8px; text-transform: none; letter-spacing: 0; }
 .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--success); margin-right: 7px; }
 
+/* 14-day activity chart */
+.act-chart { padding: 18px 18px 14px; }
+.act-bars { display: flex; align-items: flex-end; gap: 7px; height: 120px; }
+.act-col { flex: 1; min-width: 0; height: 100%; display: flex; align-items: flex-end; }
+.act-bar { width: 100%; background: var(--surface-3); border-radius: 3px 3px 0 0; transition: background .12s var(--ease); }
+.act-col:hover .act-bar { background: var(--hair-2); }
+.act-col:hover .act-bar.now { background: var(--accent-2); }
+.act-bar.now { background: var(--accent); }
+.act-labels { display: flex; gap: 7px; margin-top: 7px; }
+.act-labels span { flex: 1; min-width: 0; text-align: center; font-size: 10px; color: var(--ink-4);
+  white-space: nowrap; overflow: hidden; }
+.act-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 0 18px 14px;
+  font-size: 11px; color: var(--ink-3); }
+.act-foot b { color: var(--ink-2); font-weight: 600; }
+.act-foot i { font-style: normal; color: var(--ink-4); }
+
+/* Share-of-playtime meter under each By-game row */
+.stat-meter { height: 3px; width: 200px; max-width: 45%; margin-top: 6px; border-radius: 2px;
+  background: var(--surface-3); overflow: hidden; }
+.stat-meter i { display: block; height: 100%; border-radius: 2px; background: var(--accent-2); }
+
 /* Robux chips */
 .robux-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--ink-2);
   font-variant-numeric: tabular-nums; }
@@ -525,6 +546,17 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .acct-game svg { width: 12px; height: 12px; flex: none; color: var(--ink-3); }
 .acct-game[hidden] { display: none; }
+
+/* Account public-profile facts: social counts + account age, one quiet line */
+.acct-facts { display: flex; flex-wrap: wrap; gap: 3px 10px; font-size: 11px; color: var(--ink-3); }
+.acct-facts[hidden] { display: none; }
+.acct-facts span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.acct-facts svg { width: 11px; height: 11px; color: var(--ink-4); }
+
+/* Verified badge beside the display name */
+.acct .dname { display: flex; align-items: center; gap: 4px; }
+.vbadge { display: inline-flex; align-items: center; flex: none; color: var(--info-text); }
+.vbadge svg { width: 13px; height: 13px; }
 
 /* ----------------------------- People ----------------------------- */
 .people-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(256px, 1fr)); gap: var(--space-grid); }
