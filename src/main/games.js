@@ -31,6 +31,9 @@ function normalize(c) {
     downVotes: c.totalDownVotes != null ? c.totalDownVotes : null,
     creator: c.creatorName || (c.creator && c.creator.name) || '',
     thumbnail: null,
+    visits: c.visits != null ? c.visits : null,
+    maxPlayers: c.maxPlayers != null ? c.maxPlayers : null,
+    lastUpdated: c.updated || null,
     categories: [],
   };
 }
@@ -70,6 +73,30 @@ async function withThumbnails(games) {
   return games;
 }
 
+/* Lifetime visits, player cap and last-update date from the games multiget
+   details endpoint. One call per 100 universes, best-effort like thumbnails:
+   cards simply omit the line when Roblox does not answer. */
+async function withDetails(games) {
+  const ids = games.map(g => g.universeId).filter(Boolean);
+  for (let i = 0; i < ids.length; i += 100) {
+    const batch = ids.slice(i, i + 100);
+    try {
+      const r = await fetch(`https://games.roblox.com/v1/games/multiget-game-details?universeIds=${batch.join(',')}`);
+      if (!r.ok) continue;
+      const arr = await r.json();
+      const byId = new Map((Array.isArray(arr) ? arr : []).map(d => [d.universeId, d]));
+      for (const g of games) {
+        const d = byId.get(g.universeId);
+        if (!d) continue;
+        if (g.visits == null && d.visits != null) g.visits = d.visits;
+        if (g.maxPlayers == null && d.maxPlayers != null) g.maxPlayers = d.maxPlayers;
+        if (!g.lastUpdated && d.updated) g.lastUpdated = d.updated;
+      }
+    } catch (_) { /* details are best-effort */ }
+  }
+  return games;
+}
+
 /** Popular experiences (no query). */
 async function browse() {
   try {
@@ -96,7 +123,7 @@ async function browse() {
       }
     }
     const games = Array.from(byId.values()).sort((a, b) => (b.playerCount || 0) - (a.playerCount || 0)).slice(0, 120);
-    await withThumbnails(games);
+    await Promise.all([withThumbnails(games), withDetails(games)]);
     logger.info('Games browse: ' + games.length + ' experiences, ' + categories.length + ' categories');
     return { ok: true, games, categories, nextPageToken: null };
   } catch (err) {
@@ -124,7 +151,7 @@ async function search(query, pageToken) {
       .filter(c => c.universeId && c.rootPlaceId)
       .map(normalize);
     games = dedupe(games);
-    await withThumbnails(games);
+    await Promise.all([withThumbnails(games), withDetails(games)]);
     return { ok: true, games, nextPageToken: j.nextPageToken || null };
   } catch (err) {
     logger.warn('Games search failed', err && err.message);
@@ -259,4 +286,4 @@ async function servers(placeId, cursor) {
   }
 }
 
-module.exports = { configure, browse, search, servers, scanServers, normalizedServer };
+module.exports = { configure, browse, search, servers, scanServers, normalizedServer, withDetails };

@@ -335,8 +335,11 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 .acct:not(.selected) .check svg { display: none; }
 .presence { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
 .presence .pd { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-4); flex: none; }
+/* In-game presence carries no dot: the accent-blue circle that used to sit
+   beside every launched client read as noise. The dot keeps its layout slot
+   (hidden, not removed) so presence text stays column-aligned across cards. */
 .presence.online .pd { background: var(--success); }
-.presence.ingame .pd { background: var(--accent); }
+.presence.ingame .pd { visibility: hidden; }
 .acct .acct-actions { display: flex; gap: 6px; margin-top: auto; flex-wrap: wrap; }
 .acct .acct-actions .btn.primary { flex: 1 1 auto; min-width: 88px; }
 
@@ -379,15 +382,17 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 .search { position: relative; flex: 1; min-width: 220px; max-width: 460px; }
 .search > svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); width: 15px; height: 15px;
   color: var(--ink-3); fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
-.toolbar .search input { padding-left: 34px; }
+.search input { padding-left: 34px; }
 .games-tools, .people-tools { display: flex; align-items: center; justify-content: space-between; gap: 10px;
   flex-wrap: wrap; margin: 0 0 12px; }
 
-/* Stats page */
-.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+/* Stats page. The cell dividers are drawn by the grid's 1px gaps over a
+   hairline background, so they stay correct at any wrap width (the old
+   per-cell border-left broke into stray edges whenever the row wrapped). */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px; background: var(--hair); overflow: hidden; }
 .stat-grid .stat-cell { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 16px 12px;
-  border-left: 1px solid var(--hair); text-align: center; }
-.stat-grid .stat-cell:first-child { border-left: 0; }
+  background: var(--surface); text-align: center; }
 .stat-value { font-size: 20px; font-weight: 600; letter-spacing: -.01em; font-variant-numeric: tabular-nums;
   font-family: var(--font-display); }
 .stat-label { font-size: 11px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .05em; }
@@ -398,7 +403,8 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 .stat-cols { font-size: 11px; color: var(--ink-4); font-weight: 400; margin-left: 8px; text-transform: none; letter-spacing: 0; }
 .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--success); margin-right: 7px; }
 
-/* 14-day activity chart */
+/* 14-day activity chart. Zero-playtime days keep a 2px baseline stub so the
+   axis never looks like it is missing a day. */
 .act-chart { padding: 18px 18px 14px; }
 .act-bars { display: flex; align-items: flex-end; gap: 7px; height: 120px; }
 .act-col { flex: 1; min-width: 0; height: 100%; display: flex; align-items: flex-end; }
@@ -406,6 +412,8 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 .act-col:hover .act-bar { background: var(--hair-2); }
 .act-col:hover .act-bar.now { background: var(--accent-2); }
 .act-bar.now { background: var(--accent); }
+.act-key { display: inline-block; width: 7px; height: 7px; border-radius: 2px;
+  background: var(--accent); margin: 0 3px 0 2px; vertical-align: -0.5px; }
 .act-labels { display: flex; gap: 7px; margin-top: 7px; }
 .act-labels span { flex: 1; min-width: 0; text-align: center; font-size: 10px; color: var(--ink-4);
   white-space: nowrap; overflow: hidden; }
@@ -487,6 +495,10 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 .game-meta { font-size: 12px; color: var(--ink-3); display: flex; align-items: center; gap: 10px; min-width: 0; }
 .game-meta > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .game-meta .likes { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.game-meta .visits { flex: none; font-variant-numeric: tabular-nums; }
+.game-played { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--ink-3);
+  font-variant-numeric: tabular-nums; }
+.game-played svg { width: 11px; height: 11px; flex: none; color: var(--ink-4); }
 .game-meta svg { width: 12px; height: 12px; flex: none; }
 .game-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: auto; min-width: 0; }
 .game-actions .btn { min-height: 28px; }

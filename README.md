@@ -14,13 +14,14 @@ A multi-instance launcher and account manager for Roblox.
 
 - Launch multiple Roblox clients at once, each signed into a different account or signed out
 - Sign in through Roblox's real login page, keep several accounts saved, launch them together by Place ID, game URL or server link
-- Create new accounts without leaving Fleet: enter the username, password, birthday and profile field, Fleet fills Roblox's signup (whichever layout Roblox serves), clicks through to Roblox's one human check, and imports the account when it's done — with a strong-password generator, one-click fixes for taken usernames, remembered defaults, and multi-account batches (up to 10 at once, each username verified against Roblox)
+- Create new accounts without leaving Fleet: enter the username, password, birthday and profile field, Fleet fills Roblox's signup (whichever layout Roblox serves), clicks through to Roblox's one human check, and imports the account when it's done — with a strong-password generator, one-click fixes for taken usernames, and remembered defaults
 - Update in place: the updater swaps the new version in while Fleet is running (no installer window, no helper script), and old installer exes always fetch and install the newest release
 - Save an account group plus game setup as a session and relaunch it with one click
 - Watchdog: when a client crashes, disconnects or gets kicked, Fleet puts that account straight back into the same server, with a fresh login ticket and a retry backoff that gives up instead of looping forever
 - Fill: scan a game's servers and pack your whole account group into the emptiest ones, together or spread out
-- Browse and search games, scan servers, filter by ping, players and FPS
-- See friends across all accounts with live status, open profiles, join their server
+- Browse and search games, scan servers, filter by ping, players and FPS; sort by players, rating or your own tracked playtime, with live counts, ratings, lifetime visits and your hours played on every card
+- See friends across all accounts with live status, open profiles, join their server; filter the page by name and see at a glance who's in game
+- Stats: a 14-day playtime chart, per-game and per-account totals, recent sessions and averages — tracked locally while your accounts play
 - Manage running clients: focus, restart or end any of them
 - Light, dark and system themes
 

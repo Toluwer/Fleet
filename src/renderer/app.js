@@ -86,8 +86,8 @@ const state = {
   people: {
     tab: 'people',
     route: 'home', returnRoute: 'home',
-    filter: 'all', sort: 'status',
-    list: [], page: 0, pageSize: 9, total: 0, hasNext: false, hasPrev: false, loading: false, error: null, loaded: false, requestId: 0,
+    filter: 'all', sort: 'status', filterText: '',
+    list: [], page: 0, pageSize: 12, total: 0, hasNext: false, hasPrev: false, loading: false, error: null, loaded: false, requestId: 0,
     search: {
       query: '', list: [], nextPageCursor: null, loading: false, error: null,
       searched: false, requestId: 0, notice: null, source: null, cached: false, retryable: false,
@@ -144,6 +144,7 @@ function fmtTime(iso) {
 }
 function fmtNum(n) {
   n = Number(n) || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e10 ? 0 : 1).replace(/\.0$/, '') + 'B';
   if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(/\.0$/, '') + 'M';
   if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1).replace(/\.0$/, '') + 'K';
   return String(n);
@@ -1600,6 +1601,42 @@ function renderWatchdogChip() {
 }
 
 /* ----------------------------- Games view ----------------------------- */
+/* Local playtime cross-reference for the Games grid: placeId -> total playtime
+   and session count, crunched from the stats payload with a short TTL so
+   browsing and re-sorting never re-crunch it. Powers the "Played" line on
+   cards and the Most-played sort. */
+const playedCache = { at: 0, map: new Map() };
+async function ensurePlayedMap() {
+  if (Date.now() - playedCache.at < 60000) return playedCache.map;
+  const r = await call(() => api.playtime.stats(), { ok: false });
+  if (r && r.ok && Array.isArray(r.perGame)) {
+    playedCache.map = new Map(r.perGame.filter(g => g.placeId).map(g =>
+      [String(g.placeId), { ms: g.totalMs || 0, sessions: g.sessions || 0 }]));
+    playedCache.at = Date.now();
+  }
+  return playedCache.map;
+}
+function playedFor(gm) {
+  const hit = playedCache.map.get(String(gm && gm.placeId));
+  if (!hit || !(hit.ms > 0)) return null;
+  return {
+    label: `Played ${fmtDur(hit.ms)}`,
+    tip: `${hit.sessions} session${hit.sessions === 1 ? '' : 's'} — full breakdown on Stats`,
+  };
+}
+
+/* "Updated 3d ago" for game cards — day-granular, unlike relTime's seconds. */
+function updatedAgo(iso) {
+  if (!iso) return '';
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return '';
+  const days = Math.floor((Date.now() - t) / 86400000);
+  if (days < 1) return 'updated today';
+  if (days < 7) return `updated ${days}d ago`;
+  if (days < 30) return `updated ${Math.floor(days / 7)}w ago`;
+  return `updated ${Math.floor(days / 30)}mo ago`;
+}
+
 views.games = function () {
   const g = state.games;
   mount(`
@@ -1614,6 +1651,12 @@ views.games = function () {
     </div>
     <div class="games-cats" id="games-cats"></div>
     <div class="games-tools">
+      <div class="segmented compact" aria-label="Sort games">
+        <button data-action="games-sort" data-sort="players" class="${g.sort === 'players' ? 'on' : ''}" data-tip="Sort by live player count">Most players</button>
+        <button data-action="games-sort" data-sort="rating" class="${g.sort === 'rating' ? 'on' : ''}" data-tip="Sort by like ratio">Top rated</button>
+        <button data-action="games-sort" data-sort="played" class="${g.sort === 'played' ? 'on' : ''}" data-tip="Sort by your tracked playtime">Most played</button>
+        <button data-action="games-sort" data-sort="name" class="${g.sort === 'name' ? 'on' : ''}">A–Z</button>
+      </div>
       <button class="btn sm ${g.hideEmpty ? 'active-filter' : ''}" data-action="games-hide-empty">${icon('users-group')} ${g.hideEmpty ? 'Showing active only' : 'Hide empty'}</button>
     </div>
     <div class="games-grid" id="games-grid"></div>
@@ -1632,6 +1675,8 @@ views.games = function () {
   renderGamesCategories();
   if (!g.loaded && !g.loading) gamesBrowse();
   else renderGamesGrid();
+  // Playtime chips land a beat after the grid - re-render the grid only.
+  ensurePlayedMap().then(() => { if (state.view === 'games') renderGamesGrid(); });
 };
 
 // Category filter chips (browse mode only - Roblox explore sorts). "All" is default.
@@ -1698,6 +1743,10 @@ function visibleGames() {
   } else if (g.sort === 'rating') {
     list.sort((a, b) => (gameRating(b) == null ? -1 : gameRating(b)) - (gameRating(a) == null ? -1 : gameRating(a))
       || Number(b.playerCount || 0) - Number(a.playerCount || 0));
+  } else if (g.sort === 'played') {
+    const played = playedCache.map;
+    const ms = gm => (played.get(String(gm.placeId)) || { ms: 0 }).ms;
+    list.sort((a, b) => ms(b) - ms(a) || Number(b.playerCount || 0) - Number(a.playerCount || 0));
   } else if (g.sort === 'name') {
     list.sort((a, b) => String(a.name).localeCompare(String(b.name)));
   } else {
@@ -1712,11 +1761,16 @@ function gameCard(gm) {
     : `<div class="ph">${icon('compass')}</div>`;
   const rating = gameRating(gm);
   const likes = rating != null ? `<span class="likes">${icon('thumb')} ${rating}%</span>` : '';
+  const upd = updatedAgo(gm.lastUpdated);
+  const visitsTip = [upd, gm.maxPlayers ? `up to ${gm.maxPlayers} players/server` : ''].filter(Boolean).join(' · ');
+  const visits = gm.visits != null ? `<span class="visits"${visitsTip ? ` data-tip="${esc(visitsTip)}"` : ''}>${fmtNum(gm.visits)} visits</span>` : '';
+  const played = playedFor(gm);
   return `<div class="game">
     <div class="game-thumb">${thumb}<span class="game-players">${icon('users-group')} ${fmtNum(gm.playerCount)}</span></div>
     <div class="game-body">
       <div class="game-name" title="${esc(gm.name)}">${esc(gm.name)}</div>
-      <div class="game-meta">${gm.creator ? '<span>' + esc(gm.creator) + '</span>' : ''}${likes}</div>
+      <div class="game-meta">${gm.creator ? '<span>' + esc(gm.creator) + '</span>' : ''}${likes}${visits}</div>
+      ${played ? `<div class="game-played" data-tip="${esc(played.tip)}">${icon('clock')} ${esc(played.label)}</div>` : ''}
       <div class="game-actions">
         <button class="btn primary sm" data-action="join-game" data-place="${esc(gm.placeId)}" data-name="${esc(gm.name)}">${icon('play')} Join</button>
         <button class="btn sm icon fav ${isFav(gm) ? 'on' : ''}" data-action="toggle-fav" data-place="${esc(gm.placeId)}" data-tip="${isFav(gm) ? 'Remove from favorites' : 'Save to favorites'}">${icon('bookmark')}</button>
@@ -2087,6 +2141,26 @@ function personMatchesFilter(u) {
   return true;
 }
 
+/* Live roll-up of the friends on the loaded page: "2 in game · 1 online",
+   patched in place by the presence poller so it never goes stale. */
+function peoplePresenceCounts(list) {
+  let ingame = 0, online = 0;
+  for (const u of (list || [])) {
+    const s = String(u && u.presence || '').toLowerCase();
+    if (s.includes('game')) ingame += 1;
+    else if (s === 'online' || s.includes('studio')) online += 1;
+  }
+  return { ingame, online, offline: Math.max(0, (list || []).length - ingame - online) };
+}
+function peopleCountsText(list) {
+  const c = peoplePresenceCounts(list);
+  return `${c.ingame} in game · ${c.online} online · ${c.offline} offline`;
+}
+function updatePeopleCounts() {
+  const el = document.querySelector('[data-people-counts]');
+  if (el) el.textContent = peopleCountsText(state.people.list);
+}
+
 function personPresenceRank(u) {
   const status = String(u && u.presence || 'Offline').toLowerCase();
   if (status.includes('game')) return 0;
@@ -2096,7 +2170,12 @@ function personPresenceRank(u) {
 }
 
 function visiblePeople(list) {
-  const out = (list || []).filter(personMatchesFilter).slice();
+  const q = normName(state.people.filterText || '');
+  const out = (list || []).filter(personMatchesFilter).filter(u => {
+    if (!q) return true;
+    return normName(String(u && u.displayName || '')).includes(q)
+      || normName(String(u && u.username || '')).includes(q);
+  }).slice();
   if (state.people.sort === 'name') {
     out.sort((a, b) => String(a.displayName || a.username).localeCompare(String(b.displayName || b.username)));
   } else if (state.people.sort === 'status') {
@@ -2172,8 +2251,10 @@ function renderFriendsPage() {
       <p>Public profiles from every saved account, merged without duplicates.</p>
     </div>
     <div class="row-split" style="margin-bottom:16px">
-      <div class="section-title" style="margin:0">${pp.total ? `${start}-${end} of ${pp.total}` : 'Friends'}</div>
+      <div class="section-title" style="margin:0">${pp.total ? `${start}-${end} of ${pp.total}` : 'Friends'}
+        <span class="stat-cols" data-people-counts data-tip="Live presence of the friends on this page">${peopleCountsText(pp.list)}</span></div>
       <div class="inline">
+        <div class="search" style="min-width:200px;max-width:240px">${icon('search')}<input id="people-filter" type="text" maxlength="50" placeholder="Filter this page…" value="${esc(pp.filterText || '')}"></div>
         <button class="btn sm" data-action="people-prev" ${pp.hasPrev ? '' : 'disabled'}>${icon('chevron-left')} Previous</button>
         <button class="btn sm" data-action="people-next" ${pp.hasNext ? '' : 'disabled'}>Next ${icon('chevron-right')}</button>
         <button class="btn sm" data-action="people-refresh" data-tip="Reload">${icon('refresh')}</button>
@@ -2182,6 +2263,16 @@ function renderFriendsPage() {
     ${peopleTools()}
     <div class="people-grid" id="people-grid"></div>
   `);
+  const filterInp = $('#people-filter');
+  if (filterInp) {
+    filterInp.addEventListener('input', () => {
+      state.people.filterText = filterInp.value;
+      renderPeopleGrid();
+    });
+    filterInp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); filterInp.blur(); }
+    });
+  }
   if (!pp.loaded && !pp.loading) loadPeople(0);
   else renderPeopleGrid();
 }
@@ -2196,7 +2287,7 @@ function renderPeopleGrid() {
   const list = visiblePeople(pp.list);
   grid.innerHTML = list.length
     ? list.map(personCard).join('')
-    : `<div class="games-end">No people match this filter.</div>`;
+    : `<div class="games-end">${pp.filterText ? `No one on this page matches “${esc(pp.filterText)}”.` : 'No people match this filter.'}</div>`;
 }
 
 async function loadPeople(page) {
@@ -2384,6 +2475,7 @@ async function refreshVisiblePeoplePresence() {
       if (presenceChanged(user, next)) patchPersonPresence(next);
       return next;
     });
+    updatePeopleCounts();
   } else if (pp.route === 'profile' && pp.detail.profile) {
     const previous = pp.detail.profile;
     const next = mergePresence(previous, byId.get(Number(previous.userId)));
@@ -2509,7 +2601,9 @@ function hourLabel(h) {
 }
 
 /* The 14-day activity chart: one column per day, height proportional to
-   that day's playtime, today accented. Pure divs on the existing grid. */
+   that day's playtime, today accented. Pure divs on the existing grid.
+   Days with no playtime keep a 2px baseline stub so the week never reads
+   as a gap in the axis. */
 function activityChartHtml(daily) {
   const max = Math.max.apply(null, daily.map(d => d.ms));
   const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -2517,8 +2611,9 @@ function activityChartHtml(daily) {
     const date = new Date(d.start);
     const isToday = d.start === today.getTime();
     const pct = max > 0 && d.ms > 0 ? Math.max(4, Math.round((d.ms / max) * 100)) : 0;
+    const h = d.ms > 0 ? pct + '%' : '2px';
     const tip = `${DOW_SHORT[date.getDay()]} ${date.getMonth() + 1}/${date.getDate()} — ${d.ms > 0 ? fmtDur(d.ms) : 'no playtime'}`;
-    return `<div class="act-col"><div class="act-bar${isToday ? ' now' : ''}" style="height:${pct}%" data-tip="${esc(tip)}"></div></div>`;
+    return `<div class="act-col"><div class="act-bar${isToday ? ' now' : ''}" style="height:${h}" data-tip="${esc(tip)}"></div></div>`;
   }).join('');
   const labels = daily.map(d => {
     const date = new Date(d.start);
@@ -2550,6 +2645,7 @@ views.stats = async function () {
   const t = r.totals || {};
   const ins = r.insights || {};
   const statCell = (label, value, sub) => `<div class="stat-cell"><div class="stat-value">${value}</div><div class="stat-label">${esc(label)}</div>${sub ? `<div class="stat-sub">${esc(sub)}</div>` : ''}</div>`;
+  const yesterdayMs = (r.daily || []).length >= 2 ? r.daily[r.daily.length - 2].ms : 0;
   const maxTotal = (r.perGame || []).reduce((m, g) => Math.max(m, g.totalMs), 0);
   const row = (cells, live, meterPct) => `<div class="setting stat-row"><div><div class="s-label">${live ? '<span class="pd live-dot"></span>' : ''}${esc(cells.name)}</div><div class="s-desc">${esc(cells.desc)}</div>${meterPct != null ? `<div class="stat-meter"><i style="width:${meterPct}%"></i></div>` : ''}</div>
     <div class="s-control stat-cells"><span data-tip="Today">${fmtDur(cells.today)}</span><span data-tip="Last 7 days">${fmtDur(cells.week)}</span><b data-tip="All time">${fmtDur(cells.total)}</b></div></div>`;
@@ -2560,14 +2656,14 @@ views.stats = async function () {
   const hasAny = (r.perGame || []).length || recent.length;
   root.innerHTML = `
     <div class="card stat-grid">
-      ${statCell('Today', fmtDur(t.todayMs))}
-      ${statCell('Last 7 days', fmtDur(t.weekMs))}
+      ${statCell('Today', fmtDur(t.todayMs), yesterdayMs ? `yesterday ${fmtDur(yesterdayMs)}` : 'no playtime yesterday')}
+      ${statCell('Last 7 days', fmtDur(t.weekMs), `avg ${fmtDur(Math.round((t.weekMs || 0) / 7))} / day`)}
       ${statCell('All time', fmtDur(t.totalMs), `${t.sessions || 0} sessions`)}
       ${statCell('Tracking now', String(r.tracking || 0), r.tracking ? 'accounts in game' : 'no one in game')}
       ${ins.avgMs ? statCell('Avg session', fmtDur(ins.avgMs), `${t.sessions || 0} tracked`) : ''}
       ${ins.longestMs ? statCell('Longest session', fmtDur(ins.longestMs), ins.longestGame ? ins.longestGame.slice(0, 28) : '') : ''}
     </div>
-    ${hasAny && (r.daily || []).length ? `<div class="section-title">Last 14 days <span class="stat-cols">playtime per day</span></div>
+    ${hasAny && (r.daily || []).length ? `<div class="section-title">Last 14 days <span class="stat-cols">playtime per day<i class="act-key"></i>today</span></div>
       <div class="card">${activityChartHtml(r.daily)}${insightsLineHtml(ins)}</div>` : ''}
     ${games ? `<div class="section-title">By game <span class="stat-cols">today - 7 days - all time</span></div><div class="card pad">${games}</div>` : ''}
     ${accountsRows ? `<div class="section-title">By account <span class="stat-cols">today - 7 days - all time</span></div><div class="card pad">${accountsRows}</div>` : ''}
@@ -3192,6 +3288,7 @@ document.addEventListener('click', async (e) => {
       const ok = await confirmDialog({ title: 'Clear playtime data?', body: 'All recorded sessions are deleted from this PC. This cannot be undone.', confirmText: 'Clear', danger: true });
       if (!ok) break;
       await call(() => api.playtime.clear());
+      playedCache.at = 0; playedCache.map = new Map();   // drop the Games-grid chips too
       toast('Playtime data cleared', 'good');
       views.stats();
       break;
@@ -3273,6 +3370,16 @@ document.addEventListener('click', async (e) => {
     case 'session-delete': {
       if (!saveSessions(loadSessions().filter(x => x.id !== elAction.dataset.id))) toast('Could not delete the session', 'bad');
       if (state.view === 'instances') views.instances();
+      break;
+    }
+    case 'games-sort': {
+      state.games.sort = elAction.dataset.sort || 'players';
+      // The segmented lives in the static mount markup - move its highlight
+      // in place instead of re-rendering the whole view.
+      document.querySelectorAll('.games-tools [data-action="games-sort"]').forEach(b => {
+        b.classList.toggle('on', b.dataset.sort === state.games.sort);
+      });
+      renderGamesGrid();
       break;
     }
     case 'games-hide-empty':

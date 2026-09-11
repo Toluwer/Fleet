@@ -632,7 +632,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && rendererModel.parseRobloxTarget('not a Roblox target').invalid === true
     && rendererModel.parseRobloxTarget('').invalid === false);
   check('Account-less installs can search public profiles without exposing account cookies',
-    peopleSource.includes("'User-Agent': 'Fleet/1.8.4'")
+    peopleSource.includes("'User-Agent': 'Fleet/1.8.5'")
     && peopleSource.includes('search-api/omni-search')
     && peopleSource.includes("verticalType: 'user'")
     && peopleSource.includes("presence: 'Unknown'")
@@ -1649,6 +1649,35 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
       /svg\.ico \{ width: 16px; height: 16px;/.test(css)
         && /\.field-status \.ico \{ width: 13px; height: 13px;/.test(css)
         && /\.watch-card > \.row-split \.ico/.test(css));
+
+    // 1.8.5: stats container hardening + presence dot removal + games/people data.
+    check('stat-cell dividers are gap hairlines that survive any wrap width',
+      /\.stat-grid \{[^}]*gap: 1px;[^}]*background: var\(--hair\)/.test(css)
+        && /\.stat-grid \.stat-cell \{[^}]*background: var\(--surface\)/.test(css)
+        && !/stat-cell[^}]*border-left/.test(css));
+    check('zero-playtime days keep a baseline stub and today has a legend',
+      js.includes("'2px'") && /act-key/.test(js) && /\.act-key/.test(css));
+    check('today and 7-day cells carry context sub-lines',
+      js.includes('yesterday ${fmtDur(yesterdayMs)}') && js.includes('avg ${fmtDur'));
+    check('the blue in-game presence dot is gone (hidden, layout kept)',
+      /\.presence\.ingame \.pd \{ visibility: hidden; \}/.test(css)
+        && !/ingame \.pd \{ background: var\(--accent\)/.test(css));
+    const gamesSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'games.js'), 'utf8');
+    check('games browse/search enrich cards with multiget game details',
+      gamesSrc.includes('multiget-game-details') && /function withDetails/.test(gamesSrc)
+        && /visits: c\.visits != null \? c\.visits : null/.test(gamesSrc)
+        && /Promise\.all\(\[withThumbnails\(games\), withDetails\(games\)\]\)/.test(gamesSrc));
+    check('game cards show lifetime visits and your tracked playtime',
+      /gm\.visits != null/.test(js) && /playedFor\(gm\)/.test(js)
+        && js.includes('Played ${fmtDur(hit.ms)}') && /function updatedAgo/.test(js)
+        && /\.game-played/.test(css) && /\.game-meta \.visits/.test(css));
+    check('games grid gains a sort control including most-played',
+      /data-action="games-sort"/.test(js) && /Most played/.test(js)
+        && /case 'games-sort'/.test(js) && /g\.sort === 'played'/.test(js));
+    check('friends page gains a local name filter and live presence counts',
+      /people-filter/.test(js) && /data-people-counts/.test(js)
+        && /function peoplePresenceCounts/.test(js) && /filterText/.test(js)
+        && /updatePeopleCounts\(\)/.test(js));
   }
 
   /* 11. Installer: an old installer exe must install the NEWEST release */
