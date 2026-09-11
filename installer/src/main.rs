@@ -54,11 +54,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRect, BN_CLICKED, BM_GETCHECK, BM_SETCHECK, CREATESTRUCTW, CW_USEDEFAULT,
     DefWindowProcW, DestroyWindow, DispatchMessageW, GetClassNameW, GetDlgCtrlID, GetMessageW,
-    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GWLP_USERDATA, HMENU, HWND_TOP,
+    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GWL_EXSTYLE, GWLP_USERDATA, HMENU, HWND_TOP,
     IDC_ARROW, IDI_APPLICATION, IDOK, IsDialogMessageW, IsWindowVisible, KillTimer,
     LoadCursorW, LoadIconW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW,
     SendMessageW, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos,
     SetWindowTextW, ShowWindow,
+    SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE,
     SystemParametersInfoW, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW,
     WS_CAPTION, WS_EX_CLIENTEDGE, WS_EX_LAYERED, WS_MINIMIZEBOX, WS_SYSMENU,
     LWA_ALPHA, MB_DEFBUTTON2, MB_ICONQUESTION, MB_OKCANCEL, MSG,
@@ -360,6 +361,36 @@ unsafe fn round_corners(hwnd: HWND) {
             as *const core::ffi::c_void;
     let cb = std::mem::size_of::<i32>() as u32;
     let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, pv, cb);
+}
+
+/// Toggles WS_EX_LAYERED. DWM corner rounding does not apply to layered
+/// windows, so the style is stripped once the window is fully opaque (and
+/// restored before a fade-out needs it again).
+unsafe fn set_layered(hwnd: HWND, on: bool, alpha: u8) {
+    let cur = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+    let want = if on {
+        cur | WS_EX_LAYERED.0
+    } else {
+        cur & !WS_EX_LAYERED.0
+    };
+    if want == cur {
+        return;
+    }
+    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, want as isize);
+    if on {
+        // Pin the current opacity before the frame change so the window
+        // never flashes fully opaque mid-fade.
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
+    }
+    let _ = SetWindowPos(
+        hwnd,
+        None,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+    );
 }
 
 // ------------------------------------------------------------------ install workers
@@ -917,6 +948,11 @@ fn rebuild_fonts(a: &mut App) {
 }
 
 fn start_fade(a: &mut App, to: u8, dur: u32, after: After) {
+    // A fade-out starts from an opaque, non-layered window (the style was
+    // stripped so DWM can round the corners): restore it first.
+    if a.alpha == 255 {
+        unsafe { set_layered(a.hwnd, true, a.alpha); }
+    }
     a.fade = Fade {
         active: true,
         from: a.alpha,
@@ -952,6 +988,9 @@ unsafe fn step_fade(a: &mut App) {
         // we settle at full opacity.
         if a.alpha == 255 {
             force_repaint(a);
+            // Layered windows are excluded from DWM corner rounding; the
+            // fade is done, so drop the style and let the corners round.
+            unsafe { set_layered(a.hwnd, false, a.alpha); }
         }
         if let After::Quit = after {
             let _ = DestroyWindow(a.hwnd);
