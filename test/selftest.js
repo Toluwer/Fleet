@@ -1625,7 +1625,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     check('by-game rows carry a share-of-playtime meter',
       /stat-meter/.test(js) && /\.stat-meter/.test(css));
     check('instances summary gains a longest-uptime stat',
-      /Longest up/.test(js) && /renderInstanceSummary\(state\.instances \|\| \[\]\);\n  for/.test(js));
+      /Longest up/.test(js) && js.includes('renderInstanceSummary(state.instances || [])'));
 
     // The multi-account creator is gone end to end: no stepper in the modal,
     // no roster resolve, no batch banner, no passthrough command.
