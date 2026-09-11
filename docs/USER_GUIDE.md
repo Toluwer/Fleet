@@ -17,9 +17,7 @@ Each client shows up in Running clients with status, PID, memory and start time.
 
 Add account opens Roblox's real login page, 2FA included. Sessions are encrypted and stay on this PC.
 
-Create account builds a brand-new Roblox account instead: fill in the username, password, birthday and profile field, and Fleet opens Roblox's real signup form already filled in — it even clicks Continue and Add password for you. Roblox then asks its one human check (that's Roblox's, and no tool is allowed to do it for you); the account is saved, signed in. Fleet keeps the same browser identity between sign-ups, which usually keeps Roblox's checks short. Usernames are checked against Roblox while you type, taken names get one-click available alternatives, the dice button generates a strong password for you, and your birthday and profile-field choices are remembered for the next account.
-
-Make several set the count above 1: Fleet lines up that many usernames (the exact base plus numbered variants, each verified against Roblox) and then opens one signup window per account — solve each human check and the next window appears automatically, until the whole batch lands. The password and birthday are shared across the batch, a progress banner tracks which account is up (account 2 of 5, say), and closing a signup window stops the rest of the batch cleanly. A taken base name only ever stops a single create; in a batch the accounts simply all ride verified variants.
+Create account builds a new Roblox account instead: fill in the username, password, birthday and profile field, and Fleet opens Roblox's sign-up form already filled in and advances the steps. Roblox then asks its one human check — that step is Roblox's, and no tool is allowed to do it for you — and the account is saved, signed in. Fleet keeps the same browser identity between sign-ups, which usually keeps Roblox's checks short. Usernames are checked against Roblox while you type, taken names get one-click available alternatives, the dice button generates a strong password, and your birthday and profile-field choices are remembered for the next account.
 
 Each card has Launch, Refresh, Remove and Select (for multi-launch). Expired sessions offer Sign in again.
 
@@ -29,21 +27,21 @@ After picking accounts and a target, Save current setup lets you relaunch the wh
 
 ## Watchdog (auto-rejoin)
 
-Tick **Keep alive** when launching (or on a session, or in Fill) and Fleet watches those accounts in the background. When a client crashes, disconnects or gets kicked, that account goes straight back into the same server.
+Tick **Keep alive** when launching (or on a session, or in Fill) and Fleet watches those accounts in the background. When a client crashes, disconnects or gets kicked, the watchdog rejoins the same server with that account.
 
-A few details worth knowing:
+Details worth knowing:
 
-- Every rejoin mints a fresh login ticket, so it keeps working long after the original launch.
-- Retries back off (10 s doubling, capped at 5 min) and give up after five straight tries with no five-minute stable run. A healthy stretch resets the counter.
+- Every rejoin uses a fresh login ticket, so it keeps working long after the original launch.
+- Retries back off (10 s doubling, capped at 5 min) and stop after five consecutive failures without a five-minute stable run. A stable stretch resets the counter.
 - Ending a client, End all, Cleanup or restarting disarms that watch, so the watchdog never relaunches something you closed on purpose.
-- Armed watches survive a Fleet restart but stay dormant until the account is seen in game again — reopening Fleet never launches anything on its own.
-- The chip next to Running clients shows what's armed; its Stop button disarms everything. Settings has the knobs: rejoin delay, give-up count, and an optional restart for clients stuck not responding.
+- Watches survive a Fleet restart but stay dormant until the account is seen in game again — reopening Fleet never launches anything on its own.
+- The chip next to Running clients shows what is armed; its Stop button disarms everything. Settings holds the controls: rejoin delay, give-up count, and an optional restart for unresponsive clients.
 
 ## Games
 
 Browse popular games or search, then Join from a card. Fleet uses your selected account so you join signed in. Random Game joins one from the current list.
 
-Open a game's server list to pick an exact server, or press **Fill** to let Fleet scan and pack the selected accounts into the emptiest servers — all in one server when it fits everyone, or spread across the least crowded ones. Fill can arm the watchdog for the whole crew in the same click.
+Open a game's server list to pick an exact server, or press **Fill** to let Fleet scan and place the selected accounts into the emptiest servers — all in one server when there is room, otherwise spread across the least crowded ones. Fill can arm the watchdog for the whole group in the same click.
 
 ## People
 
@@ -76,4 +74,4 @@ Environment info and a live log with level filters. Copy diagnostics when report
 | Watchdog gave up on an account | The account's joins kept failing. Sign in again if the session expired, then relaunch it with Keep alive. |
 | "Multi-instance is unavailable" | Reinstall Fleet (the native helper failed to load). |
 | Focus doesn't raise the window | Windows blocks foreground changes; click the taskbar button. |
-| PC slows down | Each client takes roughly 0.5-1 GB of RAM. Run only as many as you can handle. |
+| PC slows down | Each client takes roughly 0.5-1 GB of RAM. Run only as many as the PC can handle. |

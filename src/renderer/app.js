@@ -340,7 +340,7 @@ function paletteRunIndex(idx) {
   if (!it) return;
   closePalette();
   // Async on purpose: run() may await confirm dialogs without blocking the UI.
-  Promise.resolve().then(() => it.run()).catch(() => toast('That command failed', 'bad'));
+  Promise.resolve().then(() => it.run()).catch(() => toast('Command failed', 'bad'));
 }
 
 $('#palette-back').addEventListener('mousedown', (e) => { if (e.target === e.currentTarget) closePalette(); });
@@ -699,20 +699,20 @@ function createValidationErrors(d) {
 
   const b = String(d.birthday || '');
   const m = b.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) errors.birthday = 'Pick a valid birthday.';
+  if (!m) errors.birthday = 'Enter a valid birthday.';
   else {
     const y = Number(m[1]), mo = Number(m[2]), dy = Number(m[3]);
     const date = new Date(Date.UTC(y, mo - 1, dy));
     const now = new Date();
     if (date.getUTCFullYear() !== y || date.getUTCMonth() !== mo - 1 || date.getUTCDate() !== dy) {
-      errors.birthday = 'That date does not exist.';
+      errors.birthday = 'That date is invalid.';
     } else if (date.getTime() > Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())) {
-      errors.birthday = 'The birthday is in the future.';
+      errors.birthday = 'Birthday must be in the past.';
     } else {
       let age = now.getUTCFullYear() - y;
       const before = now.getUTCMonth() < mo - 1 || (now.getUTCMonth() === mo - 1 && now.getUTCDate() < dy);
       if (before) age -= 1;
-      if (age < 13) errors.birthday = 'Roblox needs age 13+ for the quick flow.';
+      if (age < 13) errors.birthday = 'Roblox requires age 13 or older for automatic sign-up.';
     }
   }
   return errors;
@@ -795,7 +795,7 @@ function openPersonJoinDialog(userId, placeId, gameId, name) {
   // at launch time, so a place/game hint is only cosmetic. The user id is the
   // one thing that must be valid, and it arrives as a data-* string.
   const targetId = Number(userId);
-  if (!targetId || !Number.isFinite(targetId)) { toast('That person could not be identified — try refreshing the page', 'bad'); return; }
+  if (!targetId || !Number.isFinite(targetId)) { toast('That person could not be identified. Refresh the page and try again.', 'bad'); return; }
   if (!state.accounts.length) { toast('Add an account to join', 'bad'); setView('accounts'); return; }
   const preselect = Array.from(state.selected).filter(id => state.accounts.some(a => a.id === id));
   const initial = preselect.length ? preselect : (state.accounts.length === 1 ? [state.accounts[0].id] : []);
@@ -1033,7 +1033,7 @@ function toggleWatch(userId, name) {
   let watching;
   if (idx >= 0) { state.watch.list.splice(idx, 1); delete watchSnap[String(userId)]; watching = false; }
   else {
-    if (state.watch.list.length >= WATCH_MAX) { toast(`Watch list is full (${WATCH_MAX})`, 'bad'); return null; }
+    if (state.watch.list.length >= WATCH_MAX) { toast(`The watch list is full (${WATCH_MAX})`, 'bad'); return null; }
     state.watch.list.push({ id: userId, name: label });
     watchSnap[String(userId)] = { p: 'Unknown', gn: '', pl: '', gid: '' };
     watching = true;
@@ -1185,7 +1185,7 @@ views.instances = function () {
       <div class="chips">${hasAccounts ? accountChips : '<span class="hint">No accounts yet — add one in Accounts.</span>'}</div>
       <div class="inline" style="margin-top:14px">
         <input id="lp-place" class="input-lg" type="text" placeholder="Place ID or game link (optional)" value="${esc(state.placeId)}" style="max-width:320px" data-tip="Paste a place ID, a roblox.com game URL, or a share link with a server ID" />
-        <label class="inline" style="gap:7px;cursor:pointer;font-size:12px;color:var(--ink-2);white-space:nowrap" data-tip="If a client crashes or disconnects, the watchdog puts that account straight back into the same server"><input type="checkbox" id="lp-keepalive"> Keep alive</label>
+        <label class="inline" style="gap:7px;cursor:pointer;font-size:12px;color:var(--ink-2);white-space:nowrap" data-tip="If a client crashes, disconnects or is kicked, the watchdog rejoins the same server with that account"><input type="checkbox" id="lp-keepalive"> Keep alive</label>
         <div class="spacer"></div>
         <button class="btn primary lg" data-action="launch-accounts" ${s.robloxFound ? '' : 'disabled'}>${icon('play')} <span id="lp-count-label">Launch ${state.selected.size || ''}</span></button>
       </div>
@@ -1444,7 +1444,7 @@ function renderAccountCard(a) {
   const presTip = a.presenceError ? ` data-tip="${esc(a.presenceError)}"` : '';
   const expired = !!a.sessionExpired || a.presenceError === 'Session expired';
   const canFollow = !expired && pl === 'in game' && allAccounts.length > 1;
-  const followTip = allAccounts.length < 2 ? 'Add another account to use Follow'
+  const followTip = allAccounts.length < 2 ? 'Add a second account to use Follow'
     : (canFollow ? 'Choose other accounts to join this exact server' : 'This account must be in a game');
   const id = safeAttr(a.id);
   const facts = accountFactsHtml(a);
@@ -1973,7 +1973,7 @@ async function loadServers(append) {
     }
     sv.nextPageCursor = r.nextPageCursor;
     if (r.scan) sv.scan = r.scan;
-  } else sv.error = (r && r.error) || 'Could not load servers.';
+  } else sv.error = (r && r.error) || 'Servers could not be loaded.';
   renderServersModal();
 }
 
@@ -2049,7 +2049,7 @@ async function gamesBrowse() {
   if (rid !== g.requestId) return; // a newer browse/search superseded this one
   g.loading = false; g.loaded = true;
   if (r && r.ok) { g.list = r.games; g.nextPageToken = r.nextPageToken; g.categories = r.categories || []; }
-  else g.error = (r && r.error) || 'Could not load games.';
+  else g.error = (r && r.error) || 'Games could not be loaded.';
   if (state.view === 'games') { renderGamesCategories(); renderGamesGrid(); }
 }
 
@@ -2289,7 +2289,7 @@ function renderPeopleGrid() {
   const list = visiblePeople(pp.list);
   grid.innerHTML = list.length
     ? list.map(personCard).join('')
-    : `<div class="games-end">${pp.filterText ? `No one on this page matches “${esc(pp.filterText)}”.` : 'No people match this filter.'}</div>`;
+    : `<div class="games-end">${pp.filterText ? `No one here matches “${esc(pp.filterText)}”.` : 'No one matches this filter.'}</div>`;
 }
 
 async function loadPeople(page) {
@@ -2303,7 +2303,7 @@ async function loadPeople(page) {
   if (r && r.ok) {
     pp.list = r.people; pp.page = r.page; pp.total = r.total; pp.hasNext = r.hasNext; pp.hasPrev = r.hasPrev;
   } else {
-    pp.list = []; pp.error = (r && r.error) || 'Could not load people.';
+    pp.list = []; pp.error = (r && r.error) || 'People could not be loaded.';
   }
   if (state.view === 'people' && pp.route === 'friends') views.people();
 }
@@ -2318,7 +2318,7 @@ async function refreshPeople() {
   pp.loading = false; pp.loaded = true;
   if (r && r.ok) {
     pp.list = r.people; pp.page = r.page; pp.total = r.total; pp.hasNext = r.hasNext; pp.hasPrev = r.hasPrev;
-  } else pp.error = (r && r.error) || 'Could not load friends.';
+  } else pp.error = (r && r.error) || 'Friends could not be loaded.';
   if (state.view === 'people' && pp.route === 'friends') views.people();
 }
 
@@ -2343,7 +2343,7 @@ function renderPeopleSearchResults() {
     ${notice}
     <div class="people-result-head"><div class="section-title">Results for -${esc(search.query)}-</div><span>${search.list.length} shown</span></div>
     ${search.list.length ? peopleTools() : ''}
-    <div class="people-grid">${visiblePeople(search.list).length ? visiblePeople(search.list).map(personCard).join('') : `<div class="games-end">${search.list.length ? 'No people match this filter.' : 'No people found.'}</div>`}</div>
+    <div class="people-grid">${visiblePeople(search.list).length ? visiblePeople(search.list).map(personCard).join('') : `<div class="games-end">${search.list.length ? 'No one matches this filter.' : 'No people found.'}</div>`}</div>
     ${search.nextPageCursor ? `<button class="btn people-more" data-action="people-search-more">Show more</button>` : ''}`;
 }
 
@@ -2418,7 +2418,7 @@ function profileHeroActions(u) {
 function profileLivePanel(u) {
   if (!u || !u.game) return '';
   return `<div class="now-playing${u.canJoin ? ' joinable' : ''}">${icon('compass')}
-    <span><strong>${esc(u.game.name)}</strong><small>${u.canJoin ? 'Playing now - Fleet checks access when you join' : 'Currently playing'}</small></span>
+    <span><strong>${esc(u.game.name)}</strong><small>${u.canJoin ? 'Playing now — access is verified on join' : 'Currently playing'}</small></span>
     ${personJoinButton(u)}</div>`;
 }
 
@@ -2496,7 +2496,7 @@ function profileListSection(title, items, emptyText, renderItem) {
 }
 
 function profileGameSection(title, games) {
-  return profileListSection(title, games, 'Nothing public to show.', game => `
+  return profileListSection(title, games, 'Nothing to show.', game => `
     <div class="profile-game">
       ${game.thumbnail ? `<img src="${esc(game.thumbnail)}" loading="lazy" alt="">` : `<span class="profile-game-ph">${icon('compass')}</span>`}
       <span><strong>${esc(game.name)}</strong><small>${game.visits ? `${fmtNum(game.visits)} visits` : 'Public experience'}</small></span>
@@ -2525,7 +2525,7 @@ function renderPeopleProfile() {
     return;
   }
   if (detail.error || !detail.profile) {
-    mount(`<button class="back-link" data-action="people-back">${icon('chevron-left')} ${backLabel}</button><div class="card"><div class="empty"><div class="e-ico">${icon('alert-circle')}</div><h3>Profile unavailable</h3><p>${esc(detail.error || 'Could not load this profile.')}</p></div></div>`);
+    mount(`<button class="back-link" data-action="people-back">${icon('chevron-left')} ${backLabel}</button><div class="card"><div class="empty"><div class="e-ico">${icon('alert-circle')}</div><h3>Profile unavailable</h3><p>${esc(detail.error || 'This profile could not be loaded.')}</p></div></div>`);
     return;
   }
   const u = detail.profile;
@@ -2578,7 +2578,7 @@ async function openPerson(userId) {
   if (state.people.detail.userId !== id) return;
   state.people.detail.loading = false;
   if (r && r.ok) state.people.detail.profile = r.profile;
-  else state.people.detail.error = (r && r.error) || 'Could not load this profile.';
+  else state.people.detail.error = (r && r.error) || 'This profile could not be loaded.';
   if (state.view === 'people' && state.people.route === 'profile') views.people();
 }
 
@@ -2834,26 +2834,26 @@ views.settings = async function () {
         `<label class="toggle"><input type="checkbox" id="set-confirm" ${s.confirmCleanup ? 'checked' : ''}><span class="track"></span></label>`)}
       ${settingRow('Refresh interval', 'How often the running-clients list updates (750-10000 ms).',
         `<input id="set-poll" type="number" min="750" max="10000" step="250" value="${s.pollIntervalMs}" style="width:120px">`)}
-      ${settingRow('Delay between launches', 'Pause between each client in a multi-launch so each boots first (0-20000 ms).',
+      ${settingRow('Delay between launches', 'Pause between clients in a multi-launch so each finishes starting (0-20000 ms).',
         `<input id="set-delay" type="number" min="0" max="20000" step="500" value="${s.launchDelayMs}" style="width:120px">`)}
-      ${settingRow('Warn above this many instances', 'Show a heads-up when launching would exceed this count.',
+      ${settingRow('Warn above this many instances', 'Warn when a launch would exceed this many clients.',
         `<input id="set-warn" type="number" min="1" max="100" value="${s.warnInstanceCount}" style="width:120px">`)}
       ${settingRow('History entries to keep', 'Maximum launch-history rows stored (10-2000).',
         `<input id="set-historylimit" type="number" min="10" max="2000" step="10" value="${s.historyLimit}" style="width:120px">`)}
     </div>
     <div class="section-title">Watchdog</div>
     <div class="card pad">
-      ${settingRow('Auto-rejoin delay', 'How long the watchdog waits before putting a dropped account back into its game. The wait doubles after each failed try (3-300 s).',
+      ${settingRow('Auto-rejoin delay', 'Wait before the watchdog rejoins a dropped account. The delay doubles after each failed attempt (3-300 s).',
         `<input id="set-rejoin-delay" type="number" min="3" max="300" step="1" value="${s.autoRejoinDelaySec}" style="width:120px">`)}
-      ${settingRow('Give up after', 'Straight rejoin tries without a five-minute stable run before the watchdog leaves that account alone (1-20).',
+      ${settingRow('Give up after', 'Failed rejoin attempts before the watchdog stops retrying an account (1-20).',
         `<input id="set-rejoin-tries" type="number" min="1" max="20" step="1" value="${s.autoRejoinMaxAttempts}" style="width:120px">`)}
-      ${settingRow('Restart a stuck client after', 'Relaunch a client that has been not responding for this long. 0 leaves stuck clients alone (0-120 s).',
+      ${settingRow('Restart a stuck client after', 'Relaunch a client that has been unresponsive for this long. 0 disables it (0-120 s).',
         `<input id="set-hung" type="number" min="0" max="120" step="5" value="${s.autoRestartHungSec}" style="width:120px">`)}
     </div>
     <div class="section-title">Updates</div>
     <div class="card pad">
       ${settingRow('Automatic updates', updateText, updateActions, 'update-status-line')}
-      <div class="hint" style="margin-top:-10px">Updates install themselves - Fleet downloads, swaps its files and restarts. No separate installer window.</div>
+      <div class="hint" style="margin-top:-10px">Updates apply in place: Fleet downloads, swaps its files and restarts. No separate installer window.</div>
     </div>
     <div class="inline" style="margin-top:20px">
       <button class="btn primary" data-action="settings-save">${icon('check')} Save settings</button>
@@ -2872,13 +2872,13 @@ function settingRow(label, desc, control, descId) {
 
 /* Updater status line — shared by the settings render and live progress patches. */
 function updaterStatusText(up, appVersion) {
-  if (up.state === 'ready' || up.state === 'available') return `Version ${up.latestVersion || up.availableVersion || 'update'} is available - install it automatically`;
+  if (up.state === 'ready' || up.state === 'available') return `Version ${up.latestVersion || up.availableVersion || 'update'} is available — install it automatically`;
   if (up.state === 'downloading') {
-    if (up.total) return `Downloading update - ${fmtBytes(up.received)} of ${fmtBytes(up.total)}${up.percent != null ? ` (${up.percent}%)` : ''}`;
+    if (up.total) return `Downloading update — ${fmtBytes(up.received)} of ${fmtBytes(up.total)}${up.percent != null ? ` (${up.percent}%)` : ''}`;
     return 'Downloading update…';
   }
-  if (up.state === 'restarting') return 'Update installed - Fleet is restarting';
-  if (up.state === 'applying') return 'Installing the new files - Fleet stays open';
+  if (up.state === 'restarting') return 'Update installed — restarting Fleet';
+  if (up.state === 'applying') return 'Installing the new files — Fleet stays open';
   if (up.state === 'staging') return 'Unpacking the update…';
   if (up.state === 'checking') return 'Checking for updates…';
   if (up.state === 'error') return `Update failed: ${up.error || 'unknown error'}`;
@@ -2912,14 +2912,14 @@ async function saveSettings() {
 views.help = function () {
   mount(`
     <div class="help">
-      <div class="page-head"><h1>Help</h1><p>Everything you need to use Fleet - no external guide required.</p></div>
+      <div class="page-head"><h1>Help</h1><p>Everything you need to use Fleet.</p></div>
 
       <h2>What Fleet does</h2>
-      <p>Fleet runs several Roblox clients on one PC at the same time and manages them from one place. Normally Roblox allows only a single client; Fleet works around that automatically - no settings to change.</p>
+      <p>Fleet runs multiple Roblox clients on one PC and manages them from one place. Roblox allows a single client by default; Fleet handles that automatically — no configuration required.</p>
 
       <h2>Quick start</h2>
       <div class="step"><div class="n">1</div><div>On <b>Accounts</b>, click <b>Add account</b>. Fleet opens a Tauri Roblox sign-in window and saves the account after Roblox sets the session.</div></div>
-      <div class="step"><div class="n">2</div><div>Need a fresh account instead? Click <b>Create account</b>, fill in the username, password and birthday, and Fleet opens Roblox's signup form already filled in — it clicks through the steps too, so just solve the captcha and the new account is saved here, signed in.</div></div>
+      <div class="step"><div class="n">2</div><div>To create one, click <b>Create account</b>, fill in the username, password and birthday, and Fleet opens Roblox's sign-up form already filled in. Fleet advances the steps; solve the captcha and the account is saved and signed in.</div></div>
       <div class="step"><div class="n">3</div><div>On <b>Instances</b>, choose <b>With account</b> or <b>Signed out</b>. Optionally paste a Place ID, game URL, or exact-server link, then click <b>Launch</b>.</div></div>
       <div class="step"><div class="n">4</div><div>Every client appears under <b>Running clients</b>, where you can focus, restart or end it.</div></div>
 
@@ -2930,19 +2930,19 @@ views.help = function () {
       <p>Press <b>Ctrl+K</b> for the <b>command palette</b>: type to fuzzy-search sections, accounts, favorites, recent games, watched people and power actions (update check, arrange, end all, cleanup, theme, diagnostics), then run one with <b>Enter</b> or its <b>1-9</b> digit. <b>Ctrl+1-9</b> jumps straight to a rail section.</p>
 
       <h2>Watch people</h2>
-      <p>On <b>People</b>, the eye button on any card or profile watches that person. A background poll (it works while the window is hidden) toasts the moment they join or switch games, and the People home shows a Watching card with a one-click <b>Join</b>. Up to 20 people, stored locally.</p>
+      <p>On <b>People</b>, the eye button on a card or profile adds that person to the watch list. A background poll — active even while the window is hidden — reports when they join or switch games, and the People home shows a Watching card with a one-click <b>Join</b>. Up to 20 people, stored locally.</p>
 
       <h2>Watchdog (auto-rejoin)</h2>
-      <p>Tick <b>Keep alive</b> on the Instances launch panel — or in <b>Fill</b>, or on a saved session — and Fleet watches those accounts' clients in the background. When one crashes, disconnects or gets kicked, Fleet puts that account straight back into the same server. Every rejoin mints a fresh launch ticket, retries back off (10 s doubling, capped at 5 min), and after five straight tries with no five-minute stable run the watchdog leaves that account alone — a broken join can't loop forever. Ending a client, <b>End all</b> or restarting disarms it, so the watchdog never undoes something you did on purpose. Armed watches survive a Fleet restart but stay dormant until the account is seen in game again. Tune the delay, the give-up count and stuck-client restarts in <b>Settings · Watchdog</b>.</p>
+      <p>Tick <b>Keep alive</b> on the launch panel — or in <b>Fill</b> or on a saved session — and Fleet watches those accounts' clients in the background. When one crashes, disconnects or is kicked, the watchdog rejoins the same server with that account. Each rejoin uses a fresh launch ticket, retries back off (10 s doubling, capped at 5 min), and after five consecutive failures without a five-minute stable run the watchdog stops retrying — a broken join never loops forever. Ending a client, <b>End all</b> or restarting disarms the watch, so nothing you close on purpose relaunches. Watches survive a Fleet restart but stay dormant until the account is in game again. The delay, give-up count and stuck-client restart live in <b>Settings · Watchdog</b>.</p>
 
       <h2>Fill the emptiest servers</h2>
-      <p>On a game's server list, <b>Fill</b> scans the place, picks the servers with the most free slots and packs your selected accounts into them — all in one server when it has room for everyone, or spread across the least crowded ones. Each account gets its own launch ticket, spaced like any multi-launch, and the whole crew can be handed to the watchdog in the same click.</p>
+      <p>On a game's server list, <b>Fill</b> scans the place, picks the servers with the most free slots and places the selected accounts in them — all in one server when there is room, otherwise spread across the least crowded ones. Each account launches with its own ticket, spaced like any multi-launch, and the whole group can be handed to the watchdog in the same click.</p>
 
       <h2>Sessions and appearance</h2>
       <p>On <b>Instances</b>, <b>Save current setup</b> stores the selected accounts, game/server target, window arrangement and watchdog arming for one-click reuse. In <b>Settings · Appearance</b>, choose System, Light, or Dark.</p>
 
       <h2>How multi-instance works</h2>
-      <p>Roblox guards single-instance with named Windows objects, including a mutex tied to the client's exact program path. Fleet launches each client through its own folder -junction- (a unique path, no files copied) and a small guard clears the shared lock as it reappears - so every launch opens a new client that stays running.</p>
+      <p>Roblox enforces a single client with named Windows objects, including a mutex tied to the client's exact program path. Fleet launches each client through its own folder junction (a unique path — no files copied), and a small guard clears the shared lock as it reappears, so every launch opens a new client that stays running.</p>
 
       <h2>Tools</h2>
       <ul>
@@ -2954,9 +2954,9 @@ views.help = function () {
 
       <h2>Troubleshooting</h2>
       <div class="faq">
-        <details><summary>-Roblox not found-</summary><div class="a">Install Roblox, or open <b>Settings · Roblox location</b>, switch to <b>Manual path</b> and point Fleet at <code>RobloxPlayerBeta.exe</code>.</div></details>
-        <details><summary>A client closes after sign-in</summary><div class="a">The launch ticket may have expired - try again. Give each launch a few seconds (raise <b>Settings · Delay between launches</b> on a slow PC).</div></details>
-        <details><summary>An account shows -Session expired-</summary><div class="a">Roblox sessions don't last forever. Click <b>Sign in again</b> on that account to refresh it through the Tauri sign-in window.</div></details>
+        <details><summary>“Roblox not found”</summary><div class="a">Install Roblox, or open <b>Settings · Roblox location</b>, switch to <b>Manual path</b> and point Fleet at <code>RobloxPlayerBeta.exe</code>.</div></details>
+        <details><summary>A client closes after sign-in</summary><div class="a">The launch ticket may have expired — try again. Give each launch a few seconds, or raise <b>Settings · Delay between launches</b> on a slow PC.</div></details>
+        <details><summary>An account shows “Session expired”</summary><div class="a">Roblox sessions expire over time. Click <b>Sign in again</b> on that account to refresh it.</div></details>
         <details><summary>Is my login safe?</summary><div class="a">Existing saved sessions remain local to this PC and are never shown in the UI.</div></details>
       </div>
 
@@ -3039,7 +3039,7 @@ document.addEventListener('click', async (e) => {
       const placeEl = $('#lp-place');
       const raw = placeEl ? placeEl.value.trim() : state.placeId;
       const target = parseRobloxTarget(raw);
-      if (target.invalid) { toast('Could not read a place ID from that — paste a Roblox game link or a numeric ID', 'bad'); break; }
+      if (target.invalid) { toast('Paste a Roblox game link or a numeric place ID', 'bad'); break; }
       state.placeId = raw;
       elAction.disabled = true;
       const r = target.gameId && target.placeId
@@ -3051,7 +3051,7 @@ document.addEventListener('click', async (e) => {
         const ka = $('#lp-keepalive');
         if (ka && ka.checked && target.placeId) {
           armWatchdog(ids.map(id => ({ accountId: id, placeId: target.placeId, gameInstanceId: target.gameId, name: 'the game' })));
-          toast('Watchdog armed - dropped clients rejoin automatically', 'good');
+          toast('Watchdog enabled — dropped clients rejoin automatically', 'good');
         }
       } else toast((r && r.error) || 'Launch failed', 'bad');
       break;
@@ -3169,7 +3169,7 @@ document.addEventListener('click', async (e) => {
 
       closeCreateModal();
       if (state.view === 'accounts') views.accounts();
-      toast('Opening Roblox signup — Fleet fills and clicks through; just solve the captcha');
+      toast('Opening Roblox sign-up — solve the captcha when it appears');
       const r = await call(() => api.accounts.create({
         username: payload.username,
         password: payload.password,
@@ -3193,7 +3193,7 @@ document.addEventListener('click', async (e) => {
       if (state.addingAccount) break;
       state.addingAccount = true;
       if (state.view === 'accounts') views.accounts();
-      toast('Opening account flow…');
+      toast('Opening Roblox sign-in…');
       const r = await call(() => api.accounts.add(), undefined, 0);
       state.addingAccount = false;
       if (r && r.ok) { await loadAccounts(); toast((r.updated ? 'Account updated: ' : 'Account added: ') + (r.account ? r.account.username : ''), 'good'); }
@@ -3207,7 +3207,7 @@ document.addEventListener('click', async (e) => {
       if (state.addingAccount) break;
       state.addingAccount = true;
       if (state.view === 'accounts') views.accounts();
-      toast('Opening account flow…');
+      toast('Opening Roblox sign-in…');
       const r = await call(() => api.accounts.add(), undefined, 0);
       state.addingAccount = false;
       if (r && r.ok) {
@@ -3247,7 +3247,7 @@ document.addEventListener('click', async (e) => {
     case 'refresh-games': gamesBrowse(); break;
     case 'random-game': {
       const list = visibleGames();
-      if (!list.length) { toast('No games loaded yet', 'bad'); break; }
+      if (!list.length) { toast('Load games first', 'bad'); break; }
       const gm = list[Math.floor(Math.random() * list.length)];
       joinPlace(gm.placeId, gm.name);
       break;
@@ -3273,7 +3273,7 @@ document.addEventListener('click', async (e) => {
       if (inp) { inp.value = text; inp.focus(); }
       const box = $('#clip-offer');
       if (box) { box.hidden = true; box.innerHTML = ''; }
-      toast('Link loaded - pick accounts and launch', 'good');
+      toast('Link loaded — choose accounts and launch', 'good');
       break;
     }
     case 'clip-dismiss': {
@@ -3304,7 +3304,7 @@ document.addEventListener('click', async (e) => {
       if (!ids.length) { toast('Select the accounts to include first', 'bad'); break; }
       const placeEl = $('#lp-place');
       const target = parseRobloxTarget(placeEl ? placeEl.value.trim() : state.placeId);
-      if (target.invalid) { toast('Could not read a place ID from that — paste a Roblox game link or a numeric ID', 'bad'); break; }
+      if (target.invalid) { toast('Paste a Roblox game link or a numeric place ID', 'bad'); break; }
       state.sessionDraft = {
         accountIds: ids.filter(id => state.accounts.some(account => account.id === id)),
         placeId: target.placeId,
@@ -3330,7 +3330,7 @@ document.addEventListener('click', async (e) => {
     }
     case 'session-save-confirm': {
       const draft = state.sessionDraft;
-      if (!draft || !draft.accountIds.length) { closeModal(); toast('That session setup is no longer available', 'bad'); break; }
+      if (!draft || !draft.accountIds.length) { closeModal(); toast('That session is no longer available', 'bad'); break; }
       const nameEl = $('#session-name');
       const sessions = loadSessions();
       sessions.push({
@@ -3570,7 +3570,7 @@ document.addEventListener('click', async (e) => {
         }
         const row = $('#set-path-row'); if (row) row.style.display = '';
         if (!r.valid) {
-          toast(r.reason || 'That file does not look like RobloxPlayerBeta.exe', 'bad');
+          toast(r.reason || 'That file is not RobloxPlayerBeta.exe', 'bad');
           break;
         }
         const saved = await call(() => api.settings.save(currentSettingsDraft()));
@@ -3772,7 +3772,7 @@ if (api) {
       // restart into them. updater_restart spawns the new Fleet.exe with
       // --takeover=<pid> and closes this window; the fallback covers older
       // builds where the command is missing.
-      toast('Update installed - restarting Fleet', 'good');
+      toast('Update installed — restarting Fleet', 'good');
       setTimeout(() => {
         call(() => api.updater.restart(), { ok: false })
           .then((r) => { if (!r || !r.ok) { try { api.ui.window.close(); } catch (_) {} } })
@@ -3781,7 +3781,7 @@ if (api) {
     }
     if (status && status.state === 'ready') toast(`Fleet ${status.availableVersion || 'update'} is ready`, 'good');
     if (status && status.state === 'error' && (prev === 'downloading' || prev === 'staging' || prev === 'applying' || prev === 'restarting' || prev === 'checking')) {
-      toast('Update failed - see Settings for details', 'bad');
+      toast('Update failed — see Settings for details', 'bad');
     }
   });
 }

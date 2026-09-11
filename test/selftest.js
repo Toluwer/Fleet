@@ -632,7 +632,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && rendererModel.parseRobloxTarget('not a Roblox target').invalid === true
     && rendererModel.parseRobloxTarget('').invalid === false);
   check('Account-less installs can search public profiles without exposing account cookies',
-    peopleSource.includes("'User-Agent': 'Fleet/1.8.6'")
+    peopleSource.includes("'User-Agent': 'Fleet/1.8.7'")
     && peopleSource.includes('search-api/omni-search')
     && peopleSource.includes("verticalType: 'user'")
     && peopleSource.includes("presence: 'Unknown'")
@@ -1339,14 +1339,17 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && installerMain.includes('"Fleet"')
     && installerMain.includes('"Multi-instance Roblox launcher"')
     && /version_to_install\(\)/.test(installerMain));
-  check('Installer matches the app theme: dark surfaces, dark caption, native dark controls',
+  check('Installer matches the app theme: dark surfaces, dark caption, rounded corners, no logo',
     installerMain.includes('DarkMode_Explorer')
     && installerMain.includes('DWMWA_USE_IMMERSIVE_DARK_MODE')
     && installerMain.includes('0x0013_0F0E') // #0e0f13 window
     && installerMain.includes('0x00F6_823B') // #3b82f6 Fleet blue progress fill
-    && installerMain.includes('STM_SETIMAGE') // logo in the header
+    && installerMain.includes('DWMWA_WINDOW_CORNER_PREFERENCE') // 8px DWM-rounded window corners
+    && installerMain.includes('DWMWCP_ROUND')
+    && !installerMain.includes('STM_SETIMAGE') // no logo inside the installer
+    && !installerMain.includes('LoadImageW')
     && /IDT_SWEEP/.test(installerMain)); // flat indeterminate uninstall progress
-  check('Installer uses only real native Windows controls (no drawn chrome)',
+  check('Installer buttons are custom drawn (anti-aliased, rounded); edit and checkboxes stay native',
     installerMain.includes('w!("BUTTON")')
     && installerMain.includes('w!("EDIT")')
     && installerMain.includes('w!("STATIC")')
@@ -1354,8 +1357,10 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && installerBuild.includes('Common-Controls')
     && installerBuild.includes('PerMonitorV2')
     && installerBuild.includes('asInvoker')
-    && !installerMain.includes('BS_OWNERDRAW')
-    && !installerMain.includes('WM_DRAWITEM')
+    && installerMain.includes('BS_OWNERDRAW')
+    && installerMain.includes('WM_DRAWITEM')
+    && installerMain.includes('GdipFillPath') // anti-aliased rounded button fills
+    && installerMain.includes('BS_NOTIFY') // hover notifications
     && !installerMain.includes('WM_PAINT =>')); // (paint is just validation, never draws chrome)
   check('Installer payload is a zip appended to the exe',
     buildInstallerScript.includes("Compress-Archive")
@@ -1366,7 +1371,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   check('Uninstaller is the same app without a payload',
     installerMain.includes('--uninstall')
     && installerMain.includes('"Remove Fleet?"')
-    && installerMain.includes('"Fleet is gone."'));
+    && installerMain.includes('"Fleet was removed"'));
   check('Joining a person passes numeric ids to Tauri (strict i64 deserialization)',
     tauriBridgeSource.includes('function coerceNumber(value)')
     && tauriBridgeSource.includes("invokeWithNumbers('launch_join_person_multi', ['targetUserId']")
@@ -1646,7 +1651,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
       !/id="create-count"/.test(js) && !/CREATE_MAX_ACCOUNTS/.test(js) && !/syncCreateBatchUi/.test(js));
     check('submit opens exactly one Roblox signup',
       !/api\.signup\.batchNames/.test(js) && !/state\.createQueue/.test(js)
-        && /Opening Roblox signup/.test(js));
+        && /Opening Roblox sign-up/.test(js));
     check('bridge and backend dropped the batch channel',
       !/batchNames/.test(bridge) && !/signup_batch_usernames/.test(backend));
     check('Rust dropped the batch names passthrough',

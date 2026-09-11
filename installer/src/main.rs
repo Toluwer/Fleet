@@ -1,17 +1,15 @@
-// Fleet's installer - one page, no wizard.
+// Fleet installer - a single-page Win32 application.
 //
-// The window IS the installer: a fixed Fleet-branded header (logo, wordmark,
-// version) and a content area that swaps in place - install form -> progress
-// -> done - never a chain of "Next >" pages. It matches Fleet's own dark
-// theme, and every interactive control is a REAL native Windows control
-// (BUTTON / EDIT / STATIC / msctls_progress32, comctl32 v6 visual styles
-// with the DarkMode_Explorer subclass, a dark immersive title bar). Nothing
-// is owner-drawn; no fake chrome anywhere.
+// One window: a fixed header (wordmark, tagline, version) and a content area
+// that swaps in place - install form -> progress -> done. Push buttons are
+// custom drawn (GDI+, anti-aliased 8px rounding, Fleet's palette); the folder
+// edit, checkboxes and title bar stay native Windows controls in their dark
+// visual style. The window uses Windows 11 rounded corners.
 //
-// Flow (fresh):     one page: folder + shortcut -> Install Fleet -> progress -> done.
-// Flow (update):    one page: v{old} -> v{new} -> Update Fleet -> progress -> done.
-// Flow (same ver):  one page: "Fleet is up to date." -> Close.
-// Flow (uninstall): one page: Remove Fleet? -> progress -> gone.
+// Flow (fresh):     folder + shortcut -> Install Fleet -> progress -> done.
+// Flow (update):    v{old} -> v{new} -> Update Fleet -> progress -> done.
+// Flow (same ver):  up to date -> Close.
+// Flow (uninstall): Remove Fleet? -> progress -> removed.
 
 #![cfg_attr(not(feature = "console"), windows_subsystem = "windows")]
 
@@ -24,35 +22,49 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWINDOWATTRIBUTE};
+use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Graphics::Dwm::{
+    DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE,
+    DWMWCP_ROUND, DWMWINDOWATTRIBUTE,
+};
 use windows::Win32::Graphics::Gdi::{
-    CreateFontW, CreateSolidBrush, DeleteObject, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
+    CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, InvalidateRect, SelectObject,
+    SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
+    DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
     FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY,
     HBRUSH, HFONT, HGDIOBJ, HDC,
+};
+use windows::Win32::Graphics::GdiPlus::{
+    FillModeAlternate, GdipAddPathArc, GdipClosePathFigures, GdipCreateFromHDC, GdipCreatePath,
+    GdipCreatePen1, GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePath,
+    GdipDeletePen, GdipDrawPath, GdipFillPath, GdipSetSmoothingMode, GdiplusStartup,
+    GdiplusStartupInput, GpBrush, GpGraphics, GpPath, GpPen, GpSolidFill, SmoothingModeAntiAlias,
+    Status, UnitPixel,
 };
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::UI::Controls::{
-    InitCommonControlsEx, INITCOMMONCONTROLSEX, PBM_SETBARCOLOR, PBM_SETBKCOLOR, PBM_SETPOS,
-    PBM_SETRANGE32, SetWindowTheme,
+    BCN_HOTITEMCHANGE, DRAWITEMSTRUCT, HICF_ENTERING, InitCommonControlsEx, INITCOMMONCONTROLSEX,
+    NMBCHOTITEM, NMHDR, ODS_DISABLED, ODS_FOCUS, ODS_SELECTED, ODT_BUTTON, PBM_SETBARCOLOR,
+    PBM_SETBKCOLOR, PBM_SETPOS, PBM_SETRANGE32, SetWindowTheme,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRect, BN_CLICKED, BM_GETCHECK, BM_SETCHECK, CREATESTRUCTW, CW_USEDEFAULT,
-    DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, GetClassNameW, GetDlgCtrlID, GetMessageW,
-    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GWLP_USERDATA, HICON, HMENU, HWND_TOP,
-    IDC_ARROW, IDI_APPLICATION, IMAGE_ICON, IDOK, IsDialogMessageW, IsWindowVisible, KillTimer,
-    LoadCursorW, LoadIconW, LoadImageW, LR_DEFAULTCOLOR, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW,
+    DefWindowProcW, DestroyWindow, DispatchMessageW, GetClassNameW, GetDlgCtrlID, GetMessageW,
+    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GWLP_USERDATA, HMENU, HWND_TOP,
+    IDC_ARROW, IDI_APPLICATION, IDOK, IsDialogMessageW, IsWindowVisible, KillTimer,
+    LoadCursorW, LoadIconW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW,
     SendMessageW, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos,
-    SetWindowTextW, ShowWindow, STM_SETIMAGE,
+    SetWindowTextW, ShowWindow,
     SystemParametersInfoW, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW,
     WS_CAPTION, WS_EX_CLIENTEDGE, WS_EX_LAYERED, WS_MINIMIZEBOX, WS_SYSMENU,
     LWA_ALPHA, MB_DEFBUTTON2, MB_ICONQUESTION, MB_OKCANCEL, MSG,
     SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SPI_GETWORKAREA,
-    WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_CTLCOLOREDIT, WM_DPICHANGED, WM_NCDESTROY,
+    WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_CTLCOLOREDIT, WM_DPICHANGED,
+    WM_DRAWITEM, WM_GETFONT, WM_NCDESTROY, WM_NOTIFY,
     WM_NCCREATE, WM_SETFONT, WM_TIMER,
 };
 
@@ -74,6 +86,30 @@ const HAIR: u32   = 0x002E_2626; // #26262e hairlines
 const TRACK: u32  = 0x0034_2D2C; // #2c2d34 progress track
 const ACCENT: u32 = 0x00F6_823B; // #3b82f6 Fleet blue
 const DANGER: u32 = 0x00AC_9BFF; // #ff9bac error text
+
+// Custom-drawn button palette (matches the app's .btn styles).
+const SURFACE: u32   = 0x0020_1A1A; // #1a1a20 secondary fill
+const SURFACE_2: u32 = 0x0027_2020; // #202027 secondary fill (hover)
+const SURFACE_3: u32 = 0x0030_2727; // #272730 secondary fill (pressed)
+const HAIR_2: u32   = 0x0047_3D3D; // #3d3d47 secondary border
+const ON_INK: u32    = 0x00FF_FBF8; // #f8fbff text on the primary fill
+const PRIM: u32      = 0x00EB_6325; // #2563eb primary fill
+const PRIM_DOWN: u32 = 0x00CE_5720; // #2057ce primary fill (pressed)
+const PRIM_OFF: u32  = 0x0069_31_17; // #173169 primary fill (disabled)
+const PRIM_OFF_TX: u32 = 0x00A5_81_71; // #7181a5 primary text (disabled)
+const SEC_OFF: u32   = 0x0018_1313; // #131318 secondary fill (disabled)
+const DANGER_RING: u32 = 0x0035_266E; // #6e2635 danger border
+const DANGER_EDGE: u32 = 0x0059_42DC; // #dc4259 danger border (hover)
+const DANGER_HOT: u32  = 0x001D_1632; // #32161d danger fill (hover)
+const DANGER_DOWN: u32 = 0x0019_132A; // #2a1319 danger fill (pressed)
+const FOCUS_TX: u32   = 0x00FF_CBA9; // #a9cbff focus ring on the primary fill
+
+/// Button corner radius in logical pixels.
+const BTN_RADIUS: f32 = 8.0;
+
+// Button styles (winuser.h).
+const BS_OWNERDRAW: u32 = 0x0000_000B;
+const BS_NOTIFY: u32    = 0x0000_4000;
 
 // Timer ids
 const IDT_FADE: usize = 1;
@@ -173,6 +209,8 @@ struct App {
     demo: bool,
     stage: Stage,
     ctrls: Vec<HWND>,
+    /// Control id currently under the mouse (drives button hover states).
+    hover_ctl: Option<i32>,
     alpha: u8,
     path: String,
     desktop_shortcut: bool,
@@ -201,8 +239,6 @@ struct App {
     resolving: bool,
     /// Indeterminate-progress sweep position (uninstalling).
     sweep: i32,
-    /// The 48px Fleet logo loaded for the current DPI.
-    hlogo: Option<HANDLE>,
 }
 
 // ------------------------------------------------------------------ helpers
@@ -245,25 +281,25 @@ fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 fn validate_path(raw: &str) -> Result<String, &'static str> {
     let t = raw.trim().trim_matches('"').trim();
     if t.is_empty() {
-        return Err("Type a folder path, like C:\\Apps\\Fleet.");
+        return Err("Enter a folder path, such as C:\\Apps\\Fleet.");
     }
     let unc = t.starts_with("\\\\");
     if !unc {
         let b = t.as_bytes();
         if b.len() < 3 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\' {
-            return Err("Use a full path that starts with a drive, like C:\\Apps\\Fleet.");
+            return Err("Enter a full path starting with a drive letter, such as C:\\Apps\\Fleet.");
         }
         if b.len() == 3 {
-            return Err("Pick a folder, not an entire drive.");
+            return Err("Choose a folder, not an entire drive.");
         }
     }
     let body = if unc { &t[2..] } else { &t[3..] };
     if body.contains(':') {
-        return Err("That character isn't allowed in a folder path.");
+        return Err("That character is not allowed in a folder path.");
     }
     for ch in ['<', '>', '|', '?', '*'] {
         if body.contains(ch) {
-            return Err("That character isn't allowed in a folder path.");
+            return Err("That character is not allowed in a folder path.");
         }
     }
     let mut cleaned = t.to_string();
@@ -295,9 +331,9 @@ fn make_font(face: PCWSTR, weight: i32, logical_height: i32, scale: f32) -> HFON
     }
 }
 
-/// Native dark visual style for interactive controls: the same subclass
-/// Explorer's own dark mode rides on (Windows 10 1809+ / Windows 11). The
-/// controls stay 100% native - this only asks comctl32 for its dark skin.
+/// Native dark visual style for the remaining native controls (folder edit,
+/// checkboxes): the same subclass Explorer's own dark mode rides on
+/// (Windows 10 1809+ / Windows 11).
 unsafe fn dark_control(hwnd: HWND) {
     let _ = SetWindowTheme(hwnd, w!("DarkMode_Explorer"), None);
 }
@@ -314,23 +350,16 @@ unsafe fn dark_titlebar(hwnd: HWND) {
     }
 }
 
-/// Loads the Fleet logo (embedded icon resource) at 48 logical px.
-unsafe fn load_logo(a: &mut App) {
-    let size = (48.0 * a.scale).round().max(16.0) as i32;
-    if let Ok(h) = LoadImageW(
-        Some(a.hinst),
-        PCWSTR(1 as *const u16), // MAKEINTRESOURCE(1) - the embedded icon
-        IMAGE_ICON,
-        size,
-        size,
-        LR_DEFAULTCOLOR,
-    ) {
-        if let Some(old) = a.hlogo.replace(h) {
-            let _ = DestroyIcon(HICON(old.0));
-        }
-    } else {
-        debug_log("logo LoadImageW failed - running without the header logo");
-    }
+/// Rounded window corners (8 px at 96 DPI, scaled with DPI). DWM composites
+/// the mask itself, so the curve is anti-aliased; Windows 10 ignores the
+/// attribute and keeps square corners.
+unsafe fn round_corners(hwnd: HWND) {
+    let pref = DWMWCP_ROUND;
+    let pv: *const core::ffi::c_void =
+        &pref as *const windows::Win32::Graphics::Dwm::DWM_WINDOW_CORNER_PREFERENCE
+            as *const core::ffi::c_void;
+    let cb = std::mem::size_of::<i32>() as u32;
+    let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, pv, cb);
 }
 
 // ------------------------------------------------------------------ install workers
@@ -353,10 +382,7 @@ fn run_install(
         .unwrap_or(false);
     let pkg = if fetch_latest {
         let l = latest.as_ref().unwrap();
-        let _ = tx.send(Msg::Note(format!(
-            "Downloading Fleet v{} - the newest release…",
-            l.version
-        )));
+        let _ = tx.send(Msg::Note(format!("Downloading Fleet v{}…", l.version)));
         let url = net::asset_url(&l.zip_name);
         debug_log(&format!("fetching newer release {url}"));
         let tx_progress = tx.clone();
@@ -366,17 +392,17 @@ fn run_install(
         let bytes = net::http_get(&url, &mut progress)?;
         if !net::sha512_matches(&bytes, &l.sha512_b64) {
             return Err(
-                "The downloaded release failed its checksum verification.\nThe connection may have been interrupted - try again.".into(),
+                "The download failed verification.\nCheck the connection and try again.".into(),
             );
         }
         if l.size > 0 && bytes.len() as u64 != l.size {
-            return Err("The downloaded release has an unexpected size.\nTry again in a moment.".into());
+            return Err("The download is incomplete.\nTry again.".into());
         }
-        let _ = tx.send(Msg::Note("Unpacking the new version…".into()));
+        let _ = tx.send(Msg::Note("Extracting the new version…".into()));
         Package::from_bytes(bytes)
     } else {
         Package::open()
-            .ok_or("This copy of the installer is missing its files.\nPlease download Fleet again.")?
+            .ok_or("This installer is incomplete.\nDownload Fleet again.")?
     };
     let entries = pkg.entries()?;
     let total: u64 = entries.iter().map(|e| e.raw_size).sum();
@@ -392,7 +418,7 @@ fn run_install(
     }
 
     std::fs::create_dir_all(dest)
-        .map_err(|e| format!("Could not create the folder {}\n{e}", dest.display()))?;
+        .map_err(|e| format!("Could not create {}:\n{e}", dest.display()))?;
     for exe in ["Fleet.exe", "node.exe", "uninstall.exe"] {
         shell::rotate_if_locked(&dest.join(exe))?;
     }
@@ -409,12 +435,12 @@ fn run_install(
     // the install folder - never from temp - and is removed either way.
     let bootstrapper = dest.join("WebView2Setup.exe");
     if !shell::webview2_installed() && bootstrapper.exists() {
-        let _ = tx.send(Msg::Note("Setting up the WebView2 runtime - one time only…".into()));
+        let _ = tx.send(Msg::Note("Installing the WebView2 runtime (one time only)…".into()));
         shell::install_webview2(&bootstrapper)?;
     }
     let _ = std::fs::remove_file(&bootstrapper);
 
-    let _ = tx.send(Msg::Note("Finishing up…".into()));
+    let _ = tx.send(Msg::Note("Finalizing…".into()));
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
@@ -474,7 +500,7 @@ fn run_uninstall(dir: &PathBuf, delete_data: bool, tx: &Sender<Msg>) -> Result<(
     if dir.exists() {
         std::fs::remove_dir_all(dir).map_err(|e| {
             format!(
-                "Some files in {} couldn't be removed.\nClose Fleet and run this again.\n\n{e}",
+                "Some files in {} could not be removed.\nClose Fleet and try again.\n\n{e}",
                 dir.display()
             )
         })?;
@@ -617,9 +643,8 @@ unsafe extern "system" fn wnd_proc(
                 resolve_deadline: 0,
                 resolving,
                 sweep: 0,
-                hlogo: None,
+                hover_ctl: None,
             });
-            load_logo(&mut app);
             let raw = Box::into_raw(app);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, raw as isize);
             DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -628,8 +653,10 @@ unsafe extern "system" fn wnd_proc(
         WM_CREATE => {
             if let Some(a) = app_from(hwnd) {
                 size_window(a);
-                // Match the caption to the dark client area.
+                // Match the caption to the dark client area, then round the
+                // window corners (anti-aliased by DWM on Windows 11).
                 dark_titlebar(hwnd);
+                round_corners(hwnd);
                 // Start fully transparent; the first fade brings the window in.
                 // (Controls are created after the window is visible - wine
                 // otherwise never paints children made on a hidden window.)
@@ -686,6 +713,36 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
 
+        WM_DRAWITEM => {
+            // Custom-drawn push buttons (BS_OWNERDRAW).
+            if let Some(a) = app_from(hwnd) {
+                let dis = &*(lparam.0 as *const DRAWITEMSTRUCT);
+                if dis.CtlType == ODT_BUTTON {
+                    draw_owner_button(a, dis);
+                    return LRESULT(1);
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+
+        WM_NOTIFY => {
+            // BCN_HOTITEMCHANGE (buttons carry BS_NOTIFY): repaint on hover in/out.
+            if let Some(a) = app_from(hwnd) {
+                let nm = &*(lparam.0 as *const NMHDR);
+                if nm.code as u32 == BCN_HOTITEMCHANGE {
+                    let hot = &*(lparam.0 as *const NMBCHOTITEM);
+                    let id = nm.idFrom as i32;
+                    if (hot.dwFlags.0 & HICF_ENTERING.0) != 0 {
+                        a.hover_ctl = Some(id);
+                    } else if a.hover_ctl == Some(id) {
+                        a.hover_ctl = None;
+                    }
+                    let _ = InvalidateRect(Some(nm.hwndFrom), None, false);
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+
         WM_CTLCOLORSTATIC => {
             if let Some(a) = app_from(hwnd) {
                 let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
@@ -725,11 +782,11 @@ unsafe extern "system" fn wnd_proc(
             if let Some(a) = app_from(hwnd) {
                 if a.busy {
                     let text = if a.uninstall_mode {
-                        "Fleet isn't finished removing itself yet.\nQuit anyway?"
+                        "Fleet is still being removed.\nQuit anyway?"
                     } else if a.updating {
-                        "Fleet isn't finished updating yet.\nQuit anyway?"
+                        "The update is still in progress.\nQuit anyway?"
                     } else {
-                        "Fleet isn't finished installing yet.\nQuit anyway?"
+                        "Setup is still running.\nQuit anyway?"
                     };
                     let title = if a.uninstall_mode { UNINSTALL_TITLE } else { APP_TITLE };
                     let r = MessageBoxW(
@@ -763,7 +820,6 @@ unsafe extern "system" fn wnd_proc(
                     SWP_NOZORDER | SWP_NOACTIVATE,
                 );
                 rebuild_fonts(a);
-                load_logo(a);
                 build_stage(a);
             }
             LRESULT(0)
@@ -772,11 +828,7 @@ unsafe extern "system" fn wnd_proc(
         WM_NCDESTROY => {
             let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
             if raw != 0 {
-                let mut app = Box::from_raw(raw as *mut App);
-                if let Some(h) = app.hlogo.take() {
-                    unsafe { let _ = DestroyIcon(HICON(h.0)); }
-                }
-                drop(app);
+                drop(Box::from_raw(raw as *mut App));
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             }
             let r = DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -1025,6 +1077,142 @@ fn fade_quit(a: &mut App) {
     start_fade(a, 0, 180, After::Quit);
 }
 
+// ------------------------------------------------------------------ button drawing
+
+/// The button id set that draws as a filled primary action.
+fn is_primary(id: i32) -> bool {
+    matches!(id, IDC_INSTALL | IDC_LAUNCH | IDC_RETRY)
+}
+
+/// COLORREF (0x00BBGGRR) -> GDI+ ARGB (0xAARRGGBB).
+fn argb(c: u32) -> u32 {
+    0xFF00_0000 | ((c & 0x0000_00FF) << 16) | (c & 0x0000_FF00) | ((c & 0x00FF_0000) >> 16)
+}
+
+/// Builds a closed rounded-rectangle path (device pixels).
+unsafe fn rounded_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> *mut GpPath {
+    let mut path: *mut GpPath = std::ptr::null_mut();
+    if GdipCreatePath(FillModeAlternate, &mut path) != Status(0) {
+        return std::ptr::null_mut();
+    }
+    let d = 2.0 * r;
+    GdipAddPathArc(path, x, y, d, d, 180.0, 90.0);
+    GdipAddPathArc(path, x + w - d, y, d, d, 270.0, 90.0);
+    GdipAddPathArc(path, x + w - d, y + h - d, d, d, 0.0, 90.0);
+    GdipAddPathArc(path, x, y + h - d, d, d, 90.0, 90.0);
+    GdipClosePathFigures(path);
+    path
+}
+
+/// Draws one custom push button: an anti-aliased 8px-rounded Fleet-styled
+/// fill (primary / danger / secondary) with centered text and an optional
+/// focus ring. Mirrors the app's .btn, .btn.primary and .btn.danger styles.
+unsafe fn draw_owner_button(a: &mut App, dis: &DRAWITEMSTRUCT) {
+    let id = dis.CtlID as i32;
+    let pressed = (dis.itemState.0 & ODS_SELECTED.0) != 0;
+    let disabled = (dis.itemState.0 & ODS_DISABLED.0) != 0;
+    let focused = (dis.itemState.0 & ODS_FOCUS.0) != 0;
+    let hot = !disabled && a.hover_ctl == Some(id);
+
+    let (fill, border, text) = if is_primary(id) {
+        if disabled {
+            (PRIM_OFF, None, PRIM_OFF_TX)
+        } else if pressed {
+            (PRIM_DOWN, None, ON_INK)
+        } else if hot {
+            (ACCENT, None, ON_INK)
+        } else {
+            (PRIM, None, ON_INK)
+        }
+    } else if id == IDC_REMOVE {
+        if pressed {
+            (DANGER_DOWN, Some(DANGER_RING), DANGER)
+        } else if hot {
+            (DANGER_HOT, Some(DANGER_EDGE), DANGER)
+        } else {
+            (BG, Some(DANGER_RING), DANGER)
+        }
+    } else if disabled {
+        (SEC_OFF, Some(HAIR), INK_3)
+    } else if pressed {
+        (SURFACE_3, Some(HAIR_2), INK)
+    } else if hot {
+        (SURFACE_2, Some(HAIR_2), INK)
+    } else {
+        (SURFACE, Some(HAIR_2), INK)
+    };
+
+    let hdc = dis.hDC;
+    let rc = dis.rcItem;
+    let (x, y) = (rc.left as f32, rc.top as f32);
+    let (w, h) = ((rc.right - rc.left) as f32, (rc.bottom - rc.top) as f32);
+    let r = (BTN_RADIUS * a.scale)
+        .min(w / 2.0)
+        .min(h / 2.0)
+        .max(0.0);
+
+    // GDI+ draws the shape (anti-aliased); GDI draws the text (ClearType).
+    let mut gfx: *mut GpGraphics = std::ptr::null_mut();
+    if GdipCreateFromHDC(hdc, &mut gfx) == Status(0) && !gfx.is_null() {
+        GdipSetSmoothingMode(gfx, SmoothingModeAntiAlias);
+        let path = rounded_path(x, y, w, h, r);
+        if !path.is_null() {
+            let mut brush: *mut GpSolidFill = std::ptr::null_mut();
+            GdipCreateSolidFill(argb(fill), &mut brush);
+            GdipFillPath(gfx, brush as *mut GpBrush, path);
+            GdipDeleteBrush(brush as *mut GpBrush);
+
+            if let Some(b) = border {
+                // Crisp 1 px hairline (2 px at 200% scale and up).
+                let bw = if a.scale >= 2.0 { 2.0 } else { 1.0 };
+                let mut pen: *mut GpPen = std::ptr::null_mut();
+                GdipCreatePen1(argb(b), bw, UnitPixel, &mut pen);
+                GdipDrawPath(gfx, pen, path);
+                GdipDeletePen(pen);
+            }
+            GdipDeletePath(path);
+        }
+        if focused && !disabled {
+            // Focus ring: 1px inset rounded outline, accent-tinted on primary.
+            let inset = (2.0 * a.scale).round().max(2.0).min(w.min(h) / 4.0);
+            let fr = (r - inset).max(0.0);
+            let fpath = rounded_path(x + inset, y + inset, w - 2.0 * inset, h - 2.0 * inset, fr);
+            if !fpath.is_null() {
+                let ring = if is_primary(id) { FOCUS_TX } else { ACCENT };
+                let rw = if a.scale >= 2.0 { 2.0 } else { 1.0 };
+                let mut pen: *mut GpPen = std::ptr::null_mut();
+                GdipCreatePen1(argb(ring), rw, UnitPixel, &mut pen);
+                GdipDrawPath(gfx, pen, fpath);
+                GdipDeletePen(pen);
+                GdipDeletePath(fpath);
+            }
+        }
+        GdipDeleteGraphics(gfx);
+    }
+
+    // Centered label.
+    let fobj = SendMessageW(dis.hwndItem, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0)));
+    let hfont = HFONT(fobj.0 as *mut core::ffi::c_void);
+    let old = if !hfont.0.is_null() {
+        SelectObject(hdc, HGDIOBJ(hfont.0))
+    } else {
+        HGDIOBJ(std::ptr::null_mut())
+    };
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, COLORREF(text));
+    let mut label = to_wide(&window_text(dis.hwndItem));
+    let mut trc = rc;
+    DrawTextW(
+        hdc,
+        &mut label,
+        &mut trc,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+    );
+    if !old.0.is_null() {
+        SelectObject(hdc, old);
+    }
+}
+
 // ------------------------------------------------------------------ stage UI
 
 struct CtrlSpec<'a> {
@@ -1100,13 +1288,36 @@ fn build_stage(a: &mut App) {
             };
         }
         macro_rules! button {
+            // Custom-drawn push button: BS_OWNERDRAW (the parent paints it in
+            // WM_DRAWITEM) + BS_NOTIFY (BCN_HOTITEMCHANGE drives hover).
+            // $extra carries BS_DEFPUSHBUTTON for the default action.
             ($a:expr, $text:expr, $extra:expr, $x:expr, $y:expr, $w:expr, $h:expr, $id:expr, $font:expr) => {{
+                add_ctrl(
+                    $a,
+                    CtrlSpec {
+                        class: w!("BUTTON"),
+                        text: $text,
+                        style: VISIBLE | TABSTOP | BS_OWNERDRAW | BS_NOTIFY | $extra,
+                        ex: 0,
+                        x: $x,
+                        y: $y,
+                        w: $w,
+                        h: $h,
+                        id: $id,
+                        font: Some($font),
+                    },
+                )
+            }};
+        }
+        macro_rules! checkbox {
+            // Native checkbox (BS_AUTOCHECKBOX) with the dark visual style.
+            ($a:expr, $text:expr, $x:expr, $y:expr, $w:expr, $h:expr, $id:expr, $font:expr) => {{
                 let h = add_ctrl(
                     $a,
                     CtrlSpec {
                         class: w!("BUTTON"),
                         text: $text,
-                        style: VISIBLE | TABSTOP | $extra,
+                        style: VISIBLE | TABSTOP | 0x3, // BS_AUTOCHECKBOX
                         ex: 0,
                         x: $x,
                         y: $y,
@@ -1119,11 +1330,6 @@ fn build_stage(a: &mut App) {
                 dark_control(h);
                 h
             }};
-        }
-        macro_rules! checkbox {
-            ($a:expr, $text:expr, $x:expr, $y:expr, $w:expr, $h:expr, $id:expr, $font:expr) => {
-                button!($a, $text, 0x3, $x, $y, $w, $h, $id, $font)
-            };
         }
         macro_rules! rule {
             ($a:expr, $y:expr) => {
@@ -1188,32 +1394,9 @@ fn build_stage(a: &mut App) {
             }};
         }
 
-        // ---- the fixed header: logo, wordmark, tagline, version ----------
-        let logo = add_ctrl(
-            a,
-            CtrlSpec {
-                class: w!("STATIC"),
-                text: "",
-                style: VISIBLE | 0x3, // SS_ICON
-                ex: 0,
-                x: 36,
-                y: 30,
-                w: 48,
-                h: 48,
-                id: 0,
-                font: None,
-            },
-        );
-        if let Some(h) = a.hlogo {
-            let _ = SendMessageW(
-                logo,
-                STM_SETIMAGE,
-                Some(WPARAM(IMAGE_ICON.0 as usize)),
-                Some(LPARAM(h.0 as isize)),
-            );
-        }
-        static_text!(a, "Fleet", 0, Some(f.display), 98, 26, 300, 34, IDC_HEAD);
-        static_text!(a, "Multi-instance Roblox launcher", 0, Some(f.small), 98, 62, 320, 18, IDC_TAG);
+        // ---- the fixed header: wordmark, tagline, version -----------------
+        static_text!(a, "Fleet", 0, Some(f.display), 36, 26, 300, 34, IDC_HEAD);
+        static_text!(a, "Multi-instance Roblox launcher", 0, Some(f.small), 36, 62, 320, 18, IDC_TAG);
         let version_line = format!("v{}", a.version_to_install());
         static_text!(a, &version_line, 0x2, Some(f.small), 324, 34, 160, 18, IDC_VERSION); // SS_RIGHT
         rule!(a, 96);
@@ -1223,7 +1406,7 @@ fn build_stage(a: &mut App) {
             Stage::Resolve => {
                 static_text!(
                     a,
-                    "Checking for the latest version…",
+                    "Checking for updates…",
                     0x1, // SS_CENTER
                     Some(f.small),
                     36, 150, 448, 20, IDC_SUB
@@ -1263,11 +1446,11 @@ fn build_stage(a: &mut App) {
 
                 // While the release feed is still resolving, Install waits so
                 // nobody installs a stale payload seconds before the check
-                // would have handed out the newest one.
+                // hands out the newest one.
                 let hint = if a.resolving {
-                    "Checking for the latest version…"
+                    "Checking for updates…"
                 } else {
-                    "Installs for you - no admin needed."
+                    "No administrator permissions required."
                 };
                 if a.resolving {
                     footer!(a, hint, None, "Install Fleet", IDC_INSTALL);
@@ -1298,12 +1481,12 @@ fn build_stage(a: &mut App) {
                 static_text!(a, &path_text, 0x4000, Some(f.path), 36, 168, 448, 20, IDC_PATH);
                 static_text!(
                     a,
-                    "Fleet will close while it updates - your accounts and settings stay where they are.",
+                    "Fleet closes during the update. Accounts and settings are preserved.",
                     0x2000, // SS_EDITCONTROL (wraps)
                     Some(f.small),
                     36, 198, 448, 36, IDC_HINT
                 );
-                footer!(a, "Same folder, in place.", None, "Update Fleet", IDC_INSTALL);
+                footer!(a, "Same folder, updated in place.", None, "Update Fleet", IDC_INSTALL);
                 focus_ctrl(a, IDC_INSTALL);
             }
 
@@ -1317,15 +1500,15 @@ fn build_stage(a: &mut App) {
                 // cur > eff can only happen when the feed was unreachable
                 // AND a newer Fleet than this installer is installed.
                 let sub = if version_cmp(&cur, &eff) == std::cmp::Ordering::Equal {
-                    format!("The latest version (v{eff}) is already installed.")
+                    format!("The latest version, v{eff}, is installed.")
                 } else {
-                    format!("A newer version (v{cur}) is already installed.")
+                    format!("A newer version, v{cur}, is installed.")
                 };
-                static_text!(a, "Fleet is up to date.", 0, Some(f.head), 36, 126, 448, 26, IDC_HEAD);
+                static_text!(a, "Fleet is up to date", 0, Some(f.head), 36, 126, 448, 26, IDC_HEAD);
                 static_text!(a, &sub, 0, Some(f.body), 36, 156, 448, 20, IDC_SUB);
                 static_text!(
                     a,
-                    "This installer checks GitHub for the newest release, so an old download still installs the latest Fleet.",
+                    "Setup checks for the latest release, so an older download still installs the newest version.",
                     0x2000,
                     Some(f.small),
                     36, 184, 448, 36, IDC_HINT
@@ -1359,11 +1542,11 @@ fn build_stage(a: &mut App) {
                 let installed_version = a.version_to_install();
                 let (head, sub) = if a.updating {
                     (
-                        "Fleet is updated.",
-                        format!("You're on the latest version - v{installed_version}."),
+                        "Fleet is updated",
+                        format!("The latest version, v{installed_version}, is installed."),
                     )
                 } else {
-                    ("Fleet is installed.", "Launch it whenever you're ready.".to_string())
+                    ("Fleet is installed", "Ready to use.".to_string())
                 };
                 static_text!(a, head, 0, Some(f.head), 36, 118, 448, 26, IDC_HEAD);
                 static_text!(a, &sub, 0, Some(f.body), 36, 148, 448, 20, IDC_SUB);
@@ -1375,7 +1558,8 @@ fn build_stage(a: &mut App) {
 
             Stage::Error => {
                 let err_text = a.last_error.clone();
-                static_text!(a, "That didn't work.", 0, Some(f.head), 36, 114, 448, 26, IDC_HEAD);
+                let head = if a.uninstall_mode { "Removal failed" } else { "Setup failed" };
+                static_text!(a, head, 0, Some(f.head), 36, 114, 448, 26, IDC_HEAD);
                 static_text!(a, &err_text, 0x2000, Some(f.body), 36, 144, 448, 120, IDC_SUB);
 
                 footer!(a, "", Some(("Close", IDC_CLOSE)), "Try again", IDC_RETRY);
@@ -1386,7 +1570,7 @@ fn build_stage(a: &mut App) {
                 static_text!(a, "Remove Fleet?", 0, Some(f.head), 36, 118, 448, 26, IDC_HEAD);
                 static_text!(
                     a,
-                    "This removes Fleet's program files from your PC. Your saved accounts and settings stay where they are.",
+                    "This removes Fleet's program files. Accounts and settings are kept.",
                     0x2000,
                     Some(f.body),
                     36, 148, 448, 40, IDC_SUB
@@ -1409,10 +1593,10 @@ fn build_stage(a: &mut App) {
             }
 
             Stage::Uninstalled => {
-                static_text!(a, "Fleet is gone.", 0, Some(f.head), 36, 126, 448, 26, IDC_HEAD);
+                static_text!(a, "Fleet was removed", 0, Some(f.head), 36, 126, 448, 26, IDC_HEAD);
                 static_text!(
                     a,
-                    "All of Fleet's program files were removed.",
+                    "All program files were removed.",
                     0x2000,
                     Some(f.body),
                     36, 156, 448, 40, IDC_SUB
@@ -1455,7 +1639,7 @@ fn on_button(a: &mut App, id: i32) {
     match id {
         IDC_BROWSE => {
             let start = PathBuf::from(a.path.clone());
-            let picked = shell::pick_folder(a.hwnd, "Choose a folder for Fleet", &start);
+            let picked = shell::pick_folder(a.hwnd, "Select a folder for Fleet", &start);
             if let Some(dir) = picked {
                 a.path = dir.to_string_lossy().to_string();
                 unsafe {
@@ -1498,7 +1682,7 @@ fn on_button(a: &mut App, id: i32) {
         IDC_RELEASES => {
             if !shell::open_url("https://github.com/Toluwer/Fleet/releases") {
                 unsafe {
-                    let text = "The page could not open automatically.\nIt lives at github.com/Toluwer/Fleet/releases.";
+                    let text = "The page could not be opened.\nIt is available at github.com/Toluwer/Fleet/releases.";
                     let _ = MessageBoxW(
                         Some(a.hwnd),
                         PCWSTR(to_wide(text).as_ptr()),
@@ -1672,6 +1856,16 @@ fn set_progress(a: &App, done: u64, total: u64) {
 fn main() {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
+        // GDI+ draws the custom button surfaces.
+        let mut gptoken: usize = 0;
+        let gpinput = GdiplusStartupInput {
+            GdiplusVersion: 1,
+            DebugEventCallback: 0,
+            SuppressBackgroundThread: windows::core::BOOL::default(),
+            SuppressExternalCodecs: windows::core::BOOL::default(),
+        };
+        let _ = GdiplusStartup(&mut gptoken, &gpinput, std::ptr::null_mut());
 
         let hinst: HINSTANCE = GetModuleHandleW(None).expect("module handle").into();
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);

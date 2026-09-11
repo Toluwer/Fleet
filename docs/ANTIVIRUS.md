@@ -20,14 +20,14 @@ Fleet is unsigned and open source, so some engines flag the installer with heuri
 
 ## What Fleet changed (1.7.1)
 
-- The self-updater is transactional now: the new Fleet.exe is verified on disk before the "installed version" registry entry is touched, the file copy retries when something holds a lock, and a failed update leaves a plain result file the app reads on the next start - no more silent close-and-nothing-happened.
-- The installer reads the installed version straight off Fleet.exe instead of trusting the registry, so a half-finished update can no longer make it say "already up to date".
-- Still no packing, no UPX, no execution from %TEMP%, no obfuscated anything - every step is plain, logged, and reproducible from this repo.
+- The self-updater is transactional: the new Fleet.exe is verified on disk before the "installed version" registry entry is touched, the file copy retries when something holds a lock, and a failed update leaves a plain result file the app reads on the next start — a failed update is always visible.
+- The installer reads the installed version straight from Fleet.exe instead of trusting the registry, so a half-finished update can no longer report "already up to date".
+- Still no packing, no UPX, no execution from %TEMP%, no obfuscation — every step is plain, logged, and reproducible from this repo.
 
 ## What Fleet changed (1.8.2)
 
-- **No script host during updates.** The updater used to arm a hidden PowerShell script and close the app - a "script interpreter running a script from AppData" pattern that heuristic engines (and some policies) kill, which orphaned updates. The updater now swaps files in place from inside the running app, exactly like VS Code: in-use files are renamed aside and cleaned up by the next start. Nothing is spawned, nothing runs from %TEMP%.
-- **The installer fetches releases through WinHTTP** - the same Windows component Windows Update uses - instead of shipping a networking stack, and it installs the newest published release rather than whatever is baked into the exe.
+- **No script host during updates.** The updater used to arm a hidden PowerShell script and close the app — a "script interpreter running a script from AppData" pattern that heuristic engines (and some policies) block, which orphaned updates. The updater now swaps files in place from inside the running app, exactly like VS Code: in-use files are renamed aside and cleaned up by the next start. Nothing is spawned, nothing runs from %TEMP%.
+- **The installer fetches releases through WinHTTP** — the same Windows component Windows Update uses — instead of shipping a networking stack, and it installs the newest published release rather than its embedded payload.
 - Every downloaded release is still sha512-verified before a single file is written.
 
 ## What you can do

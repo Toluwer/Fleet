@@ -13,15 +13,15 @@ A multi-instance launcher and account manager for Roblox.
 ## Features
 
 - Launch multiple Roblox clients at once, each signed into a different account or signed out
-- Sign in through Roblox's real login page, keep several accounts saved, launch them together by Place ID, game URL or server link
-- Create new accounts without leaving Fleet: enter the username, password, birthday and profile field, Fleet fills Roblox's signup (whichever layout Roblox serves), clicks through to Roblox's one human check, and imports the account when it's done — with a strong-password generator, one-click fixes for taken usernames, and remembered defaults
-- Update in place: the updater swaps the new version in while Fleet is running (no installer window, no helper script), and old installer exes always fetch and install the newest release
-- A single-page installer in Fleet's own dark look — logo, folder picker, progress and done in one window, native controls, no setup wizard
-- Save an account group plus game setup as a session and relaunch it with one click
-- Watchdog: when a client crashes, disconnects or gets kicked, Fleet puts that account straight back into the same server, with a fresh login ticket and a retry backoff that gives up instead of looping forever
-- Fill: scan a game's servers and pack your whole account group into the emptiest ones, together or spread out
-- Browse and search games, scan servers, filter by ping, players and FPS; sort by players, rating or your own tracked playtime, with live counts, ratings, lifetime visits and your hours played on every card
-- See friends across all accounts with live status, open profiles, join their server; filter the page by name and see at a glance who's in game
+- Sign in through Roblox's real login page, keep several accounts saved, and launch them together by Place ID, game URL or server link
+- Create new accounts without leaving Fleet: enter the username, password, birthday and profile field, and Fleet fills Roblox's sign-up form (whichever layout Roblox serves) and advances it to the captcha. Includes a strong-password generator, one-click alternatives for taken usernames, and remembered defaults
+- Update in place: the updater swaps the new version in while Fleet is running (no installer window, no helper process), and older installers always fetch and install the newest release
+- A single-page installer in Fleet's own dark look — custom-drawn buttons, rounded corners, folder picker, progress and done in one window; no setup wizard
+- Save an account group plus a game target as a session and relaunch it with one click
+- Watchdog: when a client crashes, disconnects or gets kicked, Fleet rejoins the same server with that account, using a fresh login ticket and a bounded retry backoff
+- Fill: scan a game's servers and place the whole account group into the emptiest ones, together or spread out
+- Browse and search games, scan servers, filter by ping, players and FPS; sort by players, rating or tracked playtime, with live counts, ratings, lifetime visits and hours played on every card
+- See friends across all accounts with live status, open profiles and join their server; filter by name and see who is in game
 - Stats: a 14-day playtime chart, per-game and per-account totals, recent sessions and averages — tracked locally while your accounts play
 - Manage running clients: focus, restart or end any of them
 - Light, dark and system themes
@@ -45,7 +45,7 @@ Docs: [User guide](docs/USER_GUIDE.md), [Build](docs/BUILD.md), [Technical notes
 
 ## Antivirus false positives
 
-Fleet is unsigned, so some engines flag it with heuristic `!ml` verdicts. It doesn't read process memory. See [docs/ANTIVIRUS.md](docs/ANTIVIRUS.md) if yours blocks it.
+Fleet is unsigned, so some engines flag it with heuristic `!ml` verdicts. It does not read process memory. See [docs/ANTIVIRUS.md](docs/ANTIVIRUS.md) if your scanner blocks it.
 
 ## License
 

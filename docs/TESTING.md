@@ -4,7 +4,7 @@
 
 ```text
 npm run selftest
-RESULT: 123 passed, 0 failed, 123 total
+RESULT: 283 checks on Windows CI (279 pass on Linux; 4 koffi checks need Windows)
 ```
 
 ## Commands

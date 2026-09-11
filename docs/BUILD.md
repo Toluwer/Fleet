@@ -21,7 +21,7 @@ The live Roblox harnesses (`test/multitest*.js`, `drive.js`, `inspect.js`) open 
 ## What `npm run dist` does
 
 1. Builds the portable dist with `tauri build`.
-2. Builds the custom Win32 installer in `installer/` (Rust + Win32 API, one dark Fleet-branded page, native controls only, version injected via `FLEET_VERSION`).
+2. Builds the custom Win32 installer in `installer/` (Rust + Win32 API: one dark single-page window, custom-drawn buttons, version injected via `FLEET_VERSION`).
 3. Appends the zipped payload (portable dist + `uninstall.exe` + WebView2 bootstrapper) to the exe.
 
 The installed layout is the portable layout plus `uninstall.exe`. Installs are per-user: HKCU uninstall entry, Start Menu and optional Desktop shortcuts, silent WebView2 setup if it's missing. `--demo` drives the full flow for automation.

@@ -1,8 +1,8 @@
 [package]
 name = "fleet-setup"
-version = "1.8.6"
+version = "1.8.7"
 edition = "2021"
-description = "Fleet's custom installer app - a real Win32 application, not a wizard."
+description = "Fleet installer - a custom single-page Win32 application."
 license = "MIT"
 
 [[bin]]
@@ -13,6 +13,7 @@ path = "src/main.rs"
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_GdiPlus",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Controls",
     "Win32_Graphics_Dwm",
