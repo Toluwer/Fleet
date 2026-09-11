@@ -2,9 +2,9 @@ $ErrorActionPreference = 'Stop'
 
 # Builds the real Fleet installer app and packs the portable distribution
 # into it. The result is a single self-extracting FleetInstaller.exe - a real
-# Win32 application (real native controls, no wizard) that:
-#   Hello! -> fades away -> Where should Fleet live? -> Confirm ->
-#   Install Fleet -> (fades away) -> installing -> done.
+# Win32 application (one dark Fleet-branded page, real native controls, no
+# wizard) whose content swaps in place:
+#   install form -> Install Fleet -> progress -> done.
 #
 # Layout on disk:  [ fleet-setup.exe ][ zip payload ][ FLEETSTP magic ][ u64 start ]
 

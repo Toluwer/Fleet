@@ -632,7 +632,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && rendererModel.parseRobloxTarget('not a Roblox target').invalid === true
     && rendererModel.parseRobloxTarget('').invalid === false);
   check('Account-less installs can search public profiles without exposing account cookies',
-    peopleSource.includes("'User-Agent': 'Fleet/1.8.5'")
+    peopleSource.includes("'User-Agent': 'Fleet/1.8.6'")
     && peopleSource.includes('search-api/omni-search')
     && peopleSource.includes("verticalType: 'user'")
     && peopleSource.includes("presence: 'Unknown'")
@@ -1323,16 +1323,29 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     path.join(__dirname, '..', 'scripts', 'build-installer.ps1'),
     'utf8',
   );
-  check('Installer is a real Win32 app, not a wizard',
+  check('Installer is one dark Fleet-themed page, not a wizard',
     tauriConfig.bundle.active === false
     && !fs.existsSync(path.join(__dirname, '..', 'src-tauri', 'fleet-installer.nsi'))
     && installerCargo.includes('name = "fleet-setup"')
-    && installerMain.includes('"Hello!"')
-    && installerMain.includes('"Where should Fleet live?"')
-    && installerMain.includes('"Confirm"')
+    // the wizard stages and their Next->Confirm->Change-folder flow are gone
+    && !installerMain.includes('"Hello!"')
+    && !installerMain.includes('"Where should Fleet live?"')
+    && !installerMain.includes('"Confirm"')
+    && !installerMain.includes('"Change folder"')
+    && installerMain.includes('"Install folder"')
     && installerMain.includes('"Install Fleet"')
-    && installerMain.includes('"Change folder"')
-    && installerMain.includes('"Launch Fleet"'));
+    && installerMain.includes('"Launch Fleet"')
+    // the fixed branded header every state shares
+    && installerMain.includes('"Fleet"')
+    && installerMain.includes('"Multi-instance Roblox launcher"')
+    && /version_to_install\(\)/.test(installerMain));
+  check('Installer matches the app theme: dark surfaces, dark caption, native dark controls',
+    installerMain.includes('DarkMode_Explorer')
+    && installerMain.includes('DWMWA_USE_IMMERSIVE_DARK_MODE')
+    && installerMain.includes('0x0013_0F0E') // #0e0f13 window
+    && installerMain.includes('0x00F6_823B') // #3b82f6 Fleet blue progress fill
+    && installerMain.includes('STM_SETIMAGE') // logo in the header
+    && /IDT_SWEEP/.test(installerMain)); // flat indeterminate uninstall progress
   check('Installer uses only real native Windows controls (no drawn chrome)',
     installerMain.includes('w!("BUTTON")')
     && installerMain.includes('w!("EDIT")')
@@ -1678,6 +1691,16 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
       /people-filter/.test(js) && /data-people-counts/.test(js)
         && /function peoplePresenceCounts/.test(js) && /filterText/.test(js)
         && /updatePeopleCounts\(\)/.test(js));
+
+    // 1.8.6: the Fleet logo replaces the checkmark on notifications.
+    const htmlSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'index.html'), 'utf8');
+    check('notifications carry the Fleet logo instead of a checkmark glyph',
+      /symbol id="i-fleet"/.test(htmlSource)
+        && htmlSource.includes('fill="#2563eb"')
+        && /const ic = type === 'bad' \? 'alert-circle' : 'fleet';/.test(js)
+        && js.includes('fleet-mark')
+        && !/type === 'good' \? 'check-circle'/.test(js)
+        && /\.toast \.t-ico\.fleet-mark \{ stroke: none; \}/.test(css));
   }
 
   /* 11. Installer: an old installer exe must install the NEWEST release */

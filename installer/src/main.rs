@@ -1,17 +1,17 @@
-// Fleet's custom installer - a real Win32 app, not a wizard.
+// Fleet's installer - one page, no wizard.
 //
-// Flow (fresh):     Hello! (fades away) -> choose a folder -> Confirm ->
-//                   Install Fleet -> (fades away) -> installing -> done.
-// Flow (update):    Hello! (fades away) -> New version detected ->
-//                   Update Fleet -> (fades away) -> updating -> done.
-//                   The old version's files are removed and a running Fleet
-//                   is closed automatically, in place, same folder.
-// Flow (same ver):  Hello! (fades away) -> up to date, Close only.
-// Flow (uninstall): Remove Fleet? -> removing -> gone.
+// The window IS the installer: a fixed Fleet-branded header (logo, wordmark,
+// version) and a content area that swaps in place - install form -> progress
+// -> done - never a chain of "Next >" pages. It matches Fleet's own dark
+// theme, and every interactive control is a REAL native Windows control
+// (BUTTON / EDIT / STATIC / msctls_progress32, comctl32 v6 visual styles
+// with the DarkMode_Explorer subclass, a dark immersive title bar). Nothing
+// is owner-drawn; no fake chrome anywhere.
 //
-// Every control is a REAL native Windows control (BUTTON / EDIT / STATIC /
-// msctls_progress32) with comctl32 v6 visual styles from the embedded
-// manifest. Nothing is owner-drawn; no fake chrome anywhere.
+// Flow (fresh):     one page: folder + shortcut -> Install Fleet -> progress -> done.
+// Flow (update):    one page: v{old} -> v{new} -> Update Fleet -> progress -> done.
+// Flow (same ver):  one page: "Fleet is up to date." -> Close.
+// Flow (uninstall): one page: Remove Fleet? -> progress -> gone.
 
 #![cfg_attr(not(feature = "console"), windows_subsystem = "windows")]
 
@@ -24,7 +24,8 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWINDOWATTRIBUTE};
 use windows::Win32::Graphics::Gdi::{
     CreateFontW, CreateSolidBrush, DeleteObject, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
     FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY,
@@ -34,24 +35,24 @@ use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::UI::Controls::{
-    InitCommonControlsEx, INITCOMMONCONTROLSEX, PBM_SETMARQUEE, PBM_SETPOS, PBM_SETRANGE32,
+    InitCommonControlsEx, INITCOMMONCONTROLSEX, PBM_SETPOS, PBM_SETRANGE32, SetWindowTheme,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
-use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRect, BN_CLICKED, BM_GETCHECK, BM_SETCHECK, CREATESTRUCTW, CW_USEDEFAULT,
-    DefWindowProcW, DestroyWindow, DispatchMessageW, GetClassNameW, GetDlgCtrlID, GetMessageW,
-    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GWLP_USERDATA, HMENU, HWND_TOP,
-    IDC_ARROW, IDI_APPLICATION, IDOK, IsDialogMessageW, IsWindowVisible, KillTimer,
-    LoadCursorW, LoadIconW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW,
+    DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, GetClassNameW, GetDlgCtrlID, GetMessageW,
+    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GWLP_USERDATA, HICON, HMENU, HWND_TOP,
+    IDC_ARROW, IDI_APPLICATION, IMAGE_ICON, IDOK, IsDialogMessageW, IsWindowVisible, KillTimer,
+    LoadCursorW, LoadIconW, LoadImageW, LR_DEFAULTCOLOR, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW,
     SendMessageW, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos,
-    SetWindowTextW, ShowWindow,
+    SetWindowTextW, ShowWindow, STM_SETIMAGE,
     SystemParametersInfoW, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW,
     WS_CAPTION, WS_EX_CLIENTEDGE, WS_EX_LAYERED, WS_MINIMIZEBOX, WS_SYSMENU,
     LWA_ALPHA, MB_DEFBUTTON2, MB_ICONQUESTION, MB_OKCANCEL, MSG,
     SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SPI_GETWORKAREA,
-    WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_DPICHANGED, WM_NCDESTROY,
-    WM_NCCREATE, WM_SETFONT, WM_TIMER,
+    WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_CTLCOLOREDIT, WM_DPICHANGED, WM_NCDESTROY,
+    WM_NCCREATE, WM_SETFONT, WM_TIMER, WM_USER,
 };
 
 use payload::Package;
@@ -63,34 +64,40 @@ const FLEET_VERSION: &str = env!("FLEET_VERSION");
 const APP_TITLE: &str = "Fleet Setup";
 const UNINSTALL_TITLE: &str = "Fleet Uninstaller";
 
-const INK: u32 = 0x001B_1B1B; // near-black      (COLORREF is 0x00BBGGRR)
-const INK_2: u32 = 0x006E_6E6E; // secondary
-const RED: u32 = 0x001C_2BC4; // error red #C42B1C
-const BG: u32 = 0x00FF_FFFF; // white
+// Fleet's own palette (COLORREF is 0x00BBGGRR).
+const BG: u32     = 0x0013_0F0E; // #0e0f13 deep graphite window
+const INK: u32    = 0x00F1_F0F4; // #f4f0f1 primary text
+const INK_2: u32  = 0x00A7_A3AA; // #aaa3a7 secondary text
+const INK_3: u32  = 0x0071_6C72; // #726c71 muted text
+const HAIR: u32   = 0x002E_2626; // #26262e hairlines
+const TRACK: u32  = 0x0034_2D2C; // #2c2d34 progress track
+const ACCENT: u32 = 0x00F6_823B; // #3b82f6 Fleet blue
+const DANGER: u32 = 0x00AC_9BFF; // #ff9bac error text
 
 // Timer ids
 const IDT_FADE: usize = 1;
-const IDT_HELLO: usize = 2;
 const IDT_DEMO: usize = 3;
 const IDT_POLL: usize = 4;
 const IDT_RESOLVE: usize = 5;
+const IDT_SWEEP: usize = 6;
 
 // Static control ids (drive per-control colors)
-const IDC_HEAD: i32 = 1;
-const IDC_SUB: i32 = 2;
-const IDC_PATH: i32 = 3;
-const IDC_HINT: i32 = 4;
-const IDC_ERROR: i32 = 5;
-const IDC_BYTES: i32 = 6;
-const IDC_FILE: i32 = 7;
-const IDC_HELLO: i32 = 8;
+const IDC_HEAD: i32 = 1;    // headings + wordmark -> INK
+const IDC_SUB: i32 = 2;     // body lines -> INK_2
+const IDC_PATH: i32 = 3;    // emphasized path -> INK
+const IDC_HINT: i32 = 4;    // muted notes -> INK_3
+const IDC_ERROR: i32 = 5;   // inline validation error -> DANGER
+const IDC_BYTES: i32 = 6;   // progress bytes -> INK_3
+const IDC_FILE: i32 = 7;    // current file -> INK_3
+const IDC_TAG: i32 = 8;     // header tagline -> INK_3
+const IDC_VERSION: i32 = 9; // header version -> INK_3
+const IDC_LABEL: i32 = 10;  // form label -> INK_2
+const IDC_RULE: i32 = 11;   // 1px hairline (filled with the hair brush)
 
 // Interactive control ids
 const IDC_PATHEDIT: i32 = 120;
 const IDC_BROWSE: i32 = 101;
-const IDC_CONFIRM: i32 = 102;
 const IDC_INSTALL: i32 = 103;
-const IDC_CHANGE: i32 = 104;
 const IDC_LAUNCH: i32 = 105;
 const IDC_CLOSE: i32 = 106;
 const IDC_CHECK_DESKTOP: i32 = 107;
@@ -102,16 +109,17 @@ const IDC_RELEASES: i32 = 114;
 const IDC_CANCEL: i32 = 2;
 
 // Window metrics (logical pixels at 96 DPI)
-const WIN_W: i32 = 500;
-const WIN_H: i32 = 360;
+const WIN_W: i32 = 520;
+const WIN_H: i32 = 376;
 
 // ------------------------------------------------------------------ state
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Stage {
-    Hello,
-    Location,
-    Ready,
+    /// Transient (an install already exists): checking the release feed.
+    Resolve,
+    /// The one install page: folder picker + shortcut option.
+    Fresh,
     UpdateReady,
     UpToDate,
     Installing,
@@ -132,8 +140,8 @@ enum Msg {
 
 #[derive(Clone, Copy)]
 struct Fonts {
-    hello: HFONT,
-    head: HFONT,
+    display: HFONT, // wordmark
+    head: HFONT,    // section headings
     body: HFONT,
     path: HFONT,
     small: HFONT,
@@ -141,7 +149,6 @@ struct Fonts {
 
 enum After {
     None,
-    Show(Stage),
     Quit,
 }
 
@@ -158,6 +165,7 @@ struct App {
     hwnd: HWND,
     hinst: windows::Win32::Foundation::HINSTANCE,
     brush: HBRUSH,
+    hair_brush: HBRUSH,
     fonts: Fonts,
     scale: f32,
     uninstall_mode: bool,
@@ -187,6 +195,13 @@ struct App {
     feed: Arc<Mutex<Option<Option<net::Latest>>>>,
     /// GetTickCount64 deadline after which a slow feed check gives up.
     resolve_deadline: u64,
+    /// True while the release-feed check is still in flight (Install stays
+    /// disabled so nobody installs an old payload mid-check).
+    resolving: bool,
+    /// Indeterminate-progress sweep position (uninstalling).
+    sweep: i32,
+    /// The 48px Fleet logo loaded for the current DPI.
+    hlogo: Option<HANDLE>,
 }
 
 // ------------------------------------------------------------------ helpers
@@ -257,7 +272,7 @@ fn validate_path(raw: &str) -> Result<String, &'static str> {
     Ok(cleaned)
 }
 
-fn make_font(weight: i32, logical_height: i32, scale: f32) -> HFONT {
+fn make_font(face: PCWSTR, weight: i32, logical_height: i32, scale: f32) -> HFONT {
     let h = -((logical_height as f32 * scale).round() as i32);
     unsafe {
         CreateFontW(
@@ -274,8 +289,46 @@ fn make_font(weight: i32, logical_height: i32, scale: f32) -> HFONT {
             FONT_CLIP_PRECISION(0),
             FONT_QUALITY(5), // CLEARTYPE_QUALITY
             0x22,            // VARIABLE_PITCH | FF_SWISS
-            w!("Segoe UI"),
+            face,
         )
+    }
+}
+
+/// Native dark visual style for interactive controls: the same subclass
+/// Explorer's own dark mode rides on (Windows 10 1809+ / Windows 11). The
+/// controls stay 100% native - this only asks comctl32 for its dark skin.
+unsafe fn dark_control(hwnd: HWND) {
+    let _ = SetWindowTheme(hwnd, w!("DarkMode_Explorer"), None);
+}
+
+/// Dark immersive title bar so the caption matches the client area
+/// (DWMWA_USE_IMMERSIVE_DARK_MODE; the older attribute 19 on pre-20H1 builds).
+unsafe fn dark_titlebar(hwnd: HWND) {
+    let mut on: i32 = 1;
+    let pv: *const core::ffi::c_void = &mut on as *const i32 as *const core::ffi::c_void;
+    let cb = std::mem::size_of::<i32>() as u32;
+    if DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, pv, cb).is_err() {
+        // Attribute 20 landed in Windows 10 20H1; older builds know it as 19.
+        let _ = DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE(19), pv, cb);
+    }
+}
+
+/// Loads the Fleet logo (embedded icon resource) at 48 logical px.
+unsafe fn load_logo(a: &mut App) {
+    let size = (48.0 * a.scale).round().max(16.0) as i32;
+    if let Ok(h) = LoadImageW(
+        Some(a.hinst),
+        PCWSTR(1 as *const u16), // MAKEINTRESOURCE(1) - the embedded icon
+        IMAGE_ICON,
+        size,
+        size,
+        LR_DEFAULTCOLOR,
+    ) {
+        if let Some(old) = a.hlogo.replace(h) {
+            let _ = DestroyIcon(HICON(old.0));
+        }
+    } else {
+        debug_log("logo LoadImageW failed - running without the header logo");
     }
 }
 
@@ -475,13 +528,14 @@ unsafe extern "system" fn wnd_proc(
             // update, same or newer -> up to date, nothing -> fresh install.
             let installed = if uninstall { None } else { shell::installed_fleet() };
 
-            // The release feed check runs on its own thread while "Hello!"
-            // plays; an old installer learns the newest version this way and
+            // The release feed check runs on its own thread while the page
+            // settles; an old installer learns the newest version this way and
             // installs it instead of its embedded payload. Uninstall never
             // needs the network.
             let feed: Arc<Mutex<Option<Option<net::Latest>>>> =
                 Arc::new(Mutex::new(None));
-            if !uninstall {
+            let resolving = !uninstall;
+            if resolving {
                 let slot = Arc::clone(&feed);
                 std::thread::spawn(move || {
                     let result = match net::fetch_latest() {
@@ -523,21 +577,28 @@ unsafe extern "system" fn wnd_proc(
             };
 
             let fonts = Fonts {
-                hello: make_font(600, 40, scale),
-                head: make_font(600, 22, scale),
-                body: make_font(400, 13, scale),
-                path: make_font(400, 14, scale),
-                small: make_font(400, 12, scale),
+                display: make_font(w!("Segoe UI Variable Display"), 600, 24, scale),
+                head: make_font(w!("Segoe UI Variable Display"), 600, 17, scale),
+                body: make_font(w!("Segoe UI Variable Text"), 400, 13, scale),
+                path: make_font(w!("Segoe UI Variable Text"), 400, 14, scale),
+                small: make_font(w!("Segoe UI Variable Text"), 400, 12, scale),
             };
-            let app = Box::new(App {
+            let mut app = Box::new(App {
                 hwnd,
                 hinst,
                 brush: CreateSolidBrush(COLORREF(BG)),
+                hair_brush: CreateSolidBrush(COLORREF(HAIR)),
                 fonts,
                 scale,
                 uninstall_mode: uninstall,
                 demo,
-                stage: if uninstall { Stage::UninstallConfirm } else { Stage::Hello },
+                stage: if uninstall {
+                    Stage::UninstallConfirm
+                } else if installed.is_some() {
+                    Stage::Resolve
+                } else {
+                    Stage::Fresh
+                },
                 ctrls: Vec::new(),
                 alpha: 0,
                 path,
@@ -553,7 +614,11 @@ unsafe extern "system" fn wnd_proc(
                 latest: None,
                 feed,
                 resolve_deadline: 0,
+                resolving,
+                sweep: 0,
+                hlogo: None,
             });
+            load_logo(&mut app);
             let raw = Box::into_raw(app);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, raw as isize);
             DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -562,6 +627,8 @@ unsafe extern "system" fn wnd_proc(
         WM_CREATE => {
             if let Some(a) = app_from(hwnd) {
                 size_window(a);
+                // Match the caption to the dark client area.
+                dark_titlebar(hwnd);
                 // Start fully transparent; the first fade brings the window in.
                 // (Controls are created after the window is visible - wine
                 // otherwise never paints children made on a hidden window.)
@@ -574,16 +641,20 @@ unsafe extern "system" fn wnd_proc(
             if let Some(a) = app_from(hwnd) {
                 match wparam.0 {
                     IDT_FADE => step_fade(a),
-                    IDT_HELLO => {
-                        let _ = KillTimer(Some(hwnd), IDT_HELLO);
-                        start_resolve(a);
-                    }
                     IDT_DEMO => {
                         let _ = KillTimer(Some(hwnd), IDT_DEMO);
                         demo_advance(a);
                     }
                     IDT_POLL => poll_worker(a),
                     IDT_RESOLVE => poll_resolve(a),
+                    IDT_SWEEP => {
+                        // Indeterminate uninstall progress: a calm sweep.
+                        a.sweep += 2;
+                        if a.sweep > 100 {
+                            a.sweep = 0;
+                        }
+                        set_progress(a, a.sweep.max(0) as u64, 100);
+                    }
                     _ => {}
                 }
             }
@@ -618,15 +689,32 @@ unsafe extern "system" fn wnd_proc(
             if let Some(a) = app_from(hwnd) {
                 let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
                 let ctl = HWND(lparam.0 as *mut core::ffi::c_void);
-                let color = match GetDlgCtrlID(ctl) {
-                    IDC_HEAD | IDC_HELLO => INK,
-                    IDC_SUB | IDC_PATH | IDC_HINT | IDC_BYTES | IDC_FILE => INK_2,
-                    IDC_ERROR => RED,
-                    _ => INK_2,
+                let id = GetDlgCtrlID(ctl);
+                let color = match id {
+                    IDC_HEAD => INK,
+                    IDC_PATH => INK,
+                    IDC_SUB | IDC_LABEL => INK_2,
+                    IDC_ERROR => DANGER,
+                    _ => INK_3, // hint, bytes, file, tagline, version
                 };
                 SetTextColor(hdc, COLORREF(color));
+                if id == IDC_RULE {
+                    // The 1px hairline: an empty static filled with the brush.
+                    SetBkColor(hdc, COLORREF(HAIR));
+                    return LRESULT(a.hair_brush.0 as isize);
+                }
                 SetBkColor(hdc, COLORREF(BG));
                 SetBkMode(hdc, TRANSPARENT);
+                return LRESULT(a.brush.0 as isize);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+
+        WM_CTLCOLOREDIT => {
+            if let Some(a) = app_from(hwnd) {
+                let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
+                SetTextColor(hdc, COLORREF(INK));
+                SetBkColor(hdc, COLORREF(BG));
                 return LRESULT(a.brush.0 as isize);
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -674,6 +762,7 @@ unsafe extern "system" fn wnd_proc(
                     SWP_NOZORDER | SWP_NOACTIVATE,
                 );
                 rebuild_fonts(a);
+                load_logo(a);
                 build_stage(a);
             }
             LRESULT(0)
@@ -682,7 +771,11 @@ unsafe extern "system" fn wnd_proc(
         WM_NCDESTROY => {
             let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
             if raw != 0 {
-                drop(Box::from_raw(raw as *mut App));
+                let mut app = Box::from_raw(raw as *mut App);
+                if let Some(h) = app.hlogo.take() {
+                    unsafe { let _ = DestroyIcon(HICON(h.0)); }
+                }
+                drop(app);
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             }
             let r = DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -755,18 +848,18 @@ fn size_window(a: &App) {
 fn rebuild_fonts(a: &mut App) {
     let s = a.scale;
     unsafe {
-        let _ = DeleteObject(HGDIOBJ(a.fonts.hello.0));
+        let _ = DeleteObject(HGDIOBJ(a.fonts.display.0));
         let _ = DeleteObject(HGDIOBJ(a.fonts.head.0));
         let _ = DeleteObject(HGDIOBJ(a.fonts.body.0));
         let _ = DeleteObject(HGDIOBJ(a.fonts.path.0));
         let _ = DeleteObject(HGDIOBJ(a.fonts.small.0));
     }
     a.fonts = Fonts {
-        hello: make_font(600, 40, s),
-        head: make_font(600, 22, s),
-        body: make_font(400, 13, s),
-        path: make_font(400, 14, s),
-        small: make_font(400, 12, s),
+        display: make_font(w!("Segoe UI Variable Display"), 600, 24, s),
+        head: make_font(w!("Segoe UI Variable Display"), 600, 17, s),
+        body: make_font(w!("Segoe UI Variable Text"), 400, 13, s),
+        path: make_font(w!("Segoe UI Variable Text"), 400, 14, s),
+        small: make_font(w!("Segoe UI Variable Text"), 400, 12, s),
     };
 }
 
@@ -807,21 +900,8 @@ unsafe fn step_fade(a: &mut App) {
         if a.alpha == 255 {
             force_repaint(a);
         }
-        match after {
-            After::None => {
-                if a.stage == Stage::Hello {
-                    // Hold "Hello!" for a beat before it fades away.
-                    let _ = SetTimer(Some(a.hwnd), IDT_HELLO, 1150, None);
-                }
-            }
-            After::Show(next) => {
-                a.stage = next;
-                build_stage(a);
-                start_fade(a, 255, 260, After::None);
-            }
-            After::Quit => {
-                let _ = DestroyWindow(a.hwnd);
-            }
+        if let After::Quit = after {
+            let _ = DestroyWindow(a.hwnd);
         }
     }
 }
@@ -840,16 +920,20 @@ fn force_repaint(a: &App) {
     }
 }
 
+/// One page, no wizard: state changes rebuild the content area in place.
+/// The header never moves; only the window open/close fades exist.
 fn goto_stage(a: &mut App, next: Stage) {
-    start_fade(a, 0, 240, After::Show(next));
+    a.stage = next;
+    build_stage(a);
+    force_repaint(a);
 }
 
-/// The stage after the Hello beat: fresh install picks a folder, an older
-/// install updates, a same/newer install is told it's already up to date.
+/// The first real page once the feed resolves: fresh install keeps the form,
+/// an older install updates, a same/newer install is told it's up to date.
 fn first_stage(a: &App) -> Stage {
     let effective = a.version_to_install();
     match &a.installed {
-        None => Stage::Location,
+        None => Stage::Fresh,
         Some((_, v)) => {
             if version_cmp(v, &effective) == std::cmp::Ordering::Less {
                 Stage::UpdateReady
@@ -861,7 +945,7 @@ fn first_stage(a: &App) -> Stage {
 }
 
 /// Waits (bounded) for the release-feed thread, then decides the real first
-/// stage against the version that will actually be installed.
+/// page against the version that will actually be installed.
 fn start_resolve(a: &mut App) {
     a.resolve_deadline = unsafe { GetTickCount64() } + 6000;
     poll_resolve(a);
@@ -904,6 +988,7 @@ fn finish_resolve(a: &mut App) {
             latest.version
         ));
     }
+    a.resolving = false;
     // "Updating" is decided against the version that will be installed - the
     // newer of the embedded payload and the release feed.
     let effective = a.version_to_install();
@@ -912,7 +997,13 @@ fn finish_resolve(a: &mut App) {
         .as_ref()
         .map(|(_, v)| version_cmp(v, &effective) == std::cmp::Ordering::Less)
         .unwrap_or(false);
-    goto_stage(a, first_stage(a));
+    match a.stage {
+        Stage::Resolve => goto_stage(a, first_stage(a)),
+        // The form was already up; rebuild it so Install enables and the
+        // version line reflects whatever the feed offered.
+        Stage::Fresh => goto_stage(a, Stage::Fresh),
+        _ => {}
+    }
 }
 
 impl App {
@@ -980,6 +1071,7 @@ fn build_stage(a: &mut App) {
             let _ = DestroyWindow(*c);
         }
         a.ctrls.clear();
+        let _ = KillTimer(Some(a.hwnd), IDT_SWEEP);
 
         const VISIBLE: u32 = 0x5000_0000; // WS_CHILD | WS_VISIBLE
         const TABSTOP: u32 = 0x0001_0000;
@@ -1007,8 +1099,8 @@ fn build_stage(a: &mut App) {
             };
         }
         macro_rules! button {
-            ($a:expr, $text:expr, $extra:expr, $x:expr, $y:expr, $w:expr, $h:expr, $id:expr, $font:expr) => {
-                add_ctrl(
+            ($a:expr, $text:expr, $extra:expr, $x:expr, $y:expr, $w:expr, $h:expr, $id:expr, $font:expr) => {{
+                let h = add_ctrl(
                     $a,
                     CtrlSpec {
                         class: w!("BUTTON"),
@@ -1022,58 +1114,132 @@ fn build_stage(a: &mut App) {
                         id: $id,
                         font: Some($font),
                     },
-                )
-            };
+                );
+                dark_control(h);
+                h
+            }};
         }
         macro_rules! checkbox {
             ($a:expr, $text:expr, $x:expr, $y:expr, $w:expr, $h:expr, $id:expr, $font:expr) => {
                 button!($a, $text, 0x3, $x, $y, $w, $h, $id, $font)
             };
         }
-        macro_rules! divider {
-            ($a:expr) => {
+        macro_rules! rule {
+            ($a:expr, $y:expr) => {
+                // A 1px hairline: an empty static filled with the hair brush.
                 add_ctrl(
                     $a,
                     CtrlSpec {
                         class: w!("STATIC"),
                         text: "",
-                        style: VISIBLE | 0x10, // SS_ETCHEDHORZ
+                        style: VISIBLE,
                         ex: 0,
                         x: 36,
-                        y: 282,
-                        w: 428,
-                        h: 2,
-                        id: 0,
+                        y: $y,
+                        w: 448,
+                        h: 1,
+                        id: IDC_RULE,
                         font: None,
                     },
                 )
             };
         }
+        macro_rules! footer {
+            ($a:expr, $hint:expr, $secondary:expr, $primary_label:expr, $primary_id:expr) => {{
+                rule!($a, 288);
+                if let Some((label, id)) = $secondary {
+                    button!($a, label, 0, 224, 304, 128, 32, id, f.body);
+                }
+                button!($a, $primary_label, 0x1, 368, 304, 116, 32, $primary_id, f.body);
+                if !$hint.is_empty() {
+                    // Hints only appear on stages without a secondary button,
+                    // so the label can run wide up to the primary button.
+                    static_text!($a, $hint, 0, Some(f.small), 36, 311, 320, 18, IDC_HINT);
+                }
+            }};
+        }
+        macro_rules! flat_progress {
+            ($a:expr, $y:expr) => {{
+                let prog = add_ctrl(
+                    $a,
+                    CtrlSpec {
+                        class: w!("msctls_progress32"),
+                        text: "",
+                        style: VISIBLE | 0x01, // PBS_SMOOTH
+                        ex: 0,
+                        x: 36,
+                        y: $y,
+                        w: 448,
+                        h: 8,
+                        id: 0,
+                        font: None,
+                    },
+                );
+                // Strip the theme so the color messages apply: a flat
+                // Fleet-blue fill on a dark track, like the app's own bars.
+                let _ = SetWindowTheme(prog, w!(""), None);
+                let _ = SendMessageW(prog, PBM_SETRANGE32, Some(WPARAM(0)), Some(LPARAM(10000)));
+                let _ = SendMessageW(
+                    prog,
+                    WM_USER + 0x2001, // PBM_SETBKCOLOR (CCM_SETBKCOLOR)
+                    Some(WPARAM(0)),
+                    Some(LPARAM(TRACK as isize)),
+                );
+                let _ = SendMessageW(
+                    prog,
+                    WM_USER + 9, // PBM_SETBARCOLOR
+                    Some(WPARAM(0)),
+                    Some(LPARAM(ACCENT as isize)),
+                );
+                prog
+            }};
+        }
 
+        // ---- the fixed header: logo, wordmark, tagline, version ----------
+        let logo = add_ctrl(
+            a,
+            CtrlSpec {
+                class: w!("STATIC"),
+                text: "",
+                style: VISIBLE | 0x3, // SS_ICON
+                ex: 0,
+                x: 36,
+                y: 30,
+                w: 48,
+                h: 48,
+                id: 0,
+                font: None,
+            },
+        );
+        if let Some(h) = a.hlogo {
+            let _ = SendMessageW(
+                logo,
+                STM_SETIMAGE,
+                Some(WPARAM(IMAGE_ICON.0 as usize)),
+                Some(LPARAM(h.0 as isize)),
+            );
+        }
+        static_text!(a, "Fleet", 0, Some(f.display), 98, 26, 300, 34, IDC_HEAD);
+        static_text!(a, "Multi-instance Roblox launcher", 0, Some(f.small), 98, 62, 320, 18, IDC_TAG);
+        let version_line = format!("v{}", a.version_to_install());
+        static_text!(a, &version_line, 0x2, Some(f.small), 324, 34, 160, 18, IDC_VERSION); // SS_RIGHT
+        rule!(a, 96);
+
+        // ---- the content area: one page per state ------------------------
         match a.stage {
-            Stage::Hello => {
-                // NOTE: SS_CENTER | SS_CENTERIMAGE equals SS_ICON (0x3), which
-                // renders nothing for text - so the rect is hand-centered.
-                static_text!(a, "Hello!", 0x1, Some(f.hello), 0, 148, WIN_W, 64, IDC_HELLO);
+            Stage::Resolve => {
                 static_text!(
                     a,
                     "Checking for the latest version…",
                     0x1, // SS_CENTER
                     Some(f.small),
-                    0, 220, WIN_W, 20, IDC_SUB
+                    36, 150, 448, 20, IDC_SUB
                 );
             }
 
-            Stage::Location => {
+            Stage::Fresh => {
                 let path_text = a.path.clone();
-                static_text!(a, "Where should Fleet live?", 0, Some(f.head), 36, 44, 428, 32, IDC_HEAD);
-                static_text!(
-                    a,
-                    "Fleet keeps everything in one folder. You can move it later if you change your mind.",
-                    0x2000, // SS_EDITCONTROL (wraps)
-                    Some(f.body),
-                    36, 84, 410, 42, IDC_SUB
-                );
+                static_text!(a, "Install folder", 0, Some(f.small), 36, 114, 448, 18, IDC_LABEL);
 
                 let edit = add_ctrl(
                     a,
@@ -1083,48 +1249,42 @@ fn build_stage(a: &mut App) {
                         style: VISIBLE | TABSTOP | 0x80, // ES_AUTOHSCROLL
                         ex: WS_EX_CLIENTEDGE.0,
                         x: 36,
-                        y: 148,
-                        w: 294,
-                        h: 32,
+                        y: 138,
+                        w: 316,
+                        h: 30,
                         id: IDC_PATHEDIT,
                         font: Some(f.path),
                     },
                 );
+                dark_control(edit);
                 let _ = SendMessageW(edit, 0x00D5, Some(WPARAM(1024)), Some(LPARAM(0))); // EM_LIMITTEXT
 
-                button!(a, "Browse…", 0, 344, 148, 120, 32, IDC_BROWSE, f.body);
+                button!(a, "Browse…", 0, 364, 138, 120, 30, IDC_BROWSE, f.body);
 
-                let err = static_text!(a, "", 0, Some(f.small), 36, 190, 428, 20, IDC_ERROR);
+                let err = static_text!(a, "", 0, Some(f.small), 36, 176, 448, 18, IDC_ERROR);
                 let _ = ShowWindow(err, SW_HIDE);
 
-                divider!(a);
-                static_text!(
-                    a,
-                    "Installs for you - no admin needed.",
-                    0,
-                    Some(f.small),
-                    36, 296, 230, 36, IDC_HINT
-                );
-
-                button!(a, "Confirm", 0x1, 344, 298, 120, 32, IDC_CONFIRM, f.body);
-                focus_ctrl(a, IDC_PATHEDIT);
-            }
-
-            Stage::Ready => {
-                let path_text = a.path.clone();
-                static_text!(a, "Ready to install.", 0, Some(f.head), 36, 44, 428, 32, IDC_HEAD);
-                static_text!(a, "Fleet will live here:", 0, Some(f.body), 36, 84, 428, 20, IDC_SUB);
-                static_text!(a, &path_text, 0x4000, Some(f.path), 36, 110, 428, 26, IDC_PATH);
-
-                button!(a, "Change folder", 0, 36, 148, 130, 30, IDC_CHANGE, f.body);
-
-                let ck = checkbox!(a, "Create a desktop shortcut", 36, 208, 300, 28, IDC_CHECK_DESKTOP, f.body);
+                let ck = checkbox!(a, "Add a desktop shortcut", 36, 212, 320, 24, IDC_CHECK_DESKTOP, f.body);
                 let st = if a.desktop_shortcut { windows::Win32::UI::Controls::BST_CHECKED.0 as usize } else { 0 };
-                let _ = SendMessageW(ck, BM_SETCHECK, Some(WPARAM(st as usize)), Some(LPARAM(0)));
+                let _ = SendMessageW(ck, BM_SETCHECK, Some(WPARAM(st)), Some(LPARAM(0)));
 
-                divider!(a);
-                button!(a, "Install Fleet", 0x1, 344, 298, 120, 32, IDC_INSTALL, f.body);
-                focus_ctrl(a, IDC_INSTALL);
+                // While the release feed is still resolving, Install waits so
+                // nobody installs a stale payload seconds before the check
+                // would have handed out the newest one.
+                let hint = if a.resolving {
+                    "Checking for the latest version…"
+                } else {
+                    "Installs for you - no admin needed."
+                };
+                if a.resolving {
+                    footer!(a, hint, None, "Install Fleet", IDC_INSTALL);
+                    if let Some(ctl) = a.ctrls.iter().find(|c| GetDlgCtrlID(**c) == IDC_INSTALL) {
+                        let _ = EnableWindow(*ctl, false);
+                    }
+                } else {
+                    footer!(a, hint, None, "Install Fleet", IDC_INSTALL);
+                }
+                focus_ctrl(a, IDC_PATHEDIT);
             }
 
             Stage::UpdateReady => {
@@ -1140,21 +1300,17 @@ fn build_stage(a: &mut App) {
                     format!("Fleet v{old} will be updated to v{new_version}.")
                 };
                 let path_text = a.path.clone();
-                static_text!(a, "New version detected", 0, Some(f.head), 36, 44, 428, 32, IDC_HEAD);
-                static_text!(a, &sub, 0, Some(f.body), 36, 84, 428, 20, IDC_SUB);
-                static_text!(a, "Updating in place:", 0, Some(f.body), 36, 116, 428, 20, IDC_SUB);
-                static_text!(a, &path_text, 0x4000, Some(f.path), 36, 142, 428, 26, IDC_PATH);
+                static_text!(a, "Update available", 0, Some(f.head), 36, 114, 448, 26, IDC_HEAD);
+                static_text!(a, &sub, 0, Some(f.body), 36, 144, 448, 20, IDC_SUB);
+                static_text!(a, &path_text, 0x4000, Some(f.path), 36, 168, 448, 20, IDC_PATH);
                 static_text!(
                     a,
-                    "Fleet will close while it updates. Your accounts and settings stay where they are.",
+                    "Fleet will close while it updates - your accounts and settings stay where they are.",
                     0x2000, // SS_EDITCONTROL (wraps)
-                    Some(f.body),
-                    36, 184, 410, 42,
-                    IDC_HINT
+                    Some(f.small),
+                    36, 198, 448, 36, IDC_HINT
                 );
-
-                divider!(a);
-                button!(a, "Update Fleet", 0x1, 344, 298, 120, 32, IDC_INSTALL, f.body);
+                footer!(a, "Same folder, in place.", None, "Update Fleet", IDC_INSTALL);
                 focus_ctrl(a, IDC_INSTALL);
             }
 
@@ -1172,22 +1328,21 @@ fn build_stage(a: &mut App) {
                 } else {
                     format!("A newer version (v{cur}) is already installed.")
                 };
-                static_text!(a, "Fleet is up to date.", 0, Some(f.head), 36, 96, 428, 32, IDC_HEAD);
-                static_text!(a, &sub, 0, Some(f.body), 36, 136, 410, 44, IDC_SUB);
+                static_text!(a, "Fleet is up to date.", 0, Some(f.head), 36, 126, 448, 26, IDC_HEAD);
+                static_text!(a, &sub, 0, Some(f.body), 36, 156, 448, 20, IDC_SUB);
                 static_text!(
                     a,
-                    "This installer checked GitHub for the newest release before installing, so old installers stay useful.",
-                    0x2000, // SS_EDITCONTROL (wraps)
+                    "This installer checks GitHub for the newest release, so an old download still installs the latest Fleet.",
+                    0x2000,
                     Some(f.small),
-                    36, 196, 410, 40,
-                    IDC_HINT
+                    36, 184, 448, 36, IDC_HINT
                 );
-
-                divider!(a);
-                if version_cmp(&cur, &eff) == std::cmp::Ordering::Greater {
-                    button!(a, "Get newer version", 0, 196, 298, 144, 32, IDC_RELEASES, f.body);
-                }
-                button!(a, "Close", 0x1, 344, 298, 120, 32, IDC_CLOSE, f.body);
+                let secondary = if version_cmp(&cur, &eff) == std::cmp::Ordering::Greater {
+                    Some(("Get newer version", IDC_RELEASES))
+                } else {
+                    None
+                };
+                footer!(a, "", secondary, "Close", IDC_CLOSE);
                 focus_ctrl(a, IDC_CLOSE);
             }
 
@@ -1197,28 +1352,13 @@ fn build_stage(a: &mut App) {
                 } else {
                     ("Installing Fleet…", "Copying files…")
                 };
-                static_text!(a, head, 0, Some(f.head), 36, 44, 428, 32, IDC_HEAD);
-                static_text!(a, note, 0, Some(f.body), 36, 84, 428, 20, IDC_SUB);
+                static_text!(a, head, 0, Some(f.head), 36, 118, 448, 26, IDC_HEAD);
+                static_text!(a, note, 0, Some(f.body), 36, 148, 448, 20, IDC_SUB);
 
-                let prog = add_ctrl(
-                    a,
-                    CtrlSpec {
-                        class: w!("msctls_progress32"),
-                        text: "",
-                        style: VISIBLE,
-                        ex: 0,
-                        x: 36,
-                        y: 124,
-                        w: 428,
-                        h: 12,
-                        id: 0,
-                        font: None,
-                    },
-                );
-                let _ = SendMessageW(prog, PBM_SETRANGE32, Some(WPARAM(0)), Some(LPARAM(10000)));
+                flat_progress!(a, 178);
 
-                static_text!(a, "", 0, Some(f.small), 36, 148, 428, 20, IDC_BYTES);
-                static_text!(a, "", 0x4000, Some(f.small), 36, 172, 428, 20, IDC_FILE);
+                static_text!(a, "", 0, Some(f.small), 36, 198, 448, 16, IDC_BYTES);
+                static_text!(a, "", 0x4000, Some(f.small), 36, 218, 448, 16, IDC_FILE);
             }
 
             Stage::Done => {
@@ -1232,95 +1372,67 @@ fn build_stage(a: &mut App) {
                 } else {
                     ("Fleet is installed.", "Launch it whenever you're ready.".to_string())
                 };
-                static_text!(a, head, 0, Some(f.head), 36, 72, 428, 32, IDC_HEAD);
-                static_text!(a, &sub, 0, Some(f.body), 36, 112, 428, 20, IDC_SUB);
-                static_text!(
-                    a,
-                    &dest_text,
-                    0x4000,
-                    Some(f.small),
-                    36, 140, 428, 24, IDC_PATH
-                );
+                static_text!(a, head, 0, Some(f.head), 36, 118, 448, 26, IDC_HEAD);
+                static_text!(a, &sub, 0, Some(f.body), 36, 148, 448, 20, IDC_SUB);
+                static_text!(a, &dest_text, 0x4000, Some(f.small), 36, 172, 448, 18, IDC_HINT);
 
-                divider!(a);
-                button!(a, "Close", 0, 224, 298, 100, 32, IDC_CLOSE, f.body);
-                button!(a, "Launch Fleet", 0x1, 344, 298, 120, 32, IDC_LAUNCH, f.body);
+                footer!(a, "", Some(("Close", IDC_CLOSE)), "Launch Fleet", IDC_LAUNCH);
                 focus_ctrl(a, IDC_LAUNCH);
             }
 
             Stage::Error => {
                 let err_text = a.last_error.clone();
-                static_text!(a, "That didn't work.", 0, Some(f.head), 36, 44, 428, 32, IDC_HEAD);
-                static_text!(a, &err_text, 0x2000, Some(f.body), 36, 84, 420, 110, IDC_SUB);
+                static_text!(a, "That didn't work.", 0, Some(f.head), 36, 114, 448, 26, IDC_HEAD);
+                static_text!(a, &err_text, 0x2000, Some(f.body), 36, 144, 448, 120, IDC_SUB);
 
-                divider!(a);
-                button!(a, "Close", 0, 224, 298, 100, 32, IDC_CLOSE, f.body);
-                button!(a, "Try again", 0x1, 344, 298, 120, 32, IDC_RETRY, f.body);
+                footer!(a, "", Some(("Close", IDC_CLOSE)), "Try again", IDC_RETRY);
                 focus_ctrl(a, IDC_RETRY);
             }
 
             Stage::UninstallConfirm => {
-                static_text!(a, "Remove Fleet?", 0, Some(f.head), 36, 96, 428, 32, IDC_HEAD);
+                static_text!(a, "Remove Fleet?", 0, Some(f.head), 36, 118, 448, 26, IDC_HEAD);
                 static_text!(
                     a,
                     "This removes Fleet's program files from your PC. Your saved accounts and settings stay where they are.",
                     0x2000,
                     Some(f.body),
-                    36, 136, 420, 44, IDC_SUB
+                    36, 148, 448, 40, IDC_SUB
                 );
 
-                let ck = checkbox!(a, "Also delete accounts and settings", 36, 210, 340, 28, IDC_CHECK_DATA, f.body);
+                let ck = checkbox!(a, "Also delete accounts and settings", 36, 206, 340, 24, IDC_CHECK_DATA, f.body);
                 let st = if a.delete_data { windows::Win32::UI::Controls::BST_CHECKED.0 as usize } else { 0 };
-                let _ = SendMessageW(ck, BM_SETCHECK, Some(WPARAM(st as usize)), Some(LPARAM(0)));
+                let _ = SendMessageW(ck, BM_SETCHECK, Some(WPARAM(st)), Some(LPARAM(0)));
 
-                divider!(a);
-                button!(a, "Cancel", 0, 224, 298, 100, 32, IDC_CANCEL, f.body);
-                button!(a, "Remove", 0x1, 344, 298, 120, 32, IDC_REMOVE, f.body);
+                footer!(a, "", Some(("Cancel", IDC_CANCEL)), "Remove", IDC_REMOVE);
                 focus_ctrl(a, IDC_REMOVE);
             }
 
             Stage::Uninstalling => {
-                static_text!(a, "Removing Fleet…", 0, Some(f.head), 36, 44, 428, 32, IDC_HEAD);
-                static_text!(a, "Removing files…", 0, Some(f.body), 36, 84, 428, 20, IDC_SUB);
+                static_text!(a, "Removing Fleet…", 0, Some(f.head), 36, 118, 448, 26, IDC_HEAD);
+                static_text!(a, "Removing files…", 0, Some(f.body), 36, 148, 448, 20, IDC_SUB);
 
-                let prog = add_ctrl(
-                    a,
-                    CtrlSpec {
-                        class: w!("msctls_progress32"),
-                        text: "",
-                        style: VISIBLE | 0x08, // PBS_MARQUEE
-                        ex: 0,
-                        x: 36,
-                        y: 124,
-                        w: 428,
-                        h: 12,
-                        id: 0,
-                        font: None,
-                    },
-                );
-                let _ = SendMessageW(prog, PBM_SETMARQUEE, Some(WPARAM(1)), Some(LPARAM(30)));
+                flat_progress!(a, 178);
+                let _ = SetTimer(Some(a.hwnd), IDT_SWEEP, 30, None);
             }
 
             Stage::Uninstalled => {
-                static_text!(a, "Fleet is gone.", 0, Some(f.head), 36, 124, 428, 32, IDC_HEAD);
+                static_text!(a, "Fleet is gone.", 0, Some(f.head), 36, 126, 448, 26, IDC_HEAD);
                 static_text!(
                     a,
                     "All of Fleet's program files were removed.",
                     0x2000,
                     Some(f.body),
-                    36, 164, 420, 44, IDC_SUB
+                    36, 156, 448, 40, IDC_SUB
                 );
 
-                divider!(a);
-                button!(a, "Close", 0x1, 344, 298, 120, 32, IDC_CLOSE, f.body);
+                footer!(a, "", None, "Close", IDC_CLOSE);
                 focus_ctrl(a, IDC_CLOSE);
             }
         }
 
         if a.demo {
-            let delay: usize = match a.stage {
-                Stage::Location => 2200,
-                Stage::Ready => 2000,
+            let delay: u32 = match a.stage {
+                Stage::Fresh => 2200,
                 Stage::UpdateReady => 2000,
                 Stage::UpToDate => 2500,
                 Stage::Done => 3000,
@@ -1329,7 +1441,7 @@ fn build_stage(a: &mut App) {
                 _ => 0,
             };
             if delay > 0 {
-                let _ = SetTimer(Some(a.hwnd), IDT_DEMO, delay as u32, None);
+                let _ = SetTimer(Some(a.hwnd), IDT_DEMO, delay, None);
             }
         }
     }
@@ -1363,20 +1475,20 @@ fn on_button(a: &mut App, id: i32) {
                 }
             }
         }
-        IDC_CONFIRM => match validate_path(&a.path) {
-            Ok(clean) => {
-                a.path = clean;
-                goto_stage(a, Stage::Ready);
-            }
-            Err(msg) => unsafe {
-                if let Some(err) = a.ctrls.iter().find(|c| GetDlgCtrlID(**c) == IDC_ERROR) {
-                    let _ = SetWindowTextW(*err, PCWSTR(to_wide(msg).as_ptr()));
-                    let _ = ShowWindow(*err, SW_SHOW);
-                }
-            },
-        },
-        IDC_CHANGE => goto_stage(a, Stage::Location),
         IDC_INSTALL | IDC_RETRY => {
+            // The one-page form validates inline: no separate confirm page.
+            if a.stage == Stage::Fresh {
+                match validate_path(&a.path) {
+                    Ok(clean) => a.path = clean,
+                    Err(msg) => unsafe {
+                        if let Some(err) = a.ctrls.iter().find(|c| GetDlgCtrlID(**c) == IDC_ERROR) {
+                            let _ = SetWindowTextW(*err, PCWSTR(to_wide(msg).as_ptr()));
+                            let _ = ShowWindow(*err, SW_SHOW);
+                        }
+                        return;
+                    },
+                }
+            }
             a.install_dest = PathBuf::from(a.path.clone());
             start_install(a);
             goto_stage(a, Stage::Installing);
@@ -1402,7 +1514,7 @@ fn on_button(a: &mut App, id: i32) {
                     );
                 }
             }
-        }
+        },
         IDC_CHECK_DESKTOP => unsafe {
             if let Some(ck) = a.ctrls.iter().find(|c| GetDlgCtrlID(**c) == IDC_CHECK_DESKTOP) {
                 let st = SendMessageW(*ck, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))).0;
@@ -1433,11 +1545,19 @@ fn on_button(a: &mut App, id: i32) {
 
 fn demo_advance(a: &mut App) {
     match a.stage {
-        Stage::Location => on_button(a, IDC_CONFIRM),
-        Stage::Ready => on_button(a, IDC_INSTALL),
+        Stage::Fresh => {
+            if a.resolving {
+                // The feed check is still in flight; retry shortly so the
+                // demo never installs a stale payload mid-check.
+                unsafe {
+                    let _ = SetTimer(Some(a.hwnd), IDT_DEMO, 600, None);
+                }
+            } else {
+                on_button(a, IDC_INSTALL);
+            }
+        }
         Stage::UpdateReady => on_button(a, IDC_INSTALL),
-        Stage::UpToDate => fade_quit(a),
-        Stage::Done | Stage::Uninstalled => fade_quit(a),
+        Stage::UpToDate | Stage::Done | Stage::Uninstalled => fade_quit(a),
         Stage::UninstallConfirm => on_button(a, IDC_REMOVE),
         _ => {}
     }
@@ -1615,9 +1735,12 @@ fn main() {
 
         let _ = ShowWindow(hwnd, SW_SHOW);
 
-        // Build the opening stage on the now-visible window, then fade in.
+        // Build the opening page on the now-visible window, then fade in.
         if let Some(a) = app_from(hwnd) {
             build_stage(a);
+            if a.resolving {
+                start_resolve(a);
+            }
             start_fade(a, 255, 350, After::None);
         }
 

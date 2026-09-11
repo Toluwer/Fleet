@@ -757,6 +757,9 @@ textarea { resize: vertical; min-height: 70px; }
 .toast { background: var(--ink); color: var(--ink-inv); padding: 10px 11px 10px 13px; border-radius: var(--r); box-shadow: var(--sh-float);
   font-size: 12px; display: flex; align-items: center; gap: 10px; min-width: 220px; max-width: 360px; animation: toastIn .24s var(--ease); }
 .toast .t-ico { width: 16px; height: 16px; flex: none; }
+/* The Fleet logo mark is a filled tile with its own colors - it must never
+   inherit the stroke-glyph treatment the other toast icons ride on. */
+.toast .t-ico.fleet-mark { stroke: none; }
 .toast > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .toast-x { border: 0; background: transparent; color: inherit; opacity: .6; width: 22px; height: 22px; flex: none;
   display: grid; place-items: center; border-radius: var(--r-sm); cursor: pointer; transition: opacity var(--motion-fast), background var(--motion-fast); }

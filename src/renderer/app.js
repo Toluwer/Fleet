@@ -163,8 +163,10 @@ function toast(message, type) {
     while (wrap.children.length >= 4) wrap.firstElementChild.remove();
     const t = document.createElement('div');
     t.className = 'toast ' + (type === 'bad' ? 'bad' : type === 'good' ? 'good' : '');
-    const ic = type === 'bad' ? 'alert-circle' : type === 'good' ? 'check-circle' : 'box';
-    t.innerHTML = `<svg class="t-ico"><use href="#i-${ic}"/></svg><span>${esc(message)}</span>`
+    // Notifications carry the Fleet logo mark; only errors swap in the alert
+    // glyph so failures stay impossible to miss.
+    const ic = type === 'bad' ? 'alert-circle' : 'fleet';
+    t.innerHTML = `<svg class="t-ico${type === 'bad' ? '' : ' fleet-mark'}"><use href="#i-${ic}"/></svg><span>${esc(message)}</span>`
       + `<button class="toast-x" type="button" aria-label="Dismiss notification" data-tip="Dismiss"><svg class="tx-ico"><use href="#i-x"/></svg></button>`;
     const dismiss = () => {
       if (!t.isConnected) return;

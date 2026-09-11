@@ -5,9 +5,9 @@ param(
 )
 
 # Audits the custom Fleet installer UI on real Windows:
-#   1. Runs FleetInstaller.exe with --demo (drives itself through every stage:
-#      Hello -> folder -> Confirm -> Install Fleet -> done) and screenshots
-#      the screen throughout.
+#   1. Runs FleetInstaller.exe with --demo (drives its single page through
+#      the flow: install form -> Install Fleet -> progress -> done) and
+#      screenshots the screen throughout.
 #   2. Verifies the install actually happened: files, registry, shortcuts.
 #   3. Re-runs it: same version -> must show "already installed" and close.
 #   4. Fakes an older installed version, re-runs it -> update flow: closes
@@ -111,8 +111,8 @@ $proc = Start-Process -FilePath $InstallerPath -ArgumentList '--demo' -PassThru
 $shot = 0
 $sw = [Diagnostics.Stopwatch]::StartNew()
 while (-not $proc.HasExited -and $sw.Elapsed.TotalSeconds -lt 600) {
-    # Screenshot the early UI stages (Hello -> New version detected ->
-    # Updating Fleet...), then just wait out the long file copy.
+    # Screenshot the early UI (checking -> update page -> progress),
+    # then just wait out the long file copy.
     if ($sw.Elapsed.TotalSeconds -lt 30) {
         try {
             $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
