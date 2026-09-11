@@ -352,15 +352,16 @@ unsafe fn dark_titlebar(hwnd: HWND) {
 }
 
 /// Rounded window corners (8 px at 96 DPI, scaled with DPI). DWM composites
-/// the mask itself, so the curve is anti-aliased; Windows 10 ignores the
-/// attribute and keeps square corners.
+/// the mask itself, so the curve is anti-aliased; unsupported builds ignore
+/// the attribute and keep square corners.
 unsafe fn round_corners(hwnd: HWND) {
     let pref = DWMWCP_ROUND;
     let pv: *const core::ffi::c_void =
         &pref as *const windows::Win32::Graphics::Dwm::DWM_WINDOW_CORNER_PREFERENCE
             as *const core::ffi::c_void;
     let cb = std::mem::size_of::<i32>() as u32;
-    let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, pv, cb);
+    let r = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, pv, cb);
+    debug_log(&format!("DWMWA_WINDOW_CORNER_PREFERENCE -> {r:?}"));
 }
 
 /// Toggles WS_EX_LAYERED. DWM corner rounding does not apply to layered
@@ -391,6 +392,16 @@ unsafe fn set_layered(hwnd: HWND, on: bool, alpha: u8) {
         0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
     );
+    if !on {
+        // Re-assert the corner preference after the frame change: some builds
+        // drop it when the layered style comes off.
+        round_corners(hwnd);
+    }
+    debug_log(&format!(
+            "WS_EX_LAYERED {} (ex-style now {:#010x})",
+            if on { "on" } else { "off" },
+            GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32
+        ));
 }
 
 // ------------------------------------------------------------------ install workers

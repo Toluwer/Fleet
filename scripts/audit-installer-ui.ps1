@@ -43,6 +43,11 @@ Add-Type -AssemblyName System.Drawing
 
 $installDir = Join-Path $env:TEMP ('FleetAudit-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 
+# The installer's own trace (only written when FLEET_SETUP_LOG is set).
+$fleetLog = Join-Path $env:TEMP 'FleetSetup.log'
+if (Test-Path $fleetLog) { Remove-Item $fleetLog -Force }
+$env:FLEET_SETUP_LOG = '1'
+
 # ---- run the demo flow and screenshot continuously ------------------------
 $proc = Start-Process -FilePath $InstallerPath -ArgumentList "--demo", "--path=$installDir" -PassThru
 
@@ -161,12 +166,19 @@ if (Test-Path (Join-Path $installDir 'uninstall.exe')) {
 }
 
 # ---- verdict ----------------------------------------------------------------
+$os = Get-CimInstance Win32_OperatingSystem
 $report = @(
     "Fleet installer UI audit - $(Get-Date -Format s)",
     "Installer: $InstallerPath",
+    "OS: $($os.Caption) build $([Environment]::OSVersion.Version)",
     "Screenshots: $shot",
     ""
 )
+if (Test-Path $fleetLog) {
+    $report += 'Installer trace:'
+    $report += (Get-Content $fleetLog) | ForEach-Object { "  $_" }
+    $report += ''
+}
 if ($problems.Count) {
     $report += 'FAIL:'
     $problems | ForEach-Object { $report += "  - $_" }
