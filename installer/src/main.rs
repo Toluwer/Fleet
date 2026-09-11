@@ -35,7 +35,8 @@ use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::UI::Controls::{
-    InitCommonControlsEx, INITCOMMONCONTROLSEX, PBM_SETPOS, PBM_SETRANGE32, SetWindowTheme,
+    InitCommonControlsEx, INITCOMMONCONTROLSEX, PBM_SETBARCOLOR, PBM_SETBKCOLOR, PBM_SETPOS,
+    PBM_SETRANGE32, SetWindowTheme,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
@@ -52,7 +53,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     LWA_ALPHA, MB_DEFBUTTON2, MB_ICONQUESTION, MB_OKCANCEL, MSG,
     SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SPI_GETWORKAREA,
     WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_CTLCOLOREDIT, WM_DPICHANGED, WM_NCDESTROY,
-    WM_NCCREATE, WM_SETFONT, WM_TIMER, WM_USER,
+    WM_NCCREATE, WM_SETFONT, WM_TIMER,
 };
 
 use payload::Package;
@@ -1175,22 +1176,14 @@ fn build_stage(a: &mut App) {
                         font: None,
                     },
                 );
-                // Strip the theme so the color messages apply: a flat
-                // Fleet-blue fill on a dark track, like the app's own bars.
-                let _ = SetWindowTheme(prog, w!(""), None);
+                // Detach from the visual style (BOTH strings empty - a NULL
+                // sub id list leaves the theme attached) so the color messages
+                // apply: a flat Fleet-blue fill on a dark track, like the app's
+                // own bars. PBM_SETBKCOLOR is CCM_SETBKCOLOR (0x2001).
+                let _ = SetWindowTheme(prog, w!(""), w!(""));
                 let _ = SendMessageW(prog, PBM_SETRANGE32, Some(WPARAM(0)), Some(LPARAM(10000)));
-                let _ = SendMessageW(
-                    prog,
-                    WM_USER + 0x2001, // PBM_SETBKCOLOR (CCM_SETBKCOLOR)
-                    Some(WPARAM(0)),
-                    Some(LPARAM(TRACK as isize)),
-                );
-                let _ = SendMessageW(
-                    prog,
-                    WM_USER + 9, // PBM_SETBARCOLOR
-                    Some(WPARAM(0)),
-                    Some(LPARAM(ACCENT as isize)),
-                );
+                let _ = SendMessageW(prog, PBM_SETBKCOLOR, Some(WPARAM(0)), Some(LPARAM(TRACK as isize)));
+                let _ = SendMessageW(prog, PBM_SETBARCOLOR, Some(WPARAM(0)), Some(LPARAM(ACCENT as isize)));
                 prog
             }};
         }
