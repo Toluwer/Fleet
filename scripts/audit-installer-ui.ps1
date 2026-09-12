@@ -71,7 +71,7 @@ try {
         if ($w -lt 400 -or $h -lt 300) { $shapeProblems += "Window is unexpectedly small: ${w}x${h}." }
         $bmp = New-Object System.Drawing.Bitmap $w, $h
         $g = [System.Drawing.Graphics]::FromImage($bmp)
-        $g.CopyFromScreen($rect.Left, $rect.Top, [System.Drawing.Point]::Empty, (New-Object System.Drawing.Size $w, $h))
+        $g.CopyFromScreen((New-Object System.Drawing.Rectangle([int]$rect.Left, [int]$rect.Top, [int]$w, [int]$h)))
         $g.Dispose()
         $bmp.Save((Join-Path $outDir 'shape.png'), [System.Drawing.Imaging.ImageFormat]::Png)
 
