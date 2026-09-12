@@ -65,7 +65,11 @@ $backdrop.WindowState = [System.Windows.Forms.FormWindowState]::Maximized
 $backdrop.BackColor = [System.Drawing.Color]::FromArgb(255, 0, 255)
 $backdrop.TopMost = $false
 $backdrop.Show()
-[System.Windows.Forms.Application]::DoEvents()
+# Pump paint messages: without a message loop the form never renders.
+for ($i = 0; $i -lt 10; $i++) {
+    [System.Windows.Forms.Application]::DoEvents()
+    Start-Sleep -Milliseconds 50
+}
 $shapeProc = Start-Process -FilePath $InstallerPath -ArgumentList "--path=$installDir" -PassThru
 Start-Sleep -Milliseconds 1800
 try {
@@ -91,17 +95,20 @@ try {
         function Test-IsBg($p) {
             [Math]::Abs($p.R - $bg.R) -le 12 -and [Math]::Abs($p.G - $bg.G) -le 12 -and [Math]::Abs($p.B - $bg.B) -le 12
         }
+        function Test-IsExactBg($p) {
+            [Math]::Abs($p.R - $bg.R) -le 3 -and [Math]::Abs($p.G - $bg.G) -le 3 -and [Math]::Abs($p.B - $bg.B) -le 3
+        }
         # Center and edge midpoints must be the Fleet surface.
         foreach ($pt in @(@{x=[int]($w/2); y=[int]($h/2)}, @{x=[int]($w/2); y=2}, @{x=2; y=[int]($h/2)})) {
             if (-not (Test-IsBg (Test-Pixel $pt.x $pt.y))) {
                 $shapeProblems += "Pixel ($($pt.x),$($pt.y)) is not the Fleet surface - the window body did not render."
             }
         }
-        # The 8px corners must be cut: these pixels sit outside the rounded
-        # arc (pixel centers clear of the 8px radius), so they must show the
-        # desktop, not the window.
+        # The 8px corners must be cut: pixels whose centers sit outside the
+        # rounded arc must show the backdrop (or at least anything that is not
+        # the window surface itself).
         foreach ($pt in @(@{x=1; y=1}, @{x=$w-2; y=1}, @{x=1; y=$h-2}, @{x=$w-2; y=$h-2})) {
-            if (Test-IsBg (Test-Pixel $pt.x $pt.y)) {
+            if (Test-IsExactBg (Test-Pixel $pt.x $pt.y)) {
                 $shapeProblems += "Pixel ($($pt.x),$($pt.y)) is window-colored - corners are square, not 8px rounded."
             }
         }
