@@ -632,7 +632,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && rendererModel.parseRobloxTarget('not a Roblox target').invalid === true
     && rendererModel.parseRobloxTarget('').invalid === false);
   check('Account-less installs can search public profiles without exposing account cookies',
-    peopleSource.includes("'User-Agent': 'Fleet/1.8.7'")
+    peopleSource.includes("'User-Agent': 'Fleet/1.8.8'")
     && peopleSource.includes('search-api/omni-search')
     && peopleSource.includes("verticalType: 'user'")
     && peopleSource.includes("presence: 'Unknown'")
@@ -1339,29 +1339,29 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && installerMain.includes('"Fleet"')
     && installerMain.includes('"Multi-instance Roblox launcher"')
     && /version_to_install\(\)/.test(installerMain));
-  check('Installer matches the app theme: dark surfaces, dark caption, rounded corners, no logo',
-    installerMain.includes('DarkMode_Explorer')
-    && installerMain.includes('DWMWA_USE_IMMERSIVE_DARK_MODE')
+  check('Installer window is drawn entirely by Fleet: layered, borderless, 8px rounded corners',
+    installerMain.includes('UpdateLayeredWindow')
+    && installerMain.includes('PF_PARGB') // 32-bit premultiplied alpha canvas
+    && installerMain.includes('WS_POPUP')
+    && !installerMain.includes('WS_CAPTION')
+    && installerMain.includes('WIN_RADIUS: f32 = 8.0') // 8px corners on every Windows version
     && installerMain.includes('0x0013_0F0E') // #0e0f13 window
     && installerMain.includes('0x00F6_823B') // #3b82f6 Fleet blue progress fill
-    && installerMain.includes('DWMWA_WINDOW_CORNER_PREFERENCE') // 8px DWM-rounded window corners
-    && installerMain.includes('DWMWCP_ROUND')
     && !installerMain.includes('STM_SETIMAGE') // no logo inside the installer
     && !installerMain.includes('LoadImageW')
     && /IDT_SWEEP/.test(installerMain)); // flat indeterminate uninstall progress
-  check('Installer buttons are custom drawn (anti-aliased, rounded); edit and checkboxes stay native',
-    installerMain.includes('w!("BUTTON")')
-    && installerMain.includes('w!("EDIT")')
-    && installerMain.includes('w!("STATIC")')
-    && installerMain.includes('w!("msctls_progress32")')
-    && installerBuild.includes('Common-Controls')
-    && installerBuild.includes('PerMonitorV2')
-    && installerBuild.includes('asInvoker')
-    && installerMain.includes('BS_OWNERDRAW')
-    && installerMain.includes('WM_DRAWITEM')
+  check('Installer controls are all custom drawn; no native chrome, no message boxes',
+    installerMain.includes('GdipDrawString') // GDI+ text
     && installerMain.includes('GdipFillPath') // anti-aliased rounded button fills
-    && installerMain.includes('BS_NOTIFY') // hover notifications
-    && !installerMain.includes('WM_PAINT =>')); // (paint is just validation, never draws chrome)
+    && installerMain.includes('GdipCreateFontFromLogfontW')
+    && !installerMain.includes('w!("BUTTON"')
+    && !installerMain.includes('w!("EDIT"')
+    && !installerMain.includes('w!("STATIC"')
+    && !installerMain.includes('msctls_progress32')
+    && !installerMain.includes('MessageBoxW') // no native dialogs anywhere
+    && !installerMain.includes('WS_SYSMENU') // no native caption
+    && installerBuild.includes('PerMonitorV2')
+    && installerBuild.includes('asInvoker'));
   check('Installer payload is a zip appended to the exe',
     buildInstallerScript.includes("Compress-Archive")
     && buildInstallerScript.includes('FLEETSTP')

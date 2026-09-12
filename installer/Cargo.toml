@@ -1,6 +1,6 @@
 [package]
 name = "fleet-setup"
-version = "1.8.7"
+version = "1.8.8"
 edition = "2021"
 description = "Fleet installer - a custom single-page Win32 application."
 license = "MIT"
@@ -15,8 +15,6 @@ windows = { version = "0.61", features = [
     "Win32_Graphics_Gdi",
     "Win32_Graphics_GdiPlus",
     "Win32_UI_WindowsAndMessaging",
-    "Win32_UI_Controls",
-    "Win32_Graphics_Dwm",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
     "Win32_UI_HiDpi",
@@ -25,7 +23,9 @@ windows = { version = "0.61", features = [
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_LibraryLoader",
-    "Win32_Security",
+    "Win32_System_Security",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
     "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Threading",

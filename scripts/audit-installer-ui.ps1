@@ -40,6 +40,10 @@ Write-Host "Auditing: $InstallerPath"
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -Namespace FleetAudit -Name Win32 -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+'@
 
 $installDir = Join-Path $env:TEMP ('FleetAudit-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 
@@ -47,6 +51,54 @@ $installDir = Join-Path $env:TEMP ('FleetAudit-' + [guid]::NewGuid().ToString('N
 $fleetLog = Join-Path $env:TEMP 'FleetSetup.log'
 if (Test-Path $fleetLog) { Remove-Item $fleetLog -Force }
 $env:FLEET_SETUP_LOG = '1'
+
+# ---- window shape: borderless, 8px rounded, drawn on every Windows ----------
+# The window is a layered surface whose alpha channel is the shape, so this
+# check works on Windows 10 as well as 11 (no DWM corner preference involved).
+$problems = @()
+$shapeProblems = @()
+$shapeProc = Start-Process -FilePath $InstallerPath -ArgumentList "--path=$installDir" -PassThru
+Start-Sleep -Milliseconds 1800
+try {
+    $shapeProc.Refresh()
+    if ($shapeProc.MainWindowHandle -eq [IntPtr]::Zero) {
+        $shapeProblems += 'Installer window was not found.'
+    } else {
+        $rect = New-Object FleetAudit.Win32+RECT
+        [void][FleetAudit.Win32]::GetWindowRect($shapeProc.MainWindowHandle, [ref]$rect)
+        $w = $rect.Right - $rect.Left
+        $h = $rect.Bottom - $rect.Top
+        if ($w -lt 400 -or $h -lt 300) { $shapeProblems += "Window is unexpectedly small: ${w}x${h}." }
+        $bmp = New-Object System.Drawing.Bitmap $w, $h
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.CopyFromScreen($rect.Left, $rect.Top, [System.Drawing.Point]::Empty, (New-Object System.Drawing.Size $w, $h))
+        $g.Dispose()
+        $bmp.Save((Join-Path $outDir 'shape.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+
+        function Test-Pixel([int]$x, [int]$y) { $p = $bmp.GetPixel($x, $y); $p }
+        $bg = @{ R = 14; G = 15; B = 19 }   # #0e0f13
+        function Test-IsBg($p) {
+            [Math]::Abs($p.R - $bg.R) -le 12 -and [Math]::Abs($p.G - $bg.G) -le 12 -and [Math]::Abs($p.B - $bg.B) -le 12
+        }
+        # Center and edge midpoints must be the Fleet surface.
+        foreach ($pt in @(@{x=[int]($w/2); y=[int]($h/2)}, @{x=[int]($w/2); y=2}, @{x=2; y=[int]($h/2)})) {
+            if (-not (Test-IsBg (Test-Pixel $pt.x $pt.y))) {
+                $shapeProblems += "Pixel ($($pt.x),$($pt.y)) is not the Fleet surface - the window body did not render."
+            }
+        }
+        # The 8px corners must be cut: these pixels belong to the desktop.
+        foreach ($pt in @(@{x=2; y=2}, @{x=$w-3; y=2}, @{x=2; y=$h-3}, @{x=$w-3; y=$h-3})) {
+            if (Test-IsBg (Test-Pixel $pt.x $pt.y)) {
+                $shapeProblems += "Pixel ($($pt.x),$($pt.y)) is window-colored - corners are square, not 8px rounded."
+            }
+        }
+        $bmp.Dispose()
+        Write-Host "Shape check: window ${w}x${h}; corners verified $(if ($shapeProblems.Count) { 'FAILED' } else { 'rounded 8px' })."
+    }
+} finally {
+    if (-not $shapeProc.HasExited) { Stop-Process -Id $shapeProc.Id -Force -ErrorAction SilentlyContinue }
+}
+if ($shapeProblems.Count) { $problems += $shapeProblems }
 
 # ---- run the demo flow and screenshot continuously ------------------------
 $proc = Start-Process -FilePath $InstallerPath -ArgumentList "--demo", "--path=$installDir" -PassThru
@@ -75,7 +127,6 @@ if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction Silent
 Write-Host "Captured $shot screenshots (watched for $([int]$sw.Elapsed.TotalSeconds)s)."
 
 # ---- verify the install ----------------------------------------------------
-$problems = @()
 if (-not (Test-Path (Join-Path $installDir 'Fleet.exe')))   { $problems += 'Fleet.exe missing after install.' }
 if (-not (Test-Path (Join-Path $installDir 'node.exe')))    { $problems += 'node.exe missing after install.' }
 if (-not (Test-Path (Join-Path $installDir 'uninstall.exe'))) { $problems += 'uninstall.exe missing after install.' }

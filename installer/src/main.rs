@@ -1,10 +1,11 @@
-// Fleet installer - a single-page Win32 application.
+// Fleet installer - a borderless window rendered entirely by Fleet.
 //
-// One window: a fixed header (wordmark, tagline, version) and a content area
-// that swaps in place - install form -> progress -> done. Push buttons are
-// custom drawn (GDI+, anti-aliased 8px rounding, Fleet's palette); the folder
-// edit, checkboxes and title bar stay native Windows controls in their dark
-// visual style. The window uses Windows 11 rounded corners.
+// The whole surface - shape, corners, text, buttons, progress - is drawn by
+// GDI+ into a 32-bit premultiplied-alpha bitmap and pushed with
+// UpdateLayeredWindow. The corners are rounded by our own anti-aliased mask,
+// so they look the same on every Windows version (10 included). No native
+// caption, no wizard controls, no message boxes: the only external windows
+// are the OS folder picker and the WebView2 bootstrapper.
 //
 // Flow (fresh):     folder + shortcut -> Install Fleet -> progress -> done.
 // Flow (update):    v{old} -> v{new} -> Update Fleet -> progress -> done.
@@ -22,51 +23,49 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Dwm::{
-    DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE,
-    DWMWCP_ROUND, DWMWINDOWATTRIBUTE,
+use windows::Win32::Foundation::{
+    COLORREF, HGLOBAL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, InvalidateRect, SelectObject,
-    SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
-    DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
-    FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY,
-    HBRUSH, HFONT, HGDIOBJ, HDC,
+    AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, DIB_RGB_COLORS, GetDC,
+    LOGFONTW, ReleaseDC, ScreenToClient, SelectObject, HBITMAP, HGDIOBJ, HDC,
 };
 use windows::Win32::Graphics::GdiPlus::{
-    FillModeAlternate, GdipAddPathArc, GdipClosePathFigures, GdipCreateFromHDC, GdipCreatePath,
-    GdipCreatePen1, GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePath,
-    GdipDeletePen, GdipDrawPath, GdipFillPath, GdipSetSmoothingMode, GdiplusStartup,
-    GdiplusStartupInput, GpBrush, GpGraphics, GpPath, GpPen, GpSolidFill, SmoothingModeAntiAlias,
-    Status, UnitPixel,
+    CombineModeReplace, FillModeAlternate, FlushIntentionFlush, GdipAddPathArc, GdipClosePathFigures,
+    GdipCreateBitmapFromScan0, GdipCreateFontFromLogfontW, GdipCreatePath, GdipCreatePen1,
+    GdipCreateSolidFill, GdipCreateStringFormat, GdipDeleteBrush, GdipDeleteFont,
+    GdipDeleteGraphics, GdipDeletePath, GdipDeletePen, GdipDeleteStringFormat, GdipDisposeImage,
+    GdipDrawLine, GdipDrawPath, GdipDrawString, GdipFillPath, GdipFillRectangleI, GdipFlush,
+    GdipGetImageGraphicsContext, GdipGraphicsClear, GdipResetClip, GdipSetClipPath,
+    GdipSetSmoothingMode, GdipSetStringFormatAlign, GdipSetStringFormatFlags,
+    GdipSetStringFormatLineAlign, GdipSetStringFormatTrimming, GdipSetTextRenderingHint,
+    GdiplusStartup, GdiplusStartupInput, RectF, SmoothingModeAntiAlias, Status,
+    StringAlignmentCenter, StringAlignmentFar, StringAlignmentNear, StringFormatFlagsNoWrap,
+    StringTrimmingEllipsisCharacter, TextRenderingHintAntiAliasGridFit, UnitPixel, GpBitmap, GpBrush,
+    GpFont, GpGraphics, GpImage, GpPath, GpPen, GpSolidFill, GpStringFormat,
 };
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
 use windows::Win32::System::SystemInformation::GetTickCount64;
-use windows::Win32::UI::Controls::{
-    BCN_HOTITEMCHANGE, DRAWITEMSTRUCT, HICF_ENTERING, InitCommonControlsEx, INITCOMMONCONTROLSEX,
-    NMBCHOTITEM, NMHDR, ODS_DISABLED, ODS_FOCUS, ODS_SELECTED, ODT_BUTTON, PBM_SETBARCOLOR,
-    PBM_SETBKCOLOR, PBM_SETPOS, PBM_SETRANGE32, SetWindowTheme,
+use windows::Win32::UI::HiDpi::{
+    GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
-use windows::Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
-use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetKeyState, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SPACE, VK_TAB,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AdjustWindowRect, BN_CLICKED, BM_GETCHECK, BM_SETCHECK, CREATESTRUCTW, CW_USEDEFAULT,
-    DefWindowProcW, DestroyWindow, DispatchMessageW, GetClassNameW, GetDlgCtrlID, GetMessageW,
-    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GWL_EXSTYLE, GWLP_USERDATA, HMENU, HWND_TOP,
-    IDC_ARROW, IDI_APPLICATION, IDOK, IsDialogMessageW, IsWindowVisible, KillTimer,
-    LoadCursorW, LoadIconW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW,
-    SendMessageW, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos,
-    SetWindowTextW, ShowWindow,
-    SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE,
-    SystemParametersInfoW, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW,
-    WS_CAPTION, WS_EX_CLIENTEDGE, WS_EX_LAYERED, WS_MINIMIZEBOX, WS_SYSMENU,
-    LWA_ALPHA, MB_DEFBUTTON2, MB_ICONQUESTION, MB_OKCANCEL, MSG,
-    SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SPI_GETWORKAREA,
-    WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_CTLCOLOREDIT, WM_DPICHANGED,
-    WM_DRAWITEM, WM_GETFONT, WM_NCDESTROY, WM_NOTIFY,
-    WM_NCCREATE, WM_SETFONT, WM_TIMER,
+    CREATESTRUCTW, CreateWindowExW, CW_USEDEFAULT, DefWindowProcW, DestroyWindow, DispatchMessageW,
+    GetCursorPos, GetMessageW, GetWindowLongPtrW, GetWindowRect, GWLP_USERDATA, HWND_TOP, HTCAPTION,
+    HTCLIENT, IDC_ARROW, IDI_APPLICATION, KillTimer, LoadCursorW, LoadIconW, MSG, PostMessageW,
+    PostQuitMessage, RegisterClassW, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    SystemParametersInfoW, TranslateMessage, ULW_ALPHA, UpdateLayeredWindow, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WNDCLASSW, WM_CHAR, WM_CLOSE, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCDESTROY,
+    WM_NCCREATE, WM_TIMER, WS_EX_LAYERED, WS_POPUP, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
+    SPI_GETWORKAREA,
 };
 
 use payload::Package;
@@ -78,8 +77,8 @@ const FLEET_VERSION: &str = env!("FLEET_VERSION");
 const APP_TITLE: &str = "Fleet Setup";
 const UNINSTALL_TITLE: &str = "Fleet Uninstaller";
 
-// Fleet's own palette (COLORREF is 0x00BBGGRR).
-const BG: u32     = 0x0013_0F0E; // #0e0f13 deep graphite window
+// Fleet's palette (COLORREF is 0x00BBGGRR).
+const BG: u32     = 0x0013_0F0E; // #0e0f13 window
 const INK: u32    = 0x00F1_F0F4; // #f4f0f1 primary text
 const INK_2: u32  = 0x00A7_A3AA; // #aaa3a7 secondary text
 const INK_3: u32  = 0x0071_6C72; // #726c71 muted text
@@ -88,51 +87,53 @@ const TRACK: u32  = 0x0034_2D2C; // #2c2d34 progress track
 const ACCENT: u32 = 0x00F6_823B; // #3b82f6 Fleet blue
 const DANGER: u32 = 0x00AC_9BFF; // #ff9bac error text
 
-// Custom-drawn button palette (matches the app's .btn styles).
-const SURFACE: u32   = 0x0020_1A1A; // #1a1a20 secondary fill
-const SURFACE_2: u32 = 0x0027_2020; // #202027 secondary fill (hover)
-const SURFACE_3: u32 = 0x0030_2727; // #272730 secondary fill (pressed)
-const HAIR_2: u32   = 0x0047_3D3D; // #3d3d47 secondary border
-const ON_INK: u32    = 0x00FF_FBF8; // #f8fbff text on the primary fill
-const PRIM: u32      = 0x00EB_6325; // #2563eb primary fill
-const PRIM_DOWN: u32 = 0x00CE_5720; // #2057ce primary fill (pressed)
-const PRIM_OFF: u32  = 0x0069_31_17; // #173169 primary fill (disabled)
-const PRIM_OFF_TX: u32 = 0x00A5_81_71; // #7181a5 primary text (disabled)
-const SEC_OFF: u32   = 0x0018_1313; // #131318 secondary fill (disabled)
-const DANGER_RING: u32 = 0x0035_266E; // #6e2635 danger border
-const DANGER_EDGE: u32 = 0x0059_42DC; // #dc4259 danger border (hover)
-const DANGER_HOT: u32  = 0x001D_1632; // #32161d danger fill (hover)
-const DANGER_DOWN: u32 = 0x0019_132A; // #2a1319 danger fill (pressed)
-const FOCUS_TX: u32   = 0x00FF_CBA9; // #a9cbff focus ring on the primary fill
+// Buttons (match the app's .btn styles).
+const SURFACE: u32   = 0x0020_1A1A;
+const SURFACE_2: u32 = 0x0027_2020;
+const SURFACE_3: u32 = 0x0030_2727;
+const HAIR_2: u32   = 0x0047_3D3D;
+const ON_INK: u32    = 0x00FF_FBF8;
+const PRIM: u32      = 0x00EB_6325;
+const PRIM_DOWN: u32 = 0x00CE_5720;
+const PRIM_OFF: u32  = 0x0069_31_17;
+const PRIM_OFF_TX: u32 = 0x00A5_81_71;
+const SEC_OFF: u32   = 0x0018_1313;
+const DANGER_RING: u32 = 0x0035_266E;
+const DANGER_EDGE: u32 = 0x0059_42DC;
+const DANGER_HOT: u32  = 0x001D_1632;
+const DANGER_DOWN: u32 = 0x0019_132A;
+const FOCUS_TX: u32   = 0x00FF_CBA9;
 
-/// Button corner radius in logical pixels.
+// Caption close button (matches the app's window controls).
+const CLOSE_HOT: u32 = 0x001C_2BC4;   // #c42b1c
+const CLOSE_DOWN: u32 = 0x001D_27A4;  // #a4271d
+
+/// Corner radius in logical pixels (the app's own window radius).
+const WIN_RADIUS: f32 = 8.0;
 const BTN_RADIUS: f32 = 8.0;
 
-// Button styles (winuser.h).
-const BS_OWNERDRAW: u32 = 0x0000_000B;
-const BS_NOTIFY: u32    = 0x0000_4000;
-
-// Timer ids
+// Timers
 const IDT_FADE: usize = 1;
 const IDT_DEMO: usize = 3;
 const IDT_POLL: usize = 4;
 const IDT_RESOLVE: usize = 5;
 const IDT_SWEEP: usize = 6;
+const IDT_CARET: usize = 7;
+const IDT_HOVER: usize = 8;
 
-// Static control ids (drive per-control colors)
-const IDC_HEAD: i32 = 1;    // headings + wordmark -> INK
-const IDC_SUB: i32 = 2;     // body lines -> INK_2
-const IDC_PATH: i32 = 3;    // emphasized path -> INK
-const IDC_HINT: i32 = 4;    // muted notes -> INK_3
-const IDC_ERROR: i32 = 5;   // inline validation error -> DANGER
-const IDC_BYTES: i32 = 6;   // progress bytes -> INK_3
-const IDC_FILE: i32 = 7;    // current file -> INK_3
-const IDC_TAG: i32 = 8;     // header tagline -> INK_3
-const IDC_VERSION: i32 = 9; // header version -> INK_3
-const IDC_LABEL: i32 = 10;  // form label -> INK_2
-const IDC_RULE: i32 = 11;   // 1px hairline (filled with the hair brush)
+// Widget ids.
+const IDC_HEAD: i32 = 1;
+const IDC_SUB: i32 = 2;
+const IDC_PATH: i32 = 3;
+const IDC_HINT: i32 = 4;
+const IDC_ERROR: i32 = 5;
+const IDC_BYTES: i32 = 6;
+const IDC_FILE: i32 = 7;
+const IDC_TAG: i32 = 8;
+const IDC_VERSION: i32 = 9;
+const IDC_LABEL: i32 = 10;
+const IDC_RULE: i32 = 11;
 
-// Interactive control ids
 const IDC_PATHEDIT: i32 = 120;
 const IDC_BROWSE: i32 = 101;
 const IDC_INSTALL: i32 = 103;
@@ -143,20 +144,23 @@ const IDC_REMOVE: i32 = 110;
 const IDC_CHECK_DATA: i32 = 112;
 const IDC_RETRY: i32 = 113;
 const IDC_RELEASES: i32 = 114;
-// Esc / cancel command id (Win32 IDCANCEL == 2).
 const IDC_CANCEL: i32 = 2;
+const IDC_CAPCLOSE: i32 = 901; // caption close button
 
-// Window metrics (logical pixels at 96 DPI)
+// Window metrics (logical pixels at 96 DPI).
 const WIN_W: i32 = 520;
 const WIN_H: i32 = 376;
+const CLOSE_W: i32 = 46;
+const CLOSE_H: i32 = 32;
+
+// 32bpp premultiplied ARGB (GDI+ PixelFormat32bppPARGB).
+const PF_PARGB: i32 = 0x000E_200B;
 
 // ------------------------------------------------------------------ state
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Stage {
-    /// Transient (an install already exists): checking the release feed.
     Resolve,
-    /// The one install page: folder picker + shortcut option.
     Fresh,
     UpdateReady,
     UpToDate,
@@ -176,13 +180,12 @@ enum Msg {
     Err(String),
 }
 
-#[derive(Clone, Copy)]
 struct Fonts {
-    display: HFONT, // wordmark
-    head: HFONT,    // section headings
-    body: HFONT,
-    path: HFONT,
-    small: HFONT,
+    display: *mut GpFont,
+    head: *mut GpFont,
+    body: *mut GpFont,
+    path: *mut GpFont,
+    small: *mut GpFont,
 }
 
 enum After {
@@ -199,20 +202,91 @@ struct Fade {
     after: After,
 }
 
+/// The layered-window canvas: a 32-bit DIB wrapped by GDI+, presented with
+/// UpdateLayeredWindow. The alpha channel is the window's shape.
+struct Canvas {
+    w: i32,
+    h: i32,
+    dc: HDC,
+    bmp: HBITMAP,
+    old: HGDIOBJ,
+    gfx: *mut GpGraphics,
+    image: *mut GpBitmap,
+}
+
+#[derive(Clone, Copy)]
+enum Align {
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Clone, Copy)]
+enum FontRole {
+    Head,
+    Body,
+    Path,
+    Small,
+}
+
+/// One drawn element. Widgets are plain data: rendering, hit-testing and
+/// keyboard focus all walk this list.
+struct Wg {
+    id: i32,
+    kind: WgKind,
+    /// Logical-pixel rect (scaled at draw time).
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+enum WgKind {
+    Button {
+        label: String,
+        primary: bool,
+        danger: bool,
+        enabled: bool,
+    },
+    Check {
+        label: String,
+        checked: bool,
+    },
+    PathField,
+    Text {
+        text: String,
+        ink: u32,
+        align: Align,
+        font: FontRole,
+        wrap: bool,
+        /// Top-align instead of vertically centering (multi-line blocks).
+        top: bool,
+    },
+    Rule,
+    Progress,
+    CloseBtn,
+}
+
 struct App {
     hwnd: HWND,
-    hinst: windows::Win32::Foundation::HINSTANCE,
-    brush: HBRUSH,
-    hair_brush: HBRUSH,
+    hinst: HINSTANCE,
+    canvas: Option<Canvas>,
     fonts: Fonts,
     scale: f32,
     uninstall_mode: bool,
     demo: bool,
     stage: Stage,
-    ctrls: Vec<HWND>,
-    /// Control id currently under the mouse (drives button hover states).
-    hover_ctl: Option<i32>,
+    widgets: Vec<Wg>,
+    /// Widget under the mouse.
+    hot: Option<i32>,
+    /// Widget with the button held down.
+    pressed: Option<i32>,
+    /// Widget with keyboard focus.
+    focus: Option<i32>,
+    caret_on: bool,
     alpha: u8,
+    progress: f32,
+    sweep: i32,
     path: String,
     desktop_shortcut: bool,
     delete_data: bool,
@@ -221,25 +295,12 @@ struct App {
     rx: Option<Receiver<Msg>>,
     busy: bool,
     fade: Fade,
-    /// (folder, version) of the Fleet already on this PC, if any. Decides
-    /// whether this run is a fresh install, an update, or a no-op.
     installed: Option<(PathBuf, String)>,
-    /// True when this run replaces an older installed version.
     updating: bool,
-    /// The newest release published on GitHub, when the feed could be read.
-    /// None until the check finishes (or fails, in which case it stays None
-    /// and the embedded payload is what gets installed).
     latest: Option<net::Latest>,
-    /// Shared with the feed thread: None = still checking, Some(None) = the
-    /// feed could not be read, Some(Some(latest)) = resolved.
     feed: Arc<Mutex<Option<Option<net::Latest>>>>,
-    /// GetTickCount64 deadline after which a slow feed check gives up.
     resolve_deadline: u64,
-    /// True while the release-feed check is still in flight (Install stays
-    /// disabled so nobody installs an old payload mid-check).
     resolving: bool,
-    /// Indeterminate-progress sweep position (uninstalling).
-    sweep: i32,
 }
 
 // ------------------------------------------------------------------ helpers
@@ -310,98 +371,140 @@ fn validate_path(raw: &str) -> Result<String, &'static str> {
     Ok(cleaned)
 }
 
-fn make_font(face: PCWSTR, weight: i32, logical_height: i32, scale: f32) -> HFONT {
-    let h = -((logical_height as f32 * scale).round() as i32);
-    unsafe {
-        CreateFontW(
-            h,
-            0,
-            0,
-            0,
-            weight,
-            0,
-            0,
-            0,
-            FONT_CHARSET(1), // DEFAULT_CHARSET
-            FONT_OUTPUT_PRECISION(0),
-            FONT_CLIP_PRECISION(0),
-            FONT_QUALITY(5), // CLEARTYPE_QUALITY
-            0x22,            // VARIABLE_PITCH | FF_SWISS
-            face,
-        )
-    }
+/// COLORREF (0x00BBGGRR) -> GDI+ ARGB (0xAARRGGBB).
+fn argb(c: u32) -> u32 {
+    0xFF00_0000 | ((c & 0x0000_00FF) << 16) | (c & 0x0000_FF00) | ((c & 0x00FF_0000) >> 16)
 }
 
-/// Native dark visual style for the remaining native controls (folder edit,
-/// checkboxes): the same subclass Explorer's own dark mode rides on
-/// (Windows 10 1809+ / Windows 11).
-unsafe fn dark_control(hwnd: HWND) {
-    let _ = SetWindowTheme(hwnd, w!("DarkMode_Explorer"), None);
+/// GDI+ font from a logical-font spec. Creation goes through the GDI font
+/// mapper, so missing faces (Segoe UI Variable on older Windows) substitute
+/// cleanly instead of falling back to a default serif.
+unsafe fn make_font(face: &str, weight: i32, logical_height: i32, scale: f32, screen: HDC) -> *mut GpFont {
+    let mut lf = LOGFONTW::default();
+    lf.lfHeight = -((logical_height as f32 * scale).round() as i32);
+    lf.lfWeight = weight;
+    lf.lfCharSet = windows::Win32::Graphics::Gdi::FONT_CHARSET(1); // DEFAULT_CHARSET
+    lf.lfOutPrecision = windows::Win32::Graphics::Gdi::FONT_OUTPUT_PRECISION(0);
+    lf.lfClipPrecision = windows::Win32::Graphics::Gdi::FONT_CLIP_PRECISION(0);
+    lf.lfQuality = windows::Win32::Graphics::Gdi::FONT_QUALITY(5); // CLEARTYPE_QUALITY
+    lf.lfPitchAndFamily = 0x22; // VARIABLE_PITCH | FF_SWISS
+    let wide: Vec<u16> = face.encode_utf16().chain(std::iter::once(0)).collect();
+    let n = wide.len().min(31);
+    lf.lfFaceName[..n].copy_from_slice(&wide[..n]);
+    let mut font: *mut GpFont = std::ptr::null_mut();
+    GdipCreateFontFromLogfontW(screen, &lf, &mut font);
+    font
 }
 
-/// Dark immersive title bar so the caption matches the client area
-/// (DWMWA_USE_IMMERSIVE_DARK_MODE; the older attribute 19 on pre-20H1 builds).
-unsafe fn dark_titlebar(hwnd: HWND) {
-    let mut on: i32 = 1;
-    let pv: *const core::ffi::c_void = &mut on as *const i32 as *const core::ffi::c_void;
-    let cb = std::mem::size_of::<i32>() as u32;
-    if DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, pv, cb).is_err() {
-        // Attribute 20 landed in Windows 10 20H1; older builds know it as 19.
-        let _ = DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE(19), pv, cb);
-    }
+unsafe fn delete_fonts(f: &Fonts) {
+    GdipDeleteFont(f.display);
+    GdipDeleteFont(f.head);
+    GdipDeleteFont(f.body);
+    GdipDeleteFont(f.path);
+    GdipDeleteFont(f.small);
 }
 
-/// Rounded window corners (8 px at 96 DPI, scaled with DPI). DWM composites
-/// the mask itself, so the curve is anti-aliased; unsupported builds ignore
-/// the attribute and keep square corners.
-unsafe fn round_corners(hwnd: HWND) {
-    let pref = DWMWCP_ROUND;
-    let pv: *const core::ffi::c_void =
-        &pref as *const windows::Win32::Graphics::Dwm::DWM_WINDOW_CORNER_PREFERENCE
-            as *const core::ffi::c_void;
-    let cb = std::mem::size_of::<i32>() as u32;
-    let r = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, pv, cb);
-    debug_log(&format!("DWMWA_WINDOW_CORNER_PREFERENCE -> {r:?}"));
-}
-
-/// Toggles WS_EX_LAYERED. DWM corner rounding does not apply to layered
-/// windows, so the style is stripped once the window is fully opaque (and
-/// restored before a fade-out needs it again).
-unsafe fn set_layered(hwnd: HWND, on: bool, alpha: u8) {
-    let cur = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
-    let want = if on {
-        cur | WS_EX_LAYERED.0
-    } else {
-        cur & !WS_EX_LAYERED.0
+unsafe fn build_fonts(scale: f32) -> Fonts {
+    let screen = GetDC(None);
+    let fonts = Fonts {
+        display: make_font("Segoe UI Variable Display", 600, 24, scale, screen),
+        head: make_font("Segoe UI Variable Display", 600, 17, scale, screen),
+        body: make_font("Segoe UI Variable Text", 400, 13, scale, screen),
+        path: make_font("Segoe UI Variable Text", 400, 14, scale, screen),
+        small: make_font("Segoe UI Variable Text", 400, 12, scale, screen),
     };
-    if want == cur {
-        return;
+    ReleaseDC(None, screen);
+    fonts
+}
+
+// ------------------------------------------------------------------ canvas
+
+unsafe fn canvas_create(w: i32, h: i32) -> Option<Canvas> {
+    if w <= 0 || h <= 0 {
+        return None;
     }
-    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, want as isize);
-    if on {
-        // Pin the current opacity before the frame change so the window
-        // never flashes fully opaque mid-fade.
-        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
+    let dc = CreateCompatibleDC(None);
+    if dc.0.is_null() {
+        return None;
     }
-    let _ = SetWindowPos(
-        hwnd,
+    let bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w,
+            biHeight: -h, // top-down rows
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            biSizeImage: 0,
+            biXPelsPerMeter: 0,
+            biYPelsPerMeter: 0,
+            biClrUsed: 0,
+            biClrImportant: 0,
+        },
+        bmiColors: Default::default(),
+    };
+    let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+    let bmp = CreateDIBSection(Some(dc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
+    if bits.is_null() {
+        let _ = DeleteObject(HGDIOBJ(bmp.0));
+        let _ = DeleteDC(dc);
+        return None;
+    }
+    let old = SelectObject(dc, HGDIOBJ(bmp.0));
+
+    let mut image: *mut GpBitmap = std::ptr::null_mut();
+    if GdipCreateBitmapFromScan0(w, h, w * 4, PF_PARGB, Some(bits as *const u8), &mut image) != Status(0)
+        || image.is_null()
+    {
+        SelectObject(dc, old);
+        let _ = DeleteObject(HGDIOBJ(bmp.0));
+        let _ = DeleteDC(dc);
+        return None;
+    }
+    let mut gfx: *mut GpGraphics = std::ptr::null_mut();
+    if GdipGetImageGraphicsContext(image as *mut GpImage, &mut gfx) != Status(0) || gfx.is_null() {
+        GdipDisposeImage(image as *mut GpImage);
+        SelectObject(dc, old);
+        let _ = DeleteObject(HGDIOBJ(bmp.0));
+        let _ = DeleteDC(dc);
+        return None;
+    }
+    GdipSetSmoothingMode(gfx, SmoothingModeAntiAlias);
+    GdipSetTextRenderingHint(gfx, TextRenderingHintAntiAliasGridFit);
+    Some(Canvas { w, h, dc, bmp, old, gfx, image })
+}
+
+unsafe fn canvas_destroy(c: Canvas) {
+    GdipDeleteGraphics(c.gfx);
+    GdipDisposeImage(c.image as *mut GpImage);
+    let _ = SelectObject(c.dc, c.old);
+    let _ = DeleteObject(HGDIOBJ(c.bmp.0));
+    let _ = DeleteDC(c.dc);
+}
+
+/// Pushes the canvas to the screen. `alpha` scales the whole window (fades);
+/// per-pixel alpha carries the rounded shape.
+unsafe fn canvas_present(a: &App, alpha: u8) {
+    let Some(c) = &a.canvas else { return };
+    let size = SIZE { cx: c.w, cy: c.h };
+    let src = POINT { x: 0, y: 0 };
+    let blend = BLENDFUNCTION {
+        BlendOp: AC_SRC_OVER as u8,
+        BlendFlags: 0,
+        SourceConstantAlpha: alpha,
+        AlphaFormat: AC_SRC_ALPHA as u8,
+    };
+    let _ = UpdateLayeredWindow(
+        a.hwnd,
         None,
-        0,
-        0,
-        0,
-        0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        None,
+        Some(&size),
+        Some(c.dc),
+        Some(&src),
+        COLORREF(0),
+        Some(&blend),
+        ULW_ALPHA,
     );
-    if !on {
-        // Re-assert the corner preference after the frame change: some builds
-        // drop it when the layered style comes off.
-        round_corners(hwnd);
-    }
-    debug_log(&format!(
-            "WS_EX_LAYERED {} (ex-style now {:#010x})",
-            if on { "on" } else { "off" },
-            GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32
-        ));
 }
 
 // ------------------------------------------------------------------ install workers
@@ -416,8 +519,8 @@ fn run_install(
 ) -> Result<(), String> {
     debug_log("run_install start");
     // A published release newer than this installer's embedded payload gets
-    // installed instead of it: that is what makes an old installer exe still
-    // hand out the newest Fleet. Same folder, same flow, same verification.
+    // installed instead of it: an old installer still hands out the newest
+    // Fleet. Same folder, same flow, same verification.
     let fetch_latest = latest
         .as_ref()
         .map(|l| version_cmp(&l.version, FLEET_VERSION) == std::cmp::Ordering::Greater)
@@ -433,9 +536,7 @@ fn run_install(
         };
         let bytes = net::http_get(&url, &mut progress)?;
         if !net::sha512_matches(&bytes, &l.sha512_b64) {
-            return Err(
-                "The download failed verification.\nCheck the connection and try again.".into(),
-            );
+            return Err("The download failed verification.\nCheck the connection and try again.".into());
         }
         if l.size > 0 && bytes.len() as u64 != l.size {
             return Err("The download is incomplete.\nTry again.".into());
@@ -443,16 +544,14 @@ fn run_install(
         let _ = tx.send(Msg::Note("Extracting the new version…".into()));
         Package::from_bytes(bytes)
     } else {
-        Package::open()
-            .ok_or("This installer is incomplete.\nDownload Fleet again.")?
+        Package::open().ok_or("This installer is incomplete.\nDownload Fleet again.")?
     };
     let entries = pkg.entries()?;
     let total: u64 = entries.iter().map(|e| e.raw_size).sum();
 
     if is_update {
         // Replace the previous version in place: close the running app, clear
-        // the old files (nothing from the old version is left behind), then
-        // extract the new payload over the same folder.
+        // the old files, then extract the new payload over the same folder.
         let _ = tx.send(Msg::Note("Closing Fleet…".into()));
         shell::close_fleet_processes(dest);
         let _ = tx.send(Msg::Note("Removing the previous version…".into()));
@@ -498,6 +597,7 @@ fn run_install(
         let _ = std::fs::create_dir_all(&sm_dir);
         shell::create_shortcut(&sm_dir.join("Fleet.lnk"), &exe, dest, "Fleet - Roblox multi-instance launcher")?;
     }
+
     if desktop {
         let desktop_dir = shell::special_folder(CSIDL_DESKTOPDIRECTORY);
         if !desktop_dir.as_os_str().is_empty() {
@@ -562,7 +662,7 @@ unsafe extern "system" fn wnd_proc(
     match msg {
         WM_NCCREATE => {
             let cs = &*(lparam.0 as *const CREATESTRUCTW);
-            let hinst = windows::Win32::Foundation::HINSTANCE(cs.hInstance.0);
+            let hinst = HINSTANCE(cs.hInstance.0);
             let scale = {
                 let dpi = GetDpiForWindow(hwnd);
                 if dpi == 0 { 1.0 } else { dpi as f32 / 96.0 }
@@ -593,16 +693,15 @@ unsafe extern "system" fn wnd_proc(
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
 
-            // An existing install decides the whole flow: older version ->
-            // update, same or newer -> up to date, nothing -> fresh install.
+            // An existing install decides the flow: older version -> update,
+            // same or newer -> up to date, nothing -> fresh install.
             let installed = if uninstall { None } else { shell::installed_fleet() };
 
             // The release feed check runs on its own thread while the page
             // settles; an old installer learns the newest version this way and
             // installs it instead of its embedded payload. Uninstall never
             // needs the network.
-            let feed: Arc<Mutex<Option<Option<net::Latest>>>> =
-                Arc::new(Mutex::new(None));
+            let feed: Arc<Mutex<Option<Option<net::Latest>>>> = Arc::new(Mutex::new(None));
             let resolving = !uninstall;
             if resolving {
                 let slot = Arc::clone(&feed);
@@ -625,9 +724,9 @@ unsafe extern "system" fn wnd_proc(
                 .map(|(_, v)| version_cmp(v, FLEET_VERSION) == std::cmp::Ordering::Less)
                 .unwrap_or(false);
 
-            // Uninstall mode always operates on the folder we live in
-            // (the registry UninstallString points here). Updates always go
-            // to the folder the existing Fleet lives in.
+            // Uninstall mode always operates on the folder we live in (the
+            // registry UninstallString points here). Updates always go to the
+            // folder the existing Fleet lives in.
             let path = if uninstall {
                 exe_dir
             } else if let Some((dir, _)) = &installed {
@@ -645,18 +744,11 @@ unsafe extern "system" fn wnd_proc(
                 true
             };
 
-            let fonts = Fonts {
-                display: make_font(w!("Segoe UI Variable Display"), 600, 24, scale),
-                head: make_font(w!("Segoe UI Variable Display"), 600, 17, scale),
-                body: make_font(w!("Segoe UI Variable Text"), 400, 13, scale),
-                path: make_font(w!("Segoe UI Variable Text"), 400, 14, scale),
-                small: make_font(w!("Segoe UI Variable Text"), 400, 12, scale),
-            };
+            let fonts = build_fonts(scale);
             let mut app = Box::new(App {
                 hwnd,
                 hinst,
-                brush: CreateSolidBrush(COLORREF(BG)),
-                hair_brush: CreateSolidBrush(COLORREF(HAIR)),
+                canvas: None,
                 fonts,
                 scale,
                 uninstall_mode: uninstall,
@@ -668,8 +760,14 @@ unsafe extern "system" fn wnd_proc(
                 } else {
                     Stage::Fresh
                 },
-                ctrls: Vec::new(),
+                widgets: Vec::new(),
+                hot: None,
+                pressed: None,
+                focus: None,
+                caret_on: true,
                 alpha: 0,
+                progress: 0.0,
+                sweep: 0,
                 path,
                 desktop_shortcut,
                 delete_data: false,
@@ -684,28 +782,35 @@ unsafe extern "system" fn wnd_proc(
                 feed,
                 resolve_deadline: 0,
                 resolving,
-                sweep: 0,
-                hover_ctl: None,
             });
             let raw = Box::into_raw(app);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, raw as isize);
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
 
-        WM_CREATE => {
+        WM_ERASEBKGND => LRESULT(1),
+
+        WM_NCHITTEST => {
+            // Drag anywhere that is not an interactive widget; there is no
+            // caption to do it for us.
             if let Some(a) = app_from(hwnd) {
-                size_window(a);
-                // Match the caption to the dark client area, then round the
-                // window corners (anti-aliased by DWM on Windows 11).
-                dark_titlebar(hwnd);
-                round_corners(hwnd);
-                // Start fully transparent; the first fade brings the window in.
-                // (Controls are created after the window is visible - wine
-                // otherwise never paints children made on a hidden window.)
-                let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 0, LWA_ALPHA);
+                let mut pt = POINT {
+                    x: (lparam.0 & 0xFFFF) as u16 as i16 as i32,
+                    y: ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32,
+                };
+                if ScreenToClient(hwnd, &mut pt).as_bool() {
+                    let hit = widget_at(a, pt.x, pt.y);
+                    if hit.is_some() {
+                        return LRESULT(HTCLIENT as isize);
+                    }
+                    return LRESULT(HTCAPTION as isize);
+                }
             }
-            LRESULT(0)
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
+
+        // A borderless fixed-size window has no business maximizing.
+        WM_NCLBUTTONDBLCLK => LRESULT(0),
 
         WM_TIMER => {
             if let Some(a) = app_from(hwnd) {
@@ -720,10 +825,17 @@ unsafe extern "system" fn wnd_proc(
                     IDT_SWEEP => {
                         // Indeterminate uninstall progress: a calm sweep.
                         a.sweep += 2;
-                        if a.sweep > 100 {
+                        if a.sweep > 120 {
                             a.sweep = 0;
                         }
-                        set_progress(a, a.sweep.max(0) as u64, 100);
+                        render_present(a);
+                    }
+                    IDT_CARET => {
+                        a.caret_on = !a.caret_on;
+                        render_present(a);
+                    }
+                    IDT_HOVER => {
+                        clear_stale_hover(a);
                     }
                     _ => {}
                 }
@@ -731,116 +843,72 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
 
-        WM_COMMAND => {
+        WM_MOUSEMOVE => {
             if let Some(a) = app_from(hwnd) {
-                let hi = ((wparam.0 >> 16) & 0xffff) as u32;
-                let id = (wparam.0 & 0xffff) as i32;
-                if hi == BN_CLICKED {
-                    on_button(a, id);
-                } else if hi == 0x0003 && id == IDC_PATHEDIT {
-                    // EN_CHANGE: remember the path and clear any inline error.
-                    if let Some(ctl) = a.ctrls.iter().find(|c| GetDlgCtrlID(**c) == IDC_PATHEDIT) {
-                        let text = window_text(*ctl);
-                        if !text.is_empty() {
-                            a.path = text;
-                        }
+                let x = (lparam.0 & 0xFFFF) as u16 as i16 as i32;
+                let y = ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
+                let hit = widget_at(a, x, y);
+                if hit != a.hot {
+                    a.hot = hit;
+                    if hit.is_some() {
+                        let _ = SetTimer(Some(hwnd), IDT_HOVER, 80, None);
                     }
-                    if let Some(err) = a.ctrls.iter().find(|c| GetDlgCtrlID(**c) == IDC_ERROR) {
-                        if IsWindowVisible(*err).as_bool() {
-                            let _ = ShowWindow(*err, SW_HIDE);
-                        }
-                    }
+                    render_present(a);
                 }
             }
             LRESULT(0)
         }
 
-        WM_DRAWITEM => {
-            // Custom-drawn push buttons (BS_OWNERDRAW).
+        WM_LBUTTONDOWN => {
             if let Some(a) = app_from(hwnd) {
-                let dis = &*(lparam.0 as *const DRAWITEMSTRUCT);
-                if dis.CtlType == ODT_BUTTON {
-                    draw_owner_button(a, dis);
-                    return LRESULT(1);
-                }
-            }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
-        }
-
-        WM_NOTIFY => {
-            // BCN_HOTITEMCHANGE (buttons carry BS_NOTIFY): repaint on hover in/out.
-            if let Some(a) = app_from(hwnd) {
-                let nm = &*(lparam.0 as *const NMHDR);
-                if nm.code as u32 == BCN_HOTITEMCHANGE {
-                    let hot = &*(lparam.0 as *const NMBCHOTITEM);
-                    let id = nm.idFrom as i32;
-                    if (hot.dwFlags.0 & HICF_ENTERING.0) != 0 {
-                        a.hover_ctl = Some(id);
-                    } else if a.hover_ctl == Some(id) {
-                        a.hover_ctl = None;
+                let x = (lparam.0 & 0xFFFF) as u16 as i16 as i32;
+                let y = ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
+                if let Some(id) = widget_at(a, x, y) {
+                    a.pressed = Some(id);
+                    if is_focusable(a, id) {
+                        a.focus = Some(id);
                     }
-                    let _ = InvalidateRect(Some(nm.hwndFrom), None, false);
+                    render_present(a);
                 }
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            LRESULT(0)
         }
 
-        WM_CTLCOLORSTATIC => {
+        WM_LBUTTONUP => {
             if let Some(a) = app_from(hwnd) {
-                let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
-                let ctl = HWND(lparam.0 as *mut core::ffi::c_void);
-                let id = GetDlgCtrlID(ctl);
-                let color = match id {
-                    IDC_HEAD => INK,
-                    IDC_PATH => INK,
-                    IDC_SUB | IDC_LABEL => INK_2,
-                    IDC_ERROR => DANGER,
-                    _ => INK_3, // hint, bytes, file, tagline, version
-                };
-                SetTextColor(hdc, COLORREF(color));
-                if id == IDC_RULE {
-                    // The 1px hairline: an empty static filled with the brush.
-                    SetBkColor(hdc, COLORREF(HAIR));
-                    return LRESULT(a.hair_brush.0 as isize);
+                let x = (lparam.0 & 0xFFFF) as u16 as i16 as i32;
+                let y = ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
+                let hit = widget_at(a, x, y);
+                let pressed = a.pressed.take();
+                if let (Some(p), Some(h)) = (pressed, hit) {
+                    if p == h {
+                        activate(a, p);
+                    }
                 }
-                SetBkColor(hdc, COLORREF(BG));
-                SetBkMode(hdc, TRANSPARENT);
-                return LRESULT(a.brush.0 as isize);
+                render_present(a);
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            LRESULT(0)
         }
 
-        WM_CTLCOLOREDIT => {
+        WM_KEYDOWN => {
             if let Some(a) = app_from(hwnd) {
-                let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
-                SetTextColor(hdc, COLORREF(INK));
-                SetBkColor(hdc, COLORREF(BG));
-                return LRESULT(a.brush.0 as isize);
+                on_keydown(a, wparam.0 as u16);
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            LRESULT(0)
+        }
+
+        WM_CHAR => {
+            if let Some(a) = app_from(hwnd) {
+                on_char(a, wparam.0 as u32);
+            }
+            LRESULT(0)
         }
 
         WM_CLOSE => {
             if let Some(a) = app_from(hwnd) {
-                if a.busy {
-                    let text = if a.uninstall_mode {
-                        "Fleet is still being removed.\nQuit anyway?"
-                    } else if a.updating {
-                        "The update is still in progress.\nQuit anyway?"
-                    } else {
-                        "Setup is still running.\nQuit anyway?"
-                    };
-                    let title = if a.uninstall_mode { UNINSTALL_TITLE } else { APP_TITLE };
-                    let r = MessageBoxW(
-                        Some(hwnd),
-                        PCWSTR(to_wide(text).as_ptr()),
-                        PCWSTR(to_wide(title).as_ptr()),
-                        MB_OKCANCEL | MB_ICONQUESTION | MB_DEFBUTTON2,
-                    );
-                    if r == IDOK {
-                        PostQuitMessage(0);
-                    }
-                } else {
+                // While files are moving there is no safe way out; the close
+                // button dims and the request is ignored.
+                if !a.busy {
                     fade_quit(a);
                 }
             }
@@ -862,12 +930,19 @@ unsafe extern "system" fn wnd_proc(
                     SWP_NOZORDER | SWP_NOACTIVATE,
                 );
                 rebuild_fonts(a);
+                rebuild_canvas(a);
                 build_stage(a);
+                render_present(a);
             }
             LRESULT(0)
         }
 
         WM_NCDESTROY => {
+            if let Some(a) = app_from(hwnd) {
+                if let Some(c) = a.canvas.take() {
+                    canvas_destroy(c);
+                }
+            }
             let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
             if raw != 0 {
                 drop(Box::from_raw(raw as *mut App));
@@ -875,9 +950,8 @@ unsafe extern "system" fn wnd_proc(
             }
             let r = DefWindowProcW(hwnd, msg, wparam, lparam);
             // The graceful exit path (fade_quit -> DestroyWindow) never posted
-            // WM_QUIT, so the GetMessageW pump blocked forever and the process
-            // lingered as a zombie after its window closed. This proc only
-            // serves the main window, so this runs exactly once per process.
+            // WM_QUIT, so the pump would block forever. This runs exactly once
+            // per process.
             PostQuitMessage(0);
             r
         }
@@ -899,29 +973,10 @@ fn app_from(hwnd: HWND) -> Option<&'static mut App> {
     }
 }
 
-fn window_text(hwnd: HWND) -> String {
-    unsafe {
-        let len = GetWindowTextLengthW(hwnd) as usize;
-        let mut buf = vec![0u16; len + 1];
-        let got = GetWindowTextW(hwnd, &mut buf) as usize;
-        let n = got.min(len);
-        String::from_utf16_lossy(&buf[..n])
-    }
-}
-
 fn size_window(a: &App) {
     unsafe {
-        let mut rect = RECT {
-            left: 0,
-            top: 0,
-            right: (WIN_W as f32 * a.scale) as i32,
-            bottom: (WIN_H as f32 * a.scale) as i32,
-        };
-        let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-        let _ = AdjustWindowRect(&mut rect, style, false);
-
-        let w = (rect.right - rect.left).max(1);
-        let h = (rect.bottom - rect.top).max(1);
+        let w = (WIN_W as f32 * a.scale).round() as i32;
+        let h = (WIN_H as f32 * a.scale).round() as i32;
 
         let mut work = RECT { left: 0, top: 0, right: 0, bottom: 0 };
         let got = SystemParametersInfoW(
@@ -941,29 +996,24 @@ fn size_window(a: &App) {
 }
 
 fn rebuild_fonts(a: &mut App) {
-    let s = a.scale;
     unsafe {
-        let _ = DeleteObject(HGDIOBJ(a.fonts.display.0));
-        let _ = DeleteObject(HGDIOBJ(a.fonts.head.0));
-        let _ = DeleteObject(HGDIOBJ(a.fonts.body.0));
-        let _ = DeleteObject(HGDIOBJ(a.fonts.path.0));
-        let _ = DeleteObject(HGDIOBJ(a.fonts.small.0));
+        delete_fonts(&a.fonts);
     }
-    a.fonts = Fonts {
-        display: make_font(w!("Segoe UI Variable Display"), 600, 24, s),
-        head: make_font(w!("Segoe UI Variable Display"), 600, 17, s),
-        body: make_font(w!("Segoe UI Variable Text"), 400, 13, s),
-        path: make_font(w!("Segoe UI Variable Text"), 400, 14, s),
-        small: make_font(w!("Segoe UI Variable Text"), 400, 12, s),
-    };
+    a.fonts = unsafe { build_fonts(a.scale) };
+}
+
+fn rebuild_canvas(a: &mut App) {
+    unsafe {
+        if let Some(c) = a.canvas.take() {
+            canvas_destroy(c);
+        }
+        let w = (WIN_W as f32 * a.scale).round() as i32;
+        let h = (WIN_H as f32 * a.scale).round() as i32;
+        a.canvas = canvas_create(w, h);
+    }
 }
 
 fn start_fade(a: &mut App, to: u8, dur: u32, after: After) {
-    // A fade-out starts from an opaque, non-layered window (the style was
-    // stripped so DWM can round the corners): restore it first.
-    if a.alpha == 255 {
-        unsafe { set_layered(a.hwnd, true, a.alpha); }
-    }
     a.fade = Fade {
         active: true,
         from: a.alpha,
@@ -989,50 +1039,29 @@ unsafe fn step_fade(a: &mut App) {
     let alpha = (a.fade.from as f32 + (a.fade.to as f32 - a.fade.from as f32) * eased)
         .clamp(0.0, 255.0) as u8;
     a.alpha = alpha;
-    let _ = SetLayeredWindowAttributes(a.hwnd, COLORREF(0), alpha, LWA_ALPHA);
+    canvas_present(a, alpha);
     if t >= 1.0 {
         let after = std::mem::replace(&mut a.fade.after, After::None);
         a.fade.active = false;
         let _ = KillTimer(Some(a.hwnd), IDT_FADE);
-        // A layered window whose alpha changed may never repaint on its own
-        // (wine in particular), so force a full synchronous repaint whenever
-        // we settle at full opacity.
-        if a.alpha == 255 {
-            force_repaint(a);
-            // Layered windows are excluded from DWM corner rounding; the
-            // fade is done, so drop the style and let the corners round.
-            unsafe { set_layered(a.hwnd, false, a.alpha); }
-        }
         if let After::Quit = after {
             let _ = DestroyWindow(a.hwnd);
         }
     }
 }
 
-fn force_repaint(a: &App) {
-    unsafe {
-        windows::Win32::Graphics::Gdi::RedrawWindow(
-            Some(a.hwnd),
-            None,
-            None,
-            windows::Win32::Graphics::Gdi::RDW_INVALIDATE
-                | windows::Win32::Graphics::Gdi::RDW_ERASE
-                | windows::Win32::Graphics::Gdi::RDW_ALLCHILDREN
-                | windows::Win32::Graphics::Gdi::RDW_UPDATENOW,
-        );
-    }
+fn fade_quit(a: &mut App) {
+    start_fade(a, 0, 180, After::Quit);
 }
 
-/// One page, no wizard: state changes rebuild the content area in place.
-/// The header never moves; only the window open/close fades exist.
+/// One page: state changes rebuild the widget list in place.
 fn goto_stage(a: &mut App, next: Stage) {
     a.stage = next;
     build_stage(a);
-    force_repaint(a);
+    render_present(a);
 }
 
-/// The first real page once the feed resolves: fresh install keeps the form,
-/// an older install updates, a same/newer install is told it's up to date.
+/// The first real page once the feed resolves.
 fn first_stage(a: &App) -> Stage {
     let effective = a.version_to_install();
     match &a.installed {
@@ -1047,8 +1076,6 @@ fn first_stage(a: &App) -> Stage {
     }
 }
 
-/// Waits (bounded) for the release-feed thread, then decides the real first
-/// page against the version that will actually be installed.
 fn start_resolve(a: &mut App) {
     a.resolve_deadline = unsafe { GetTickCount64() } + 6000;
     poll_resolve(a);
@@ -1060,7 +1087,6 @@ fn poll_resolve(a: &mut App) {
         None => {
             let now = unsafe { GetTickCount64() };
             if now >= a.resolve_deadline {
-                // The feed is too slow; proceed offline (embedded payload).
                 debug_log("feed check timed out - installing the embedded payload");
                 if let Ok(mut guard) = a.feed.lock() {
                     *guard = Some(None);
@@ -1092,8 +1118,7 @@ fn finish_resolve(a: &mut App) {
         ));
     }
     a.resolving = false;
-    // "Updating" is decided against the version that will be installed - the
-    // newer of the embedded payload and the release feed.
+    // "Updating" is decided against the version that will be installed.
     let effective = a.version_to_install();
     a.updating = a
         .installed
@@ -1102,8 +1127,6 @@ fn finish_resolve(a: &mut App) {
         .unwrap_or(false);
     match a.stage {
         Stage::Resolve => goto_stage(a, first_stage(a)),
-        // The form was already up; rebuild it so Install enables and the
-        // version line reflects whatever the feed offered.
         Stage::Fresh => goto_stage(a, Stage::Fresh),
         _ => {}
     }
@@ -1111,8 +1134,7 @@ fn finish_resolve(a: &mut App) {
 
 impl App {
     /// The version this run installs: the newest of the embedded payload and
-    /// the GitHub release feed (when the feed is unreachable or older, the
-    /// embedded payload is what exists on disk, so it wins).
+    /// the GitHub release feed.
     fn version_to_install(&self) -> String {
         match &self.latest {
             Some(l) if version_cmp(&l.version, FLEET_VERSION) == std::cmp::Ordering::Greater => {
@@ -1123,21 +1145,7 @@ impl App {
     }
 }
 
-fn fade_quit(a: &mut App) {
-    start_fade(a, 0, 180, After::Quit);
-}
-
-// ------------------------------------------------------------------ button drawing
-
-/// The button id set that draws as a filled primary action.
-fn is_primary(id: i32) -> bool {
-    matches!(id, IDC_INSTALL | IDC_LAUNCH | IDC_RETRY)
-}
-
-/// COLORREF (0x00BBGGRR) -> GDI+ ARGB (0xAARRGGBB).
-fn argb(c: u32) -> u32 {
-    0xFF00_0000 | ((c & 0x0000_00FF) << 16) | (c & 0x0000_FF00) | ((c & 0x00FF_0000) >> 16)
-}
+// ------------------------------------------------------------------ drawing
 
 /// Builds a closed rounded-rectangle path (device pixels).
 unsafe fn rounded_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> *mut GpPath {
@@ -1154,18 +1162,92 @@ unsafe fn rounded_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> *mut GpPath {
     path
 }
 
-/// Draws one custom push button: an anti-aliased 8px-rounded Fleet-styled
-/// fill (primary / danger / secondary) with centered text and an optional
-/// focus ring. Mirrors the app's .btn, .btn.primary and .btn.danger styles.
-unsafe fn draw_owner_button(a: &mut App, dis: &DRAWITEMSTRUCT) {
-    let id = dis.CtlID as i32;
-    let pressed = (dis.itemState.0 & ODS_SELECTED.0) != 0;
-    let disabled = (dis.itemState.0 & ODS_DISABLED.0) != 0;
-    let focused = (dis.itemState.0 & ODS_FOCUS.0) != 0;
-    let hot = !disabled && a.hover_ctl == Some(id);
+unsafe fn fill_path(gfx: *mut GpGraphics, path: *mut GpPath, color: u32) {
+    let mut brush: *mut GpSolidFill = std::ptr::null_mut();
+    GdipCreateSolidFill(argb(color), &mut brush);
+    GdipFillPath(gfx, brush as *mut GpBrush, path);
+    GdipDeleteBrush(brush as *mut GpBrush);
+}
 
-    let (fill, border, text) = if is_primary(id) {
-        if disabled {
+unsafe fn stroke_path(gfx: *mut GpGraphics, path: *mut GpPath, color: u32, width: f32) {
+    let mut pen: *mut GpPen = std::ptr::null_mut();
+    GdipCreatePen1(argb(color), width, UnitPixel, &mut pen);
+    GdipDrawPath(gfx, pen, path);
+    GdipDeletePen(pen);
+}
+
+unsafe fn fill_rect(gfx: *mut GpGraphics, color: u32, x: i32, y: i32, w: i32, h: i32) {
+    let mut brush: *mut GpSolidFill = std::ptr::null_mut();
+    GdipCreateSolidFill(argb(color), &mut brush);
+    GdipFillRectangleI(gfx, brush as *mut GpBrush, x, y, w, h);
+    GdipDeleteBrush(brush as *mut GpBrush);
+}
+
+/// Single-line or wrapping text with GDI+ anti-aliasing.
+unsafe fn draw_text(
+    gfx: *mut GpGraphics,
+    text: &str,
+    font: *mut GpFont,
+    color: u32,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    align: Align,
+    wrap: bool,
+    top: bool,
+) {
+    let mut fmt: *mut GpStringFormat = std::ptr::null_mut();
+    if GdipCreateStringFormat(0, 0, &mut fmt) != Status(0) || fmt.is_null() {
+        return;
+    }
+    if !wrap {
+        GdipSetStringFormatFlags(fmt, StringFormatFlagsNoWrap.0);
+        GdipSetStringFormatTrimming(fmt, StringTrimmingEllipsisCharacter);
+    }
+    let halign = match align {
+        Align::Left => StringAlignmentNear,
+        Align::Center => StringAlignmentCenter,
+        Align::Right => StringAlignmentFar,
+    };
+    let valign = if top { StringAlignmentNear } else { StringAlignmentCenter };
+    GdipSetStringFormatAlign(fmt, halign);
+    GdipSetStringFormatLineAlign(fmt, valign);
+
+    let mut brush: *mut GpSolidFill = std::ptr::null_mut();
+    GdipCreateSolidFill(argb(color), &mut brush);
+    let rc = RectF { X: x, Y: y, Width: w, Height: h };
+    let wide = to_wide(text);
+    GdipDrawString(
+        gfx,
+        PCWSTR(wide.as_ptr()),
+        -1,
+        font,
+        &rc,
+        fmt,
+        brush as *mut GpBrush,
+    );
+    GdipDeleteBrush(brush as *mut GpBrush);
+    GdipDeleteStringFormat(fmt);
+}
+
+/// One push button: an anti-aliased 8px-rounded fill with centered label.
+/// Mirrors the app's .btn, .btn.primary and .btn.danger styles.
+unsafe fn draw_button(
+    gfx: *mut GpGraphics,
+    s: f32,
+    fonts: &Fonts,
+    wg: &Wg,
+    label: &str,
+    primary: bool,
+    danger: bool,
+    enabled: bool,
+    hot: bool,
+    pressed: bool,
+    focused: bool,
+) {
+    let (fill, border, text) = if primary {
+        if !enabled {
             (PRIM_OFF, None, PRIM_OFF_TX)
         } else if pressed {
             (PRIM_DOWN, None, ON_INK)
@@ -1174,7 +1256,7 @@ unsafe fn draw_owner_button(a: &mut App, dis: &DRAWITEMSTRUCT) {
         } else {
             (PRIM, None, ON_INK)
         }
-    } else if id == IDC_REMOVE {
+    } else if danger {
         if pressed {
             (DANGER_DOWN, Some(DANGER_RING), DANGER)
         } else if hot {
@@ -1182,7 +1264,7 @@ unsafe fn draw_owner_button(a: &mut App, dis: &DRAWITEMSTRUCT) {
         } else {
             (BG, Some(DANGER_RING), DANGER)
         }
-    } else if disabled {
+    } else if !enabled {
         (SEC_OFF, Some(HAIR), INK_3)
     } else if pressed {
         (SURFACE_3, Some(HAIR_2), INK)
@@ -1192,528 +1274,851 @@ unsafe fn draw_owner_button(a: &mut App, dis: &DRAWITEMSTRUCT) {
         (SURFACE, Some(HAIR_2), INK)
     };
 
-    let hdc = dis.hDC;
-    let rc = dis.rcItem;
-    let (x, y) = (rc.left as f32, rc.top as f32);
-    let (w, h) = ((rc.right - rc.left) as f32, (rc.bottom - rc.top) as f32);
-    let r = (BTN_RADIUS * a.scale)
-        .min(w / 2.0)
-        .min(h / 2.0)
-        .max(0.0);
+    let x = wg.x * s;
+    let y = wg.y * s;
+    let w = wg.w * s;
+    let h = wg.h * s;
+    let r = (BTN_RADIUS * s).min(w / 2.0).min(h / 2.0).max(0.0);
 
-    // GDI+ draws the shape (anti-aliased); GDI draws the text (ClearType).
-    let mut gfx: *mut GpGraphics = std::ptr::null_mut();
-    if GdipCreateFromHDC(hdc, &mut gfx) == Status(0) && !gfx.is_null() {
-        GdipSetSmoothingMode(gfx, SmoothingModeAntiAlias);
-        let path = rounded_path(x, y, w, h, r);
-        if !path.is_null() {
-            let mut brush: *mut GpSolidFill = std::ptr::null_mut();
-            GdipCreateSolidFill(argb(fill), &mut brush);
-            GdipFillPath(gfx, brush as *mut GpBrush, path);
-            GdipDeleteBrush(brush as *mut GpBrush);
-
-            if let Some(b) = border {
-                // Crisp 1 px hairline (2 px at 200% scale and up).
-                let bw = if a.scale >= 2.0 { 2.0 } else { 1.0 };
-                let mut pen: *mut GpPen = std::ptr::null_mut();
-                GdipCreatePen1(argb(b), bw, UnitPixel, &mut pen);
-                GdipDrawPath(gfx, pen, path);
-                GdipDeletePen(pen);
-            }
-            GdipDeletePath(path);
+    let path = rounded_path(x, y, w, h, r);
+    if !path.is_null() {
+        fill_path(gfx, path, fill);
+        if let Some(b) = border {
+            let bw = if s >= 2.0 { 2.0 } else { 1.0 };
+            stroke_path(gfx, path, b, bw);
         }
-        if focused && !disabled {
-            // Focus ring: 1px inset rounded outline, accent-tinted on primary.
-            let inset = (2.0 * a.scale).round().max(2.0).min(w.min(h) / 4.0);
-            let fr = (r - inset).max(0.0);
-            let fpath = rounded_path(x + inset, y + inset, w - 2.0 * inset, h - 2.0 * inset, fr);
-            if !fpath.is_null() {
-                let ring = if is_primary(id) { FOCUS_TX } else { ACCENT };
-                let rw = if a.scale >= 2.0 { 2.0 } else { 1.0 };
-                let mut pen: *mut GpPen = std::ptr::null_mut();
-                GdipCreatePen1(argb(ring), rw, UnitPixel, &mut pen);
-                GdipDrawPath(gfx, pen, fpath);
-                GdipDeletePen(pen);
-                GdipDeletePath(fpath);
-            }
-        }
-        GdipDeleteGraphics(gfx);
+        GdipDeletePath(path);
     }
+    if focused && enabled {
+        let inset = (2.0 * s).round().max(2.0).min(w.min(h) / 4.0);
+        let fr = (r - inset).max(0.0);
+        let fpath = rounded_path(x + inset, y + inset, w - 2.0 * inset, h - 2.0 * inset, fr);
+        if !fpath.is_null() {
+            let ring = if primary { FOCUS_TX } else { ACCENT };
+            let rw = if s >= 2.0 { 2.0 } else { 1.0 };
+            stroke_path(gfx, fpath, ring, rw);
+            GdipDeletePath(fpath);
+        }
+    }
+    draw_text(gfx, label, fonts.body, text, x, y, w, h, Align::Center, false, false);
+}
 
-    // Centered label.
-    let fobj = SendMessageW(dis.hwndItem, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0)));
-    let hfont = HFONT(fobj.0 as *mut core::ffi::c_void);
-    let old = if !hfont.0.is_null() {
-        SelectObject(hdc, HGDIOBJ(hfont.0))
-    } else {
-        HGDIOBJ(std::ptr::null_mut())
-    };
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, COLORREF(text));
-    let mut label = to_wide(&window_text(dis.hwndItem));
-    let mut trc = rc;
-    DrawTextW(
-        hdc,
-        &mut label,
-        &mut trc,
-        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+/// A checkbox row: an 18px rounded box with a check glyph and a label.
+unsafe fn draw_check(
+    gfx: *mut GpGraphics,
+    s: f32,
+    fonts: &Fonts,
+    wg: &Wg,
+    label: &str,
+    checked: bool,
+    hot: bool,
+    focused: bool,
+) {
+    let box_side = 18.0 * s;
+    let bx = wg.x * s;
+    let by = wg.y * s + (wg.h * s - box_side) / 2.0;
+    let r = (4.0 * s).min(box_side / 2.0);
+
+    let path = rounded_path(bx, by, box_side, box_side, r);
+    if !path.is_null() {
+        fill_path(gfx, path, if checked { PRIM } else { if hot { SURFACE_2 } else { SURFACE } });
+        stroke_path(gfx, path, if checked { PRIM } else { HAIR_2 }, if s >= 2.0 { 2.0 } else { 1.0 });
+        GdipDeletePath(path);
+    }
+    if checked {
+        // Check glyph: two strokes, sized to the box.
+        let cx = bx + box_side / 2.0;
+        let cy = by + box_side / 2.0;
+        let u = box_side * 0.24;
+        let mut pen: *mut GpPen = std::ptr::null_mut();
+        GdipCreatePen1(argb(ON_INK), (2.0 * s).max(1.4), UnitPixel, &mut pen);
+        GdipDrawLine(gfx, pen, cx - u, cy, cx - u * 0.15, cy + u * 0.85);
+        GdipDrawLine(gfx, pen, cx - u * 0.15, cy + u * 0.85, cx + u, cy - u * 0.85);
+        GdipDeletePen(pen);
+    }
+    if focused {
+        let fw = 2.0 * s;
+        let ring = rounded_path(bx - fw, by - fw, box_side + 2.0 * fw, box_side + 2.0 * fw, r + fw);
+        if !ring.is_null() {
+            stroke_path(gfx, ring, ACCENT, if s >= 2.0 { 2.0 } else { 1.0 });
+            GdipDeletePath(ring);
+        }
+    }
+    draw_text(
+        gfx,
+        label,
+        fonts.body,
+        INK_2,
+        bx + box_side + 10.0 * s,
+        wg.y * s,
+        wg.w * s - box_side - 10.0 * s,
+        wg.h * s,
+        Align::Left,
+        false,
+        false,
     );
-    if !old.0.is_null() {
-        SelectObject(hdc, old);
+}
+
+/// The folder field: a dark input surface. Click focuses it for typing;
+/// the caret marks the insertion point at the end of the path.
+unsafe fn draw_path_field(
+    gfx: *mut GpGraphics,
+    s: f32,
+    fonts: &Fonts,
+    wg: &Wg,
+    text: &str,
+    focused: bool,
+    caret_on: bool,
+    hot: bool,
+) {
+    let x = wg.x * s;
+    let y = wg.y * s;
+    let w = wg.w * s;
+    let h = wg.h * s;
+    let r = (BTN_RADIUS * s).min(h / 2.0);
+    let path = rounded_path(x, y, w, h, r);
+    if !path.is_null() {
+        fill_path(gfx, path, if hot { SURFACE_2 } else { SURFACE });
+        stroke_path(gfx, path, if focused { ACCENT } else { HAIR_2 }, if s >= 2.0 { 2.0 } else { 1.0 });
+        GdipDeletePath(path);
     }
+    let pad = 12.0 * s;
+    draw_text(gfx, text, fonts.path, INK, x + pad, y, w - 2.0 * pad, h, Align::Left, false, false);
+    if focused && caret_on {
+        // Caret just past the text: measure nothing, clamp to the field.
+        let char_w = 7.2 * s; // approx advance for Segoe UI 14pt
+        let visible = ((w - 2.0 * pad) / char_w).floor().max(1.0) as usize;
+        let shown_chars = text.chars().count().min(visible.saturating_sub(1).max(1));
+        let cx = x + pad + shown_chars as f32 * char_w;
+        let cx = cx.min(x + w - 8.0 * s);
+        fill_rect(
+            gfx,
+            ACCENT,
+            cx.round() as i32,
+            (y + 7.0 * s).round() as i32,
+            (1.6 * s).round().max(1.0) as i32,
+            (h - 14.0 * s).round().max(4.0) as i32,
+        );
+    }
+}
+
+/// Flat progress bar: a rounded track with an accent fill.
+unsafe fn draw_progress(gfx: *mut GpGraphics, s: f32, wg: &Wg, frac: f32, sweep: Option<i32>) {
+    let x = wg.x * s;
+    let y = wg.y * s;
+    let w = wg.w * s;
+    let h = wg.h * s;
+    let r = (h / 2.0).min(4.0 * s);
+    let track = rounded_path(x, y, w, h, r);
+    if track.is_null() {
+        return;
+    }
+    fill_path(gfx, track, TRACK);
+    GdipSetClipPath(gfx, track, CombineModeReplace);
+    match sweep {
+        Some(pos) => {
+            // A short segment gliding across the track.
+            let seg = (w * 0.28).max(12.0);
+            let t = (pos as f32) / 120.0;
+            let cx = x + t * (w + seg) - seg;
+            fill_rect(gfx, ACCENT, cx.round() as i32, y.round() as i32, seg.round() as i32, h.round() as i32);
+        }
+        None => {
+            let fw = (w * frac.clamp(0.0, 1.0)).round() as i32;
+            if fw > 0 {
+                fill_rect(gfx, ACCENT, x.round() as i32, y.round() as i32, fw, h.round() as i32);
+            }
+        }
+    }
+    GdipResetClip(gfx);
+    GdipDeletePath(track);
+}
+
+/// The caption close button: 46x32 at native metrics, red hover like the app.
+unsafe fn draw_close_btn(
+    gfx: *mut GpGraphics,
+    s: f32,
+    wg: &Wg,
+    window_path: *mut GpPath,
+    hot: bool,
+    pressed: bool,
+    busy: bool,
+) {
+    let x = wg.x * s;
+    let y = wg.y * s;
+    let w = wg.w * s;
+    let h = wg.h * s;
+    let glyph = if busy { INK_3 } else if hot { INK } else { INK_2 };
+    if hot && !busy {
+        // The fill is clipped to the window shape so the rounded corner
+        // stays clean.
+        GdipSetClipPath(gfx, window_path, CombineModeReplace);
+        fill_rect(gfx, if pressed { CLOSE_DOWN } else { CLOSE_HOT }, x.round() as i32, y.round() as i32, w.round() as i32, h.round() as i32);
+        GdipResetClip(gfx);
+    }
+    // 10px glyph: two crossing strokes.
+    let cx = x + w / 2.0;
+    let cy = y + h / 2.0;
+    let u = 5.0 * s;
+    let mut pen: *mut GpPen = std::ptr::null_mut();
+    GdipCreatePen1(argb(glyph), (1.0 * s).max(1.0), UnitPixel, &mut pen);
+    GdipDrawLine(gfx, pen, cx - u, cy - u, cx + u, cy + u);
+    GdipDrawLine(gfx, pen, cx + u, cy - u, cx - u, cy + u);
+    GdipDeletePen(pen);
+}
+
+/// Renders the whole window into the canvas and presents it at the current
+/// fade alpha.
+fn render_present(a: &App) {
+    unsafe { render(a); }
+    unsafe { canvas_present(a, a.alpha); }
+}
+
+unsafe fn render(a: &App) {
+    let Some(c) = &a.canvas else { return };
+    let gfx = c.gfx;
+    let s = a.scale;
+    let W = c.w as f32;
+    let H = c.h as f32;
+
+    GdipGraphicsClear(gfx, 0x0000_0000); // fully transparent
+
+    // Window shape: 8px anti-aliased rounded rectangle.
+    let radius = WIN_RADIUS * s;
+    let window_path = rounded_path(0.0, 0.0, W, H, radius);
+    if window_path.is_null() {
+        return;
+    }
+    fill_path(gfx, window_path, BG);
+
+    // Header: wordmark, tagline, version, close button, hairline.
+    draw_text(gfx, "Fleet", a.fonts.display, INK, 36.0 * s, 26.0 * s, 300.0 * s, 34.0 * s, Align::Left, false, false);
+    draw_text(gfx, "Multi-instance Roblox launcher", a.fonts.small, INK_3, 36.0 * s, 62.0 * s, 320.0 * s, 18.0 * s, Align::Left, false, false);
+    let version_line = format!("v{}", a.version_to_install());
+    draw_text(gfx, &version_line, a.fonts.small, INK_3, 324.0 * s, 34.0 * s, (WIN_W as f32 - 324.0 - CLOSE_W as f32 - 12.0) * s, 18.0 * s, Align::Right, false, false);
+
+    for wg in &a.widgets {
+        match &wg.kind {
+            WgKind::CloseBtn => {
+                draw_close_btn(
+                    gfx, s, wg, window_path,
+                    a.hot == Some(wg.id),
+                    a.pressed == Some(wg.id),
+                    a.busy,
+                );
+            }
+            WgKind::Button { label, primary, danger, enabled } => {
+                draw_button(
+                    gfx, s, &a.fonts, wg, label, *primary, *danger, *enabled,
+                    a.hot == Some(wg.id),
+                    a.pressed == Some(wg.id),
+                    a.focus == Some(wg.id),
+                );
+            }
+            WgKind::Check { label, checked } => {
+                draw_check(
+                    gfx, s, &a.fonts, wg, label, *checked,
+                    a.hot == Some(wg.id),
+                    a.focus == Some(wg.id),
+                );
+            }
+            WgKind::PathField => {
+                draw_path_field(
+                    gfx, s, &a.fonts, wg, &a.path,
+                    a.focus == Some(IDC_PATHEDIT),
+                    a.caret_on,
+                    a.hot == Some(IDC_PATHEDIT),
+                );
+            }
+            WgKind::Text { text, ink, align, font, wrap, top } => {
+                let fobj = match font {
+                    FontRole::Head => a.fonts.head,
+                    FontRole::Body => a.fonts.body,
+                    FontRole::Path => a.fonts.path,
+                    FontRole::Small => a.fonts.small,
+                };
+                draw_text(gfx, text, fobj, *ink, wg.x * s, wg.y * s, wg.w * s, wg.h * s, *align, *wrap, *top);
+            }
+            WgKind::Rule => {
+                fill_rect(gfx, HAIR, (wg.x * s).round() as i32, (wg.y * s).round() as i32, (wg.w * s).round() as i32, (wg.h * s).round() as i32);
+            }
+            WgKind::Progress => {
+                let sweep = if matches!(a.stage, Stage::Uninstalling) { Some(a.sweep) } else { None };
+                draw_progress(gfx, s, wg, a.progress, sweep);
+            }
+        }
+    }
+
+    GdipDeletePath(window_path);
+    GdipFlush(gfx, FlushIntentionFlush);
 }
 
 // ------------------------------------------------------------------ stage UI
 
-struct CtrlSpec<'a> {
-    class: PCWSTR,
-    text: &'a str,
-    style: u32,
-    ex: u32,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
+fn add_text(
+    a: &mut App,
     id: i32,
-    font: Option<HFONT>,
+    text: String,
+    ink: u32,
+    font: FontRole,
+    align: Align,
+    wrap: bool,
+    top: bool,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+) {
+    a.widgets.push(Wg {
+        id,
+        kind: WgKind::Text { text, ink, align, font, wrap, top },
+        x, y, w, h,
+    });
 }
 
-fn add_ctrl(a: &mut App, spec: CtrlSpec) -> HWND {
-    unsafe {
-        let s = a.scale;
-        let hwnd = windows::Win32::UI::WindowsAndMessaging::CreateWindowExW(
-            WINDOW_EX_STYLE(spec.ex),
-            spec.class,
-            PCWSTR(to_wide(spec.text).as_ptr()),
-            WINDOW_STYLE(spec.style),
-            (spec.x as f32 * s) as i32,
-            (spec.y as f32 * s) as i32,
-            (spec.w as f32 * s) as i32,
-            (spec.h as f32 * s) as i32,
-            Some(a.hwnd),
-            Some(HMENU(spec.id as usize as *mut core::ffi::c_void)),
-            Some(a.hinst),
-            None,
-        )
-        .unwrap_or(HWND(std::ptr::null_mut()));
-        if let Some(f) = spec.font {
-            let _ = SendMessageW(hwnd, WM_SETFONT, Some(WPARAM(f.0 as usize)), Some(LPARAM(1)));
-        }
-        a.ctrls.push(hwnd);
-        hwnd
+fn add_button(a: &mut App, id: i32, label: &str, x: f32, y: f32, w: f32, h: f32, enabled: bool) {
+    a.widgets.push(Wg {
+        id,
+        kind: WgKind::Button {
+            label: label.to_string(),
+            primary: is_primary(id),
+            danger: id == IDC_REMOVE,
+            enabled,
+        },
+        x, y, w, h,
+    });
+}
+
+fn add_check(a: &mut App, id: i32, label: &str, checked: bool, x: f32, y: f32, w: f32, h: f32) {
+    a.widgets.push(Wg {
+        id,
+        kind: WgKind::Check { label: label.to_string(), checked },
+        x, y, w, h,
+    });
+}
+
+fn add_rule(a: &mut App, y: f32) {
+    a.widgets.push(Wg {
+        id: IDC_RULE,
+        kind: WgKind::Rule,
+        x: 36.0,
+        y,
+        w: 448.0,
+        h: 1.0,
+    });
+}
+
+/// Footer band: hairline, optional hint, optional secondary button, primary.
+fn add_footer(a: &mut App, hint: &str, secondary: Option<(&str, i32)>, primary_label: &str, primary_id: i32) {
+    add_rule(a, 288.0);
+    if let Some((label, id)) = secondary {
+        add_button(a, id, label, 224.0, 304.0, 128.0, 32.0, true);
+    }
+    add_button(a, primary_id, primary_label, 368.0, 304.0, 116.0, 32.0, true);
+    if !hint.is_empty() {
+        add_text(a, IDC_HINT, hint.to_string(), INK_3, FontRole::Small, Align::Left, false, false, 36.0, 311.0, 320.0, 18.0);
     }
 }
 
 fn build_stage(a: &mut App) {
+    a.widgets.clear();
+    a.hot = None;
+    a.pressed = None;
+    a.progress = 0.0;
     unsafe {
-        for c in &a.ctrls {
-            let _ = DestroyWindow(*c);
-        }
-        a.ctrls.clear();
         let _ = KillTimer(Some(a.hwnd), IDT_SWEEP);
+        let _ = KillTimer(Some(a.hwnd), IDT_CARET);
+    }
 
-        const VISIBLE: u32 = 0x5000_0000; // WS_CHILD | WS_VISIBLE
-        const TABSTOP: u32 = 0x0001_0000;
-        const SS_NOP: u32 = 0x80; // SS_NOPREFIX
-        // Copy the fonts out so the macros below never hold a borrow.
-        let f = a.fonts;
+    // Caption close button (always present, dimmed while busy).
+    a.widgets.push(Wg {
+        id: IDC_CAPCLOSE,
+        kind: WgKind::CloseBtn,
+        x: (WIN_W - CLOSE_W) as f32,
+        y: 0.0,
+        w: CLOSE_W as f32,
+        h: CLOSE_H as f32,
+    });
 
-        macro_rules! static_text {
-            ($a:expr, $text:expr, $style:expr, $font:expr, $x:expr, $y:expr, $w:expr, $h:expr, $id:expr) => {
-                add_ctrl(
-                    $a,
-                    CtrlSpec {
-                        class: w!("STATIC"),
-                        text: $text,
-                        style: VISIBLE | SS_NOP | $style,
-                        ex: 0,
-                        x: $x,
-                        y: $y,
-                        w: $w,
-                        h: $h,
-                        id: $id,
-                        font: $font,
-                    },
-                )
+    // Header hairline.
+    add_rule(a, 96.0);
+
+    match a.stage {
+        Stage::Resolve => {
+            add_text(a, IDC_SUB, "Checking for updates…".into(), INK_3, FontRole::Small, Align::Center, false, false, 36.0, 150.0, 448.0, 20.0);
+        }
+
+        Stage::Fresh => {
+            add_text(a, IDC_LABEL, "Install folder".into(), INK_2, FontRole::Small, Align::Left, false, false, 36.0, 114.0, 448.0, 18.0);
+            a.widgets.push(Wg {
+                id: IDC_PATHEDIT,
+                kind: WgKind::PathField,
+                x: 36.0,
+                y: 138.0,
+                w: 316.0,
+                h: 30.0,
+            });
+            add_button(a, IDC_BROWSE, "Browse…", 364.0, 138.0, 120.0, 30.0, true);
+            add_text(a, IDC_ERROR, String::new(), DANGER, FontRole::Small, Align::Left, false, false, 36.0, 176.0, 448.0, 18.0);
+            add_check(a, IDC_CHECK_DESKTOP, "Add a desktop shortcut", a.desktop_shortcut, 36.0, 212.0, 320.0, 24.0);
+
+            // While the release feed is still resolving, Install waits so
+            // nobody installs a stale payload seconds before the check hands
+            // out the newest one.
+            let hint = if a.resolving {
+                "Checking for updates…"
+            } else {
+                "No administrator permissions required."
             };
-        }
-        macro_rules! button {
-            // Custom-drawn push button: BS_OWNERDRAW (the parent paints it in
-            // WM_DRAWITEM) + BS_NOTIFY (BCN_HOTITEMCHANGE drives hover).
-            // $extra carries BS_DEFPUSHBUTTON for the default action.
-            ($a:expr, $text:expr, $extra:expr, $x:expr, $y:expr, $w:expr, $h:expr, $id:expr, $font:expr) => {{
-                add_ctrl(
-                    $a,
-                    CtrlSpec {
-                        class: w!("BUTTON"),
-                        text: $text,
-                        style: VISIBLE | TABSTOP | BS_OWNERDRAW | BS_NOTIFY | $extra,
-                        ex: 0,
-                        x: $x,
-                        y: $y,
-                        w: $w,
-                        h: $h,
-                        id: $id,
-                        font: Some($font),
-                    },
-                )
-            }};
-        }
-        macro_rules! checkbox {
-            // Native checkbox (BS_AUTOCHECKBOX) with the dark visual style.
-            ($a:expr, $text:expr, $x:expr, $y:expr, $w:expr, $h:expr, $id:expr, $font:expr) => {{
-                let h = add_ctrl(
-                    $a,
-                    CtrlSpec {
-                        class: w!("BUTTON"),
-                        text: $text,
-                        style: VISIBLE | TABSTOP | 0x3, // BS_AUTOCHECKBOX
-                        ex: 0,
-                        x: $x,
-                        y: $y,
-                        w: $w,
-                        h: $h,
-                        id: $id,
-                        font: Some($font),
-                    },
-                );
-                dark_control(h);
-                h
-            }};
-        }
-        macro_rules! rule {
-            ($a:expr, $y:expr) => {
-                // A 1px hairline: an empty static filled with the hair brush.
-                add_ctrl(
-                    $a,
-                    CtrlSpec {
-                        class: w!("STATIC"),
-                        text: "",
-                        style: VISIBLE,
-                        ex: 0,
-                        x: 36,
-                        y: $y,
-                        w: 448,
-                        h: 1,
-                        id: IDC_RULE,
-                        font: None,
-                    },
-                )
-            };
-        }
-        macro_rules! footer {
-            ($a:expr, $hint:expr, $secondary:expr, $primary_label:expr, $primary_id:expr) => {{
-                rule!($a, 288);
-                if let Some((label, id)) = $secondary {
-                    button!($a, label, 0, 224, 304, 128, 32, id, f.body);
-                }
-                button!($a, $primary_label, 0x1, 368, 304, 116, 32, $primary_id, f.body);
-                if !$hint.is_empty() {
-                    // Hints only appear on stages without a secondary button,
-                    // so the label can run wide up to the primary button.
-                    static_text!($a, $hint, 0, Some(f.small), 36, 311, 320, 18, IDC_HINT);
-                }
-            }};
-        }
-        macro_rules! flat_progress {
-            ($a:expr, $y:expr) => {{
-                let prog = add_ctrl(
-                    $a,
-                    CtrlSpec {
-                        class: w!("msctls_progress32"),
-                        text: "",
-                        style: VISIBLE | 0x01, // PBS_SMOOTH
-                        ex: 0,
-                        x: 36,
-                        y: $y,
-                        w: 448,
-                        h: 8,
-                        id: 0,
-                        font: None,
-                    },
-                );
-                // Detach from the visual style (BOTH strings empty - a NULL
-                // sub id list leaves the theme attached) so the color messages
-                // apply: a flat Fleet-blue fill on a dark track, like the app's
-                // own bars. PBM_SETBKCOLOR is CCM_SETBKCOLOR (0x2001).
-                let _ = SetWindowTheme(prog, w!(""), w!(""));
-                let _ = SendMessageW(prog, PBM_SETRANGE32, Some(WPARAM(0)), Some(LPARAM(10000)));
-                let _ = SendMessageW(prog, PBM_SETBKCOLOR, Some(WPARAM(0)), Some(LPARAM(TRACK as isize)));
-                let _ = SendMessageW(prog, PBM_SETBARCOLOR, Some(WPARAM(0)), Some(LPARAM(ACCENT as isize)));
-                prog
-            }};
-        }
-
-        // ---- the fixed header: wordmark, tagline, version -----------------
-        static_text!(a, "Fleet", 0, Some(f.display), 36, 26, 300, 34, IDC_HEAD);
-        static_text!(a, "Multi-instance Roblox launcher", 0, Some(f.small), 36, 62, 320, 18, IDC_TAG);
-        let version_line = format!("v{}", a.version_to_install());
-        static_text!(a, &version_line, 0x2, Some(f.small), 324, 34, 160, 18, IDC_VERSION); // SS_RIGHT
-        rule!(a, 96);
-
-        // ---- the content area: one page per state ------------------------
-        match a.stage {
-            Stage::Resolve => {
-                static_text!(
-                    a,
-                    "Checking for updates…",
-                    0x1, // SS_CENTER
-                    Some(f.small),
-                    36, 150, 448, 20, IDC_SUB
-                );
-            }
-
-            Stage::Fresh => {
-                let path_text = a.path.clone();
-                static_text!(a, "Install folder", 0, Some(f.small), 36, 114, 448, 18, IDC_LABEL);
-
-                let edit = add_ctrl(
-                    a,
-                    CtrlSpec {
-                        class: w!("EDIT"),
-                        text: &path_text,
-                        style: VISIBLE | TABSTOP | 0x80, // ES_AUTOHSCROLL
-                        ex: WS_EX_CLIENTEDGE.0,
-                        x: 36,
-                        y: 138,
-                        w: 316,
-                        h: 30,
-                        id: IDC_PATHEDIT,
-                        font: Some(f.path),
-                    },
-                );
-                dark_control(edit);
-                let _ = SendMessageW(edit, 0x00D5, Some(WPARAM(1024)), Some(LPARAM(0))); // EM_LIMITTEXT
-
-                button!(a, "Browse…", 0, 364, 138, 120, 30, IDC_BROWSE, f.body);
-
-                let err = static_text!(a, "", 0, Some(f.small), 36, 176, 448, 18, IDC_ERROR);
-                let _ = ShowWindow(err, SW_HIDE);
-
-                let ck = checkbox!(a, "Add a desktop shortcut", 36, 212, 320, 24, IDC_CHECK_DESKTOP, f.body);
-                let st = if a.desktop_shortcut { windows::Win32::UI::Controls::BST_CHECKED.0 as usize } else { 0 };
-                let _ = SendMessageW(ck, BM_SETCHECK, Some(WPARAM(st)), Some(LPARAM(0)));
-
-                // While the release feed is still resolving, Install waits so
-                // nobody installs a stale payload seconds before the check
-                // hands out the newest one.
-                let hint = if a.resolving {
-                    "Checking for updates…"
-                } else {
-                    "No administrator permissions required."
-                };
-                if a.resolving {
-                    footer!(a, hint, None, "Install Fleet", IDC_INSTALL);
-                    if let Some(ctl) = a.ctrls.iter().find(|c| GetDlgCtrlID(**c) == IDC_INSTALL) {
-                        let _ = EnableWindow(*ctl, false);
+            add_footer(a, hint, None, "Install Fleet", IDC_INSTALL);
+            if a.resolving {
+                if let Some(w) = a.widgets.iter_mut().find(|w| w.id == IDC_INSTALL) {
+                    if let WgKind::Button { enabled, .. } = &mut w.kind {
+                        *enabled = false;
                     }
-                } else {
-                    footer!(a, hint, None, "Install Fleet", IDC_INSTALL);
                 }
-                focus_ctrl(a, IDC_PATHEDIT);
             }
-
-            Stage::UpdateReady => {
-                let old = a
-                    .installed
-                    .as_ref()
-                    .map(|(_, v)| v.clone())
-                    .unwrap_or_default();
-                let new_version = a.version_to_install();
-                let sub = if old.is_empty() {
-                    format!("Fleet will be updated to v{new_version}.")
-                } else {
-                    format!("Fleet v{old} will be updated to v{new_version}.")
-                };
-                let path_text = a.path.clone();
-                static_text!(a, "Update available", 0, Some(f.head), 36, 114, 448, 26, IDC_HEAD);
-                static_text!(a, &sub, 0, Some(f.body), 36, 144, 448, 20, IDC_SUB);
-                static_text!(a, &path_text, 0x4000, Some(f.path), 36, 168, 448, 20, IDC_PATH);
-                static_text!(
-                    a,
-                    "Fleet closes during the update. Accounts and settings are preserved.",
-                    0x2000, // SS_EDITCONTROL (wraps)
-                    Some(f.small),
-                    36, 198, 448, 36, IDC_HINT
-                );
-                footer!(a, "Same folder, updated in place.", None, "Update Fleet", IDC_INSTALL);
-                focus_ctrl(a, IDC_INSTALL);
+            a.focus = Some(IDC_PATHEDIT);
+            unsafe {
+                let _ = SetTimer(Some(a.hwnd), IDT_CARET, 530, None);
             }
+        }
 
-            Stage::UpToDate => {
-                let cur = a
-                    .installed
-                    .as_ref()
-                    .map(|(_, v)| v.clone())
-                    .unwrap_or_default();
-                let eff = a.version_to_install();
-                // cur > eff can only happen when the feed was unreachable
-                // AND a newer Fleet than this installer is installed.
-                let sub = if version_cmp(&cur, &eff) == std::cmp::Ordering::Equal {
-                    format!("The latest version, v{eff}, is installed.")
-                } else {
-                    format!("A newer version, v{cur}, is installed.")
-                };
-                static_text!(a, "Fleet is up to date", 0, Some(f.head), 36, 126, 448, 26, IDC_HEAD);
-                static_text!(a, &sub, 0, Some(f.body), 36, 156, 448, 20, IDC_SUB);
-                static_text!(
-                    a,
-                    "Setup checks for the latest release, so an older download still installs the newest version.",
-                    0x2000,
-                    Some(f.small),
-                    36, 184, 448, 36, IDC_HINT
-                );
-                let secondary = if version_cmp(&cur, &eff) == std::cmp::Ordering::Greater {
-                    Some(("Get newer version", IDC_RELEASES))
-                } else {
-                    None
-                };
-                footer!(a, "", secondary, "Close", IDC_CLOSE);
-                focus_ctrl(a, IDC_CLOSE);
-            }
+        Stage::UpdateReady => {
+            let old = a.installed.as_ref().map(|(_, v)| v.clone()).unwrap_or_default();
+            let new_version = a.version_to_install();
+            let sub = if old.is_empty() {
+                format!("Fleet will be updated to v{new_version}.")
+            } else {
+                format!("Fleet v{old} will be updated to v{new_version}.")
+            };
+            let path_text = a.path.clone();
+            add_text(a, IDC_HEAD, "Update available".into(), INK, FontRole::Head, Align::Left, false, false, 36.0, 114.0, 448.0, 26.0);
+            add_text(a, IDC_SUB, sub, INK_2, FontRole::Body, Align::Left, false, false, 36.0, 144.0, 448.0, 20.0);
+            add_text(a, IDC_PATH, path_text, INK, FontRole::Path, Align::Left, false, false, 36.0, 168.0, 448.0, 20.0);
+            add_text(
+                a,
+                IDC_HINT,
+                "Fleet closes during the update. Accounts and settings are preserved.".into(),
+                INK_3,
+                FontRole::Small,
+                Align::Left,
+                true,
+                true,
+                36.0,
+                198.0,
+                448.0,
+                36.0,
+            );
+            add_footer(a, "Same folder, updated in place.", None, "Update Fleet", IDC_INSTALL);
+            a.focus = Some(IDC_INSTALL);
+        }
 
-            Stage::Installing => {
-                let (head, note) = if a.updating {
-                    ("Updating Fleet…", "Closing Fleet…")
-                } else {
-                    ("Installing Fleet…", "Copying files…")
-                };
-                static_text!(a, head, 0, Some(f.head), 36, 118, 448, 26, IDC_HEAD);
-                static_text!(a, note, 0, Some(f.body), 36, 148, 448, 20, IDC_SUB);
+        Stage::UpToDate => {
+            let cur = a.installed.as_ref().map(|(_, v)| v.clone()).unwrap_or_default();
+            let eff = a.version_to_install();
+            let sub = if version_cmp(&cur, &eff) == std::cmp::Ordering::Equal {
+                format!("The latest version, v{eff}, is installed.")
+            } else {
+                format!("A newer version, v{cur}, is installed.")
+            };
+            add_text(a, IDC_HEAD, "Fleet is up to date".into(), INK, FontRole::Head, Align::Left, false, false, 36.0, 126.0, 448.0, 26.0);
+            add_text(a, IDC_SUB, sub, INK_2, FontRole::Body, Align::Left, false, false, 36.0, 156.0, 448.0, 20.0);
+            add_text(
+                a,
+                IDC_HINT,
+                "Setup checks for the latest release, so an older download still installs the newest version.".into(),
+                INK_3,
+                FontRole::Small,
+                Align::Left,
+                true,
+                true,
+                36.0,
+                184.0,
+                448.0,
+                36.0,
+            );
+            let secondary = if version_cmp(&cur, &eff) == std::cmp::Ordering::Greater {
+                Some(("Get newer version", IDC_RELEASES))
+            } else {
+                None
+            };
+            add_footer(a, "", secondary, "Close", IDC_CLOSE);
+            a.focus = Some(IDC_CLOSE);
+        }
 
-                flat_progress!(a, 178);
+        Stage::Installing => {
+            let (head, note) = if a.updating {
+                ("Updating Fleet…", "Closing Fleet…")
+            } else {
+                ("Installing Fleet…", "Copying files…")
+            };
+            add_text(a, IDC_HEAD, head.into(), INK, FontRole::Head, Align::Left, false, false, 36.0, 118.0, 448.0, 26.0);
+            add_text(a, IDC_SUB, note.into(), INK_2, FontRole::Body, Align::Left, false, false, 36.0, 148.0, 448.0, 20.0);
+            a.widgets.push(Wg {
+                id: 0,
+                kind: WgKind::Progress,
+                x: 36.0,
+                y: 178.0,
+                w: 448.0,
+                h: 8.0,
+            });
+            add_text(a, IDC_BYTES, String::new(), INK_3, FontRole::Small, Align::Left, false, false, 36.0, 198.0, 448.0, 16.0);
+            add_text(a, IDC_FILE, String::new(), INK_3, FontRole::Small, Align::Left, false, false, 36.0, 218.0, 448.0, 16.0);
+        }
 
-                static_text!(a, "", 0, Some(f.small), 36, 198, 448, 16, IDC_BYTES);
-                static_text!(a, "", 0x4000, Some(f.small), 36, 218, 448, 16, IDC_FILE);
-            }
+        Stage::Done => {
+            let dest_text = a.install_dest.to_string_lossy().to_string();
+            let installed_version = a.version_to_install();
+            let (head, sub) = if a.updating {
+                ("Fleet is updated", format!("The latest version, v{installed_version}, is installed."))
+            } else {
+                ("Fleet is installed", "Ready to use.".to_string())
+            };
+            add_text(a, IDC_HEAD, head.into(), INK, FontRole::Head, Align::Left, false, false, 36.0, 118.0, 448.0, 26.0);
+            add_text(a, IDC_SUB, sub, INK_2, FontRole::Body, Align::Left, false, false, 36.0, 148.0, 448.0, 20.0);
+            add_text(a, IDC_HINT, dest_text, INK_3, FontRole::Small, Align::Left, false, false, 36.0, 172.0, 448.0, 18.0);
+            add_footer(a, "", Some(("Close", IDC_CLOSE)), "Launch Fleet", IDC_LAUNCH);
+            a.focus = Some(IDC_LAUNCH);
+        }
 
-            Stage::Done => {
-                let dest_text = a.install_dest.to_string_lossy().to_string();
-                let installed_version = a.version_to_install();
-                let (head, sub) = if a.updating {
-                    (
-                        "Fleet is updated",
-                        format!("The latest version, v{installed_version}, is installed."),
-                    )
-                } else {
-                    ("Fleet is installed", "Ready to use.".to_string())
-                };
-                static_text!(a, head, 0, Some(f.head), 36, 118, 448, 26, IDC_HEAD);
-                static_text!(a, &sub, 0, Some(f.body), 36, 148, 448, 20, IDC_SUB);
-                static_text!(a, &dest_text, 0x4000, Some(f.small), 36, 172, 448, 18, IDC_HINT);
+        Stage::Error => {
+            let err_text = a.last_error.clone();
+            let head = if a.uninstall_mode { "Removal failed" } else { "Setup failed" };
+            add_text(a, IDC_HEAD, head.into(), INK, FontRole::Head, Align::Left, false, false, 36.0, 114.0, 448.0, 26.0);
+            add_text(a, IDC_SUB, err_text, INK_2, FontRole::Body, Align::Left, true, true, 36.0, 144.0, 448.0, 120.0);
+            add_footer(a, "", Some(("Close", IDC_CLOSE)), "Try again", IDC_RETRY);
+            a.focus = Some(IDC_RETRY);
+        }
 
-                footer!(a, "", Some(("Close", IDC_CLOSE)), "Launch Fleet", IDC_LAUNCH);
-                focus_ctrl(a, IDC_LAUNCH);
-            }
+        Stage::UninstallConfirm => {
+            add_text(a, IDC_HEAD, "Remove Fleet?".into(), INK, FontRole::Head, Align::Left, false, false, 36.0, 118.0, 448.0, 26.0);
+            add_text(
+                a,
+                IDC_SUB,
+                "This removes Fleet's program files. Accounts and settings are kept.".into(),
+                INK_2,
+                FontRole::Body,
+                Align::Left,
+                true,
+                true,
+                36.0,
+                148.0,
+                448.0,
+                40.0,
+            );
+            add_check(a, IDC_CHECK_DATA, "Also delete accounts and settings", a.delete_data, 36.0, 206.0, 340.0, 24.0);
+            add_footer(a, "", Some(("Cancel", IDC_CANCEL)), "Remove", IDC_REMOVE);
+            a.focus = Some(IDC_REMOVE);
+        }
 
-            Stage::Error => {
-                let err_text = a.last_error.clone();
-                let head = if a.uninstall_mode { "Removal failed" } else { "Setup failed" };
-                static_text!(a, head, 0, Some(f.head), 36, 114, 448, 26, IDC_HEAD);
-                static_text!(a, &err_text, 0x2000, Some(f.body), 36, 144, 448, 120, IDC_SUB);
-
-                footer!(a, "", Some(("Close", IDC_CLOSE)), "Try again", IDC_RETRY);
-                focus_ctrl(a, IDC_RETRY);
-            }
-
-            Stage::UninstallConfirm => {
-                static_text!(a, "Remove Fleet?", 0, Some(f.head), 36, 118, 448, 26, IDC_HEAD);
-                static_text!(
-                    a,
-                    "This removes Fleet's program files. Accounts and settings are kept.",
-                    0x2000,
-                    Some(f.body),
-                    36, 148, 448, 40, IDC_SUB
-                );
-
-                let ck = checkbox!(a, "Also delete accounts and settings", 36, 206, 340, 24, IDC_CHECK_DATA, f.body);
-                let st = if a.delete_data { windows::Win32::UI::Controls::BST_CHECKED.0 as usize } else { 0 };
-                let _ = SendMessageW(ck, BM_SETCHECK, Some(WPARAM(st)), Some(LPARAM(0)));
-
-                footer!(a, "", Some(("Cancel", IDC_CANCEL)), "Remove", IDC_REMOVE);
-                focus_ctrl(a, IDC_REMOVE);
-            }
-
-            Stage::Uninstalling => {
-                static_text!(a, "Removing Fleet…", 0, Some(f.head), 36, 118, 448, 26, IDC_HEAD);
-                static_text!(a, "Removing files…", 0, Some(f.body), 36, 148, 448, 20, IDC_SUB);
-
-                flat_progress!(a, 178);
+        Stage::Uninstalling => {
+            add_text(a, IDC_HEAD, "Removing Fleet…".into(), INK, FontRole::Head, Align::Left, false, false, 36.0, 118.0, 448.0, 26.0);
+            add_text(a, IDC_SUB, "Removing files…".into(), INK_2, FontRole::Body, Align::Left, false, false, 36.0, 148.0, 448.0, 20.0);
+            a.widgets.push(Wg {
+                id: 0,
+                kind: WgKind::Progress,
+                x: 36.0,
+                y: 178.0,
+                w: 448.0,
+                h: 8.0,
+            });
+            unsafe {
                 let _ = SetTimer(Some(a.hwnd), IDT_SWEEP, 30, None);
             }
-
-            Stage::Uninstalled => {
-                static_text!(a, "Fleet was removed", 0, Some(f.head), 36, 126, 448, 26, IDC_HEAD);
-                static_text!(
-                    a,
-                    "All program files were removed.",
-                    0x2000,
-                    Some(f.body),
-                    36, 156, 448, 40, IDC_SUB
-                );
-
-                footer!(a, "", None, "Close", IDC_CLOSE);
-                focus_ctrl(a, IDC_CLOSE);
-            }
         }
 
-        if a.demo {
-            let delay: u32 = match a.stage {
-                Stage::Fresh => 2200,
-                Stage::UpdateReady => 2000,
-                Stage::UpToDate => 2500,
-                Stage::Done => 3000,
-                Stage::UninstallConfirm => 2000,
-                Stage::Uninstalled => 2500,
-                _ => 0,
-            };
-            if delay > 0 {
+        Stage::Uninstalled => {
+            add_text(a, IDC_HEAD, "Fleet was removed".into(), INK, FontRole::Head, Align::Left, false, false, 36.0, 126.0, 448.0, 26.0);
+            add_text(
+                a,
+                IDC_SUB,
+                "All program files were removed.".into(),
+                INK_2,
+                FontRole::Body,
+                Align::Left,
+                true,
+                true,
+                36.0,
+                156.0,
+                448.0,
+                40.0,
+            );
+            add_footer(a, "", None, "Close", IDC_CLOSE);
+            a.focus = Some(IDC_CLOSE);
+        }
+    }
+
+    if a.demo {
+        let delay: u32 = match a.stage {
+            Stage::Fresh => 2200,
+            Stage::UpdateReady => 2000,
+            Stage::UpToDate => 2500,
+            Stage::Done => 3000,
+            Stage::UninstallConfirm => 2000,
+            Stage::Uninstalled => 2500,
+            _ => 0,
+        };
+        if delay > 0 {
+            unsafe {
                 let _ = SetTimer(Some(a.hwnd), IDT_DEMO, delay, None);
             }
         }
     }
 }
 
-fn focus_ctrl(a: &App, id: i32) {
-    unsafe {
-        if let Some(ctl) = a.ctrls.iter().find(|c| GetDlgCtrlID(**c) == id) {
-            let _ = SetFocus(Some(*ctl));
+// ------------------------------------------------------------------ input
+
+/// The widget under a client point, if it is interactive.
+fn widget_at(a: &App, x: i32, y: i32) -> Option<i32> {
+    let (x, y) = (x as f32, y as f32);
+    let s = a.scale;
+    for wg in &a.widgets {
+        let interactive = match &wg.kind {
+            WgKind::Button { enabled, .. } => *enabled,
+            WgKind::Check { .. } => true,
+            WgKind::PathField => true,
+            WgKind::CloseBtn => true,
+            _ => false,
+        };
+        if !interactive {
+            continue;
         }
+        if x >= wg.x * s && x < (wg.x + wg.w) * s && y >= wg.y * s && y < (wg.y + wg.h) * s {
+            return Some(wg.id);
+        }
+    }
+    None
+}
+
+fn is_focusable(a: &App, id: i32) -> bool {
+    a.widgets.iter().any(|wg| {
+        wg.id == id
+            && match &wg.kind {
+                WgKind::Button { enabled, .. } => *enabled,
+                WgKind::Check { .. } | WgKind::PathField => true,
+                _ => false,
+            }
+    })
+}
+
+/// Focusable widget ids in draw order (Tab order).
+fn focus_ids(a: &App) -> Vec<i32> {
+    a.widgets
+        .iter()
+        .filter(|wg| match &wg.kind {
+            WgKind::Button { enabled, .. } => *enabled,
+            WgKind::Check { .. } | WgKind::PathField => true,
+            _ => false,
+        })
+        .map(|wg| wg.id)
+        .collect()
+}
+
+fn cycle_focus(a: &mut App, backward: bool) {
+    let ids = focus_ids(a);
+    if ids.is_empty() {
+        return;
+    }
+    let next = match a.focus {
+        None => ids[0],
+        Some(cur) => {
+            let pos = ids.iter().position(|id| *id == cur).unwrap_or(0);
+            let n = ids.len();
+            if backward {
+                ids[(pos + n - 1) % n]
+            } else {
+                ids[(pos + 1) % n]
+            }
+        }
+    };
+    a.focus = Some(next);
+    render_present(a);
+}
+
+/// The stage's default action for Enter.
+fn primary_id(a: &App) -> Option<i32> {
+    let id = match a.stage {
+        Stage::Fresh | Stage::UpdateReady => IDC_INSTALL,
+        Stage::UpToDate | Stage::Uninstalled => IDC_CLOSE,
+        Stage::Done => IDC_LAUNCH,
+        Stage::Error => IDC_RETRY,
+        Stage::UninstallConfirm => IDC_REMOVE,
+        _ => return None,
+    };
+    if is_focusable(a, id) {
+        Some(id)
+    } else {
+        None
+    }
+}
+
+fn secondary_id(a: &App) -> Option<i32> {
+    let id = match a.stage {
+        Stage::UninstallConfirm => IDC_CANCEL,
+        Stage::UpToDate => IDC_RELEASES,
+        Stage::Done | Stage::Error => IDC_CLOSE,
+        _ => return None,
+    };
+    if is_focusable(a, id) {
+        Some(id)
+    } else {
+        None
+    }
+}
+
+fn ctrl_key_down() -> bool {
+    unsafe { (GetKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0 }
+}
+
+fn on_keydown(a: &mut App, vk: u16) {
+    if vk == VK_TAB.0 {
+        cycle_focus(a, ctrl_key_down());
+    } else if vk == VK_RETURN.0 {
+        // Enter runs the focused control; the path field defers to the
+        // stage's primary action instead.
+        let target = match a.focus {
+            Some(IDC_PATHEDIT) => primary_id(a),
+            Some(id) if is_focusable(a, id) => Some(id),
+            _ => primary_id(a),
+        };
+        if let Some(id) = target {
+            activate(a, id);
+        }
+    } else if vk == VK_SPACE.0 {
+        if let Some(id) = a.focus {
+            if id != IDC_PATHEDIT && is_focusable(a, id) {
+                activate(a, id);
+            }
+        }
+    } else if vk == VK_ESCAPE.0 {
+        if let Some(id) = secondary_id(a) {
+            activate(a, id);
+        } else if !a.busy {
+            unsafe {
+                let _ = PostMessageW(Some(a.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+            }
+        }
+    } else if vk == 0x56 {
+        // Ctrl+V pastes into the path field.
+        if a.focus == Some(IDC_PATHEDIT) && ctrl_key_down() {
+            if let Some(text) = clipboard_text() {
+                a.path.push_str(text.trim());
+                a.path = a.path.trim().to_string();
+                a.caret_on = true;
+                set_text(a, IDC_ERROR, "");
+                render_present(a);
+            }
+        }
+    }
+}
+
+fn on_char(a: &mut App, ch: u32) {
+    if a.focus != Some(IDC_PATHEDIT) {
+        return;
+    }
+    match ch {
+        0x08 => {
+            // Backspace: drop the last character.
+            let mut trimmed = a.path.clone();
+            trimmed.pop();
+            a.path = trimmed;
+        }
+        0x0D | 0x1B | 0x09 => return, // handled in on_keydown
+        c if c >= 0x20 && c != 0x7F => {
+            if let Some(chr) = char::from_u32(c) {
+                if a.path.chars().count() < 260 {
+                    a.path.push(chr);
+                }
+            }
+        }
+        _ => return,
+    }
+    a.caret_on = true;
+    set_text(a, IDC_ERROR, "");
+    render_present(a);
+}
+
+/// Clears hover/press state once the cursor leaves the window.
+fn clear_stale_hover(a: &mut App) {
+    unsafe {
+        let mut cursor = POINT { x: 0, y: 0 };
+        if !GetCursorPos(&mut cursor).is_ok() {
+            return;
+        }
+        let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        if !GetWindowRect(a.hwnd, &mut rect).is_ok() {
+            return;
+        }
+        let outside = cursor.x < rect.left
+            || cursor.x >= rect.right
+            || cursor.y < rect.top
+            || cursor.y >= rect.bottom;
+        if outside && (a.hot.is_some() || a.pressed.is_some()) {
+            a.hot = None;
+            a.pressed = None;
+            let _ = KillTimer(Some(a.hwnd), IDT_HOVER);
+            render_present(a);
+        }
+    }
+}
+
+/// Reads CF_UNICODETEXT from the clipboard, if present.
+fn clipboard_text() -> Option<String> {
+    unsafe {
+        if OpenClipboard(None).is_err() {
+            return None;
+        }
+        let mut result = None;
+        if let Ok(handle) = GetClipboardData(13 /* CF_UNICODETEXT */) {
+            let hglobal = HGLOBAL(handle.0);
+            let ptr = GlobalLock(hglobal) as *const u16;
+            if !ptr.is_null() {
+                let mut len = 0usize;
+                while *ptr.add(len) != 0 && len < 8192 {
+                    len += 1;
+                }
+                result = Some(String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len)));
+                let _ = GlobalUnlock(hglobal);
+            }
+        }
+        let _ = CloseClipboard();
+        result
     }
 }
 
 // ------------------------------------------------------------------ actions
 
-fn on_button(a: &mut App, id: i32) {
-    debug_log(&format!("button clicked: id={id} stage={:?}", a.stage));
+fn is_primary(id: i32) -> bool {
+    matches!(id, IDC_INSTALL | IDC_LAUNCH | IDC_RETRY)
+}
+
+fn activate(a: &mut App, id: i32) {
+    debug_log(&format!("activate: id={id} stage={:?}", a.stage));
     match id {
+        IDC_CAPCLOSE => unsafe {
+            if !a.busy {
+                let _ = PostMessageW(Some(a.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+            }
+        },
         IDC_BROWSE => {
             let start = PathBuf::from(a.path.clone());
-            let picked = shell::pick_folder(a.hwnd, "Select a folder for Fleet", &start);
+            let picked = unsafe { shell::pick_folder(a.hwnd, "Select a folder for Fleet", &start) };
             if let Some(dir) = picked {
                 a.path = dir.to_string_lossy().to_string();
-                unsafe {
-                    if let Some(ctl) = a.ctrls.iter().find(|c| GetDlgCtrlID(**c) == IDC_PATHEDIT) {
-                        let _ = SetWindowTextW(*ctl, PCWSTR(to_wide(&a.path).as_ptr()));
-                    }
-                    if let Some(err) = a.ctrls.iter().find(|c| GetDlgCtrlID(**c) == IDC_ERROR) {
-                        let _ = ShowWindow(*err, SW_HIDE);
-                    }
-                }
+                set_text(a, IDC_ERROR, "");
+                render_present(a);
             }
         }
         IDC_INSTALL | IDC_RETRY => {
-            // The one-page form validates inline: no separate confirm page.
+            // The one-page form validates inline.
             if a.stage == Stage::Fresh {
                 match validate_path(&a.path) {
                     Ok(clean) => a.path = clean,
-                    Err(msg) => unsafe {
-                        if let Some(err) = a.ctrls.iter().find(|c| GetDlgCtrlID(**c) == IDC_ERROR) {
-                            let _ = SetWindowTextW(*err, PCWSTR(to_wide(msg).as_ptr()));
-                            let _ = ShowWindow(*err, SW_SHOW);
-                        }
+                    Err(msg) => {
+                        set_text(a, IDC_ERROR, msg);
                         return;
-                    },
+                    }
                 }
             }
             a.install_dest = PathBuf::from(a.path.clone());
@@ -1731,29 +2136,28 @@ fn on_button(a: &mut App, id: i32) {
         },
         IDC_RELEASES => {
             if !shell::open_url("https://github.com/Toluwer/Fleet/releases") {
-                unsafe {
-                    let text = "The page could not be opened.\nIt is available at github.com/Toluwer/Fleet/releases.";
-                    let _ = MessageBoxW(
-                        Some(a.hwnd),
-                        PCWSTR(to_wide(text).as_ptr()),
-                        PCWSTR(to_wide(APP_TITLE).as_ptr()),
-                        MB_OKCANCEL | windows::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION,
-                    );
+                // No dialog boxes: show the address inline instead.
+                set_text(a, IDC_HINT, "github.com/Toluwer/Fleet/releases");
+            }
+        }
+        IDC_CHECK_DESKTOP => {
+            a.desktop_shortcut = !a.desktop_shortcut;
+            if let Some(w) = a.widgets.iter_mut().find(|w| w.id == IDC_CHECK_DESKTOP) {
+                if let WgKind::Check { checked, .. } = &mut w.kind {
+                    *checked = a.desktop_shortcut;
                 }
             }
-        },
-        IDC_CHECK_DESKTOP => unsafe {
-            if let Some(ck) = a.ctrls.iter().find(|c| GetDlgCtrlID(**c) == IDC_CHECK_DESKTOP) {
-                let st = SendMessageW(*ck, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))).0;
-                a.desktop_shortcut = st == windows::Win32::UI::Controls::BST_CHECKED.0 as isize;
+            render_present(a);
+        }
+        IDC_CHECK_DATA => {
+            a.delete_data = !a.delete_data;
+            if let Some(w) = a.widgets.iter_mut().find(|w| w.id == IDC_CHECK_DATA) {
+                if let WgKind::Check { checked, .. } = &mut w.kind {
+                    *checked = a.delete_data;
+                }
             }
-        },
-        IDC_CHECK_DATA => unsafe {
-            if let Some(ck) = a.ctrls.iter().find(|c| GetDlgCtrlID(**c) == IDC_CHECK_DATA) {
-                let st = SendMessageW(*ck, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))).0;
-                a.delete_data = st == windows::Win32::UI::Controls::BST_CHECKED.0 as isize;
-            }
-        },
+            render_present(a);
+        }
         IDC_REMOVE => {
             if a.uninstall_mode {
                 // The uninstaller removes the folder it lives in.
@@ -1780,12 +2184,12 @@ fn demo_advance(a: &mut App) {
                     let _ = SetTimer(Some(a.hwnd), IDT_DEMO, 600, None);
                 }
             } else {
-                on_button(a, IDC_INSTALL);
+                activate(a, IDC_INSTALL);
             }
         }
-        Stage::UpdateReady => on_button(a, IDC_INSTALL),
+        Stage::UpdateReady => activate(a, IDC_INSTALL),
         Stage::UpToDate | Stage::Done | Stage::Uninstalled => fade_quit(a),
-        Stage::UninstallConfirm => on_button(a, IDC_REMOVE),
+        Stage::UninstallConfirm => activate(a, IDC_REMOVE),
         _ => {}
     }
 }
@@ -1842,12 +2246,12 @@ fn poll_worker(a: &mut App) {
     let mut finished: Option<Msg> = None;
     while let Ok(m) = rx.try_recv() {
         match m {
-            Msg::File(f) => set_ctrl_text(a, IDC_FILE, &f),
+            Msg::File(f) => set_text(a, IDC_FILE, &f),
             Msg::Bytes(done, total) => {
                 set_progress(a, done, total);
-                set_ctrl_text(a, IDC_BYTES, &format!("{} of {}", mb(done), mb(total)));
+                set_text(a, IDC_BYTES, &format!("{} of {}", mb(done), mb(total)));
             }
-            Msg::Note(n) => set_ctrl_text(a, IDC_SUB, &n),
+            Msg::Note(n) => set_text(a, IDC_SUB, &n),
             Msg::Done => finished = Some(Msg::Done),
             Msg::Err(e) => finished = Some(Msg::Err(e)),
         }
@@ -1875,30 +2279,22 @@ fn poll_worker(a: &mut App) {
     }
 }
 
-fn set_ctrl_text(a: &App, id: i32, text: &str) {
-    unsafe {
-        if let Some(ctl) = a.ctrls.iter().find(|c| GetDlgCtrlID(**c) == id) {
-            let _ = SetWindowTextW(*ctl, PCWSTR(to_wide(text).as_ptr()));
+fn set_text(a: &mut App, id: i32, text: &str) {
+    if let Some(w) = a.widgets.iter_mut().find(|w| w.id == id) {
+        if let WgKind::Text { text: t, .. } = &mut w.kind {
+            *t = text.to_string();
+            render_present(a);
         }
     }
 }
 
-fn set_progress(a: &App, done: u64, total: u64) {
-    unsafe {
-        for ctl in a.ctrls.iter() {
-            let mut cls = [0u16; 32];
-            let n = GetClassNameW(*ctl, &mut cls);
-            if String::from_utf16_lossy(&cls[..n.max(0) as usize]) != "msctls_progress32" {
-                continue;
-            }
-            let pos = if total == 0 {
-                10000
-            } else {
-                ((done as f64 / total as f64) * 10000.0).round() as usize
-            };
-            let _ = SendMessageW(*ctl, PBM_SETPOS, Some(WPARAM(pos)), Some(LPARAM(0)));
-        }
-    }
+fn set_progress(a: &mut App, done: u64, total: u64) {
+    a.progress = if total == 0 {
+        1.0
+    } else {
+        (done as f64 / total as f64).clamp(0.0, 1.0) as f32
+    };
+    render_present(a);
 }
 
 // ------------------------------------------------------------------ entry
@@ -1907,7 +2303,7 @@ fn main() {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
-        // GDI+ draws the custom button surfaces.
+        // GDI+ draws the entire window.
         let mut gptoken: usize = 0;
         let gpinput = GdiplusStartupInput {
             GdiplusVersion: 1,
@@ -1915,17 +2311,12 @@ fn main() {
             SuppressBackgroundThread: windows::core::BOOL::default(),
             SuppressExternalCodecs: windows::core::BOOL::default(),
         };
-        let _ = GdiplusStartup(&mut gptoken, &gpinput, std::ptr::null_mut());
+        if GdiplusStartup(&mut gptoken, &gpinput, std::ptr::null_mut()) != Status(0) {
+            return;
+        }
 
         let hinst: HINSTANCE = GetModuleHandleW(None).expect("module handle").into();
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-
-        // Progress bars live in the common controls library.
-        let icc = INITCOMMONCONTROLSEX {
-            dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-            dwICC: windows::Win32::UI::Controls::INITCOMMONCONTROLSEX_ICC(0x20 | 0x01), // ICC_PROGRESS_CLASSES | ICC_WIN95_CLASSES
-        };
-        let _ = InitCommonControlsEx(&icc);
 
         let wc = WNDCLASSW {
             style: Default::default(),
@@ -1937,25 +2328,24 @@ fn main() {
                 .or_else(|_| LoadIconW(None, IDI_APPLICATION))
                 .unwrap_or(windows::Win32::UI::WindowsAndMessaging::HICON(std::ptr::null_mut())),
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            hbrBackground: CreateSolidBrush(COLORREF(BG)),
+            hbrBackground: windows::Win32::Graphics::Gdi::HBRUSH(std::ptr::null_mut()),
             lpszMenuName: PCWSTR::null(),
             lpszClassName: w!("FleetSetupWindow"),
         };
         let _ = RegisterClassW(&wc);
 
-        // The window title depends on the mode.
         let uninstall = std::env::args().skip(1).any(|arg| {
             let l = arg.to_ascii_lowercase();
             l == "--uninstall" || l == "/uninstall"
         }) || !Package::exists();
         let title = if uninstall { UNINSTALL_TITLE } else { APP_TITLE };
 
-        let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-        let hwnd = windows::Win32::UI::WindowsAndMessaging::CreateWindowExW(
+        // Borderless layered window: the shape comes from our alpha channel.
+        let hwnd = CreateWindowExW(
             WS_EX_LAYERED,
             w!("FleetSetupWindow"),
             PCWSTR(to_wide(title).as_ptr()),
-            style,
+            WS_POPUP,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             WIN_W,
@@ -1970,28 +2360,27 @@ fn main() {
             return;
         }
 
-        let _ = ShowWindow(hwnd, SW_SHOW);
-
-        // Build the opening page on the now-visible window, then fade in.
         if let Some(a) = app_from(hwnd) {
+            size_window(a);
+            rebuild_canvas(a);
             build_stage(a);
             if a.resolving {
                 start_resolve(a);
             }
+            // Draw once at zero opacity, show, then fade in.
+            canvas_present(a, 0);
+            let _ = ShowWindow(hwnd, SW_SHOW);
             start_fade(a, 255, 350, After::None);
         }
 
-        // Message pump with dialog-style Tab/Enter/Esc handling.
         let mut msg = MSG::default();
         loop {
             let r = GetMessageW(&mut msg, None, 0, 0);
             if r.0 <= 0 {
                 break;
             }
-            if !IsDialogMessageW(hwnd, &msg).as_bool() {
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
         }
     }
 }
