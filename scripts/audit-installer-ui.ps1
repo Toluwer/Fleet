@@ -55,8 +55,17 @@ $env:FLEET_SETUP_LOG = '1'
 # ---- window shape: borderless, 8px rounded, drawn on every Windows ----------
 # The window is a layered surface whose alpha channel is the shape, so this
 # check works on Windows 10 as well as 11 (no DWM corner preference involved).
+# A bright backdrop sits behind the window so corner pixels are unambiguous
+# even on an otherwise near-black CI desktop.
 $problems = @()
 $shapeProblems = @()
+$backdrop = New-Object System.Windows.Forms.Form
+$backdrop.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+$backdrop.WindowState = [System.Windows.Forms.FormWindowState]::Maximized
+$backdrop.BackColor = [System.Drawing.Color]::FromArgb(255, 0, 255)
+$backdrop.TopMost = $false
+$backdrop.Show()
+[System.Windows.Forms.Application]::DoEvents()
 $shapeProc = Start-Process -FilePath $InstallerPath -ArgumentList "--path=$installDir" -PassThru
 Start-Sleep -Milliseconds 1800
 try {
@@ -101,6 +110,8 @@ try {
     }
 } finally {
     if (-not $shapeProc.HasExited) { Stop-Process -Id $shapeProc.Id -Force -ErrorAction SilentlyContinue }
+    $backdrop.Close()
+    $backdrop.Dispose()
 }
 if ($shapeProblems.Count) { $problems += $shapeProblems }
 
