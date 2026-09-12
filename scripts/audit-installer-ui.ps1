@@ -88,8 +88,10 @@ try {
                 $shapeProblems += "Pixel ($($pt.x),$($pt.y)) is not the Fleet surface - the window body did not render."
             }
         }
-        # The 8px corners must be cut: these pixels belong to the desktop.
-        foreach ($pt in @(@{x=2; y=2}, @{x=$w-3; y=2}, @{x=2; y=$h-3}, @{x=$w-3; y=$h-3})) {
+        # The 8px corners must be cut: these pixels sit outside the rounded
+        # arc (pixel centers clear of the 8px radius), so they must show the
+        # desktop, not the window.
+        foreach ($pt in @(@{x=1; y=1}, @{x=$w-2; y=1}, @{x=1; y=$h-2}, @{x=$w-2; y=$h-2})) {
             if (Test-IsBg (Test-Pixel $pt.x $pt.y)) {
                 $shapeProblems += "Pixel ($($pt.x),$($pt.y)) is window-colored - corners are square, not 8px rounded."
             }
