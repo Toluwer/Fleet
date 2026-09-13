@@ -37,7 +37,7 @@ use windows::Win32::Graphics::GdiPlus::{
     GdipCreateSolidFill, GdipCreateStringFormat, GdipDeleteBrush, GdipDeleteFont,
     GdipDeleteGraphics, GdipDeletePath, GdipDeletePen, GdipDeleteStringFormat, GdipDisposeImage,
     GdipDrawLine, GdipDrawPath, GdipDrawString, GdipFillPath, GdipFillRectangleI, GdipFlush,
-    GdipGetImageGraphicsContext, GdipGraphicsClear, GdipResetClip, GdipSetClipPath,
+    GdipGetImageGraphicsContext, GdipGraphicsClear, GdipMeasureString, GdipResetClip, GdipSetClipPath,
     GdipSetSmoothingMode, GdipSetStringFormatAlign, GdipSetStringFormatFlags,
     GdipSetStringFormatLineAlign, GdipSetStringFormatTrimming, GdipSetTextRenderingHint,
     GdiplusStartup, GdiplusStartupInput, RectF, SmoothingModeAntiAlias, Status,
@@ -102,15 +102,20 @@ const DANGER_RING: u32 = 0x0035_266E;
 const DANGER_EDGE: u32 = 0x0059_42DC;
 const DANGER_HOT: u32  = 0x001D_1632;
 const DANGER_DOWN: u32 = 0x0019_132A;
-const FOCUS_TX: u32   = 0x00FF_CBA9;
+/// Secondary controls lift their border on hover (the app's .btn:hover mix).
+const HAIR_HOT: u32 = 0x0061_595C; // #5c5961
+/// The input focus halo: accent at 26% alpha (the app's input box-shadow).
+/// Raw ARGB, not a COLORREF - it is passed straight to GDI+.
+const HALO_ARGB: u32 = 0x423B_82F6;
 
 // Caption close button (matches the app's window controls).
 const CLOSE_HOT: u32 = 0x001C_2BC4;   // #c42b1c
 const CLOSE_DOWN: u32 = 0x001D_27A4;  // #a4271d
 
-/// Corner radius in logical pixels (the app's own window radius).
+/// Corner radius in logical pixels. The window is 8px like the app's large
+/// surfaces; controls use the app's 6px control radius.
 const WIN_RADIUS: f32 = 8.0;
-const BTN_RADIUS: f32 = 8.0;
+const BTN_RADIUS: f32 = 6.0;
 
 // Timers
 const IDT_FADE: usize = 1;
@@ -183,6 +188,8 @@ enum Msg {
 struct Fonts {
     display: *mut GpFont,
     head: *mut GpFont,
+    /// 500-weight control text, the app's .btn label weight.
+    label: *mut GpFont,
     body: *mut GpFont,
     path: *mut GpFont,
     small: *mut GpFont,
@@ -224,6 +231,7 @@ enum Align {
 #[derive(Clone, Copy)]
 enum FontRole {
     Head,
+    Label,
     Body,
     Path,
     Small,
@@ -399,6 +407,7 @@ unsafe fn make_font(face: &str, weight: i32, logical_height: i32, scale: f32, sc
 unsafe fn delete_fonts(f: &Fonts) {
     GdipDeleteFont(f.display);
     GdipDeleteFont(f.head);
+    GdipDeleteFont(f.label);
     GdipDeleteFont(f.body);
     GdipDeleteFont(f.path);
     GdipDeleteFont(f.small);
@@ -409,6 +418,7 @@ unsafe fn build_fonts(scale: f32) -> Fonts {
     let fonts = Fonts {
         display: make_font("Segoe UI Variable Display", 600, 24, scale, screen),
         head: make_font("Segoe UI Variable Display", 600, 17, scale, screen),
+        label: make_font("Segoe UI Variable Text", 500, 13, scale, screen),
         body: make_font("Segoe UI Variable Text", 400, 13, scale, screen),
         path: make_font("Segoe UI Variable Text", 400, 14, scale, screen),
         small: make_font("Segoe UI Variable Text", 400, 12, scale, screen),
@@ -1176,6 +1186,14 @@ unsafe fn stroke_path(gfx: *mut GpGraphics, path: *mut GpPath, color: u32, width
     GdipDeletePen(pen);
 }
 
+/// Stroke with a raw ARGB color (one that carries its own alpha).
+unsafe fn stroke_path_argb(gfx: *mut GpGraphics, path: *mut GpPath, color: u32, width: f32) {
+    let mut pen: *mut GpPen = std::ptr::null_mut();
+    GdipCreatePen1(color, width, UnitPixel, &mut pen);
+    GdipDrawPath(gfx, pen, path);
+    GdipDeletePen(pen);
+}
+
 unsafe fn fill_rect(gfx: *mut GpGraphics, color: u32, x: i32, y: i32, w: i32, h: i32) {
     let mut brush: *mut GpSolidFill = std::ptr::null_mut();
     GdipCreateSolidFill(argb(color), &mut brush);
@@ -1231,7 +1249,59 @@ unsafe fn draw_text(
     GdipDeleteStringFormat(fmt);
 }
 
-/// One push button: an anti-aliased 8px-rounded fill with centered label.
+/// Advance width of one line of text, in device pixels.
+unsafe fn measure_text_width(gfx: *mut GpGraphics, text: &str, font: *mut GpFont) -> f32 {
+    let mut fmt: *mut GpStringFormat = std::ptr::null_mut();
+    if GdipCreateStringFormat(0, 0, &mut fmt) != Status(0) || fmt.is_null() {
+        return 0.0;
+    }
+    GdipSetStringFormatFlags(fmt, StringFormatFlagsNoWrap.0);
+    let layout = RectF { X: 0.0, Y: 0.0, Width: 100_000.0, Height: 1_000.0 };
+    let mut bbox = RectF::default();
+    let mut fitted: i32 = 0;
+    let mut lines: i32 = 0;
+    let wide = to_wide(text);
+    GdipMeasureString(
+        gfx,
+        PCWSTR(wide.as_ptr()),
+        -1,
+        font,
+        &layout,
+        fmt,
+        &mut bbox,
+        &mut fitted,
+        &mut lines,
+    );
+    GdipDeleteStringFormat(fmt);
+    bbox.Width
+}
+
+/// Trims a path to its visible tail: an ellipsis plus as much of the end as
+/// fits. Suffix length is binary-searched; width grows monotonically with it.
+unsafe fn tail_to_fit(gfx: *mut GpGraphics, font: *mut GpFont, text: &str, avail: f32) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return String::new();
+    }
+    let with_len = |n: usize| -> String {
+        std::iter::once('\u{2026}')
+            .chain(chars[chars.len() - n..].iter().copied())
+            .collect()
+    };
+    let mut lo = 1usize; // always keep at least the final character
+    let mut hi = chars.len();
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        if measure_text_width(gfx, &with_len(mid), font) <= avail {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    with_len(lo)
+}
+
+/// One push button: an anti-aliased 6px-rounded fill with centered label.
 /// Mirrors the app's .btn, .btn.primary and .btn.danger styles.
 unsafe fn draw_button(
     gfx: *mut GpGraphics,
@@ -1267,9 +1337,9 @@ unsafe fn draw_button(
     } else if !enabled {
         (SEC_OFF, Some(HAIR), INK_3)
     } else if pressed {
-        (SURFACE_3, Some(HAIR_2), INK)
+        (SURFACE_3, Some(HAIR_HOT), INK)
     } else if hot {
-        (SURFACE_2, Some(HAIR_2), INK)
+        (SURFACE_2, Some(HAIR_HOT), INK)
     } else {
         (SURFACE, Some(HAIR_2), INK)
     };
@@ -1290,20 +1360,19 @@ unsafe fn draw_button(
         GdipDeletePath(path);
     }
     if focused && enabled {
-        let inset = (2.0 * s).round().max(2.0).min(w.min(h) / 4.0);
-        let fr = (r - inset).max(0.0);
-        let fpath = rounded_path(x + inset, y + inset, w - 2.0 * inset, h - 2.0 * inset, fr);
+        // The app's focus style: a 2px outline sitting 1px clear of the edge.
+        let out = 2.0 * s; // the 1px gap plus half the stroke
+        let fpath = rounded_path(x - out, y - out, w + 2.0 * out, h + 2.0 * out, r + out);
         if !fpath.is_null() {
-            let ring = if primary { FOCUS_TX } else { ACCENT };
-            let rw = if s >= 2.0 { 2.0 } else { 1.0 };
-            stroke_path(gfx, fpath, ring, rw);
+            stroke_path(gfx, fpath, ACCENT, 2.0 * s);
             GdipDeletePath(fpath);
         }
     }
-    draw_text(gfx, label, fonts.body, text, x, y, w, h, Align::Center, false, false);
+    draw_text(gfx, label, fonts.label, text, x, y, w, h, Align::Center, false, false);
 }
 
-/// A checkbox row: an 18px rounded box with a check glyph and a label.
+/// A checkbox row: a 20px rounded box with a check glyph and a label, the
+/// app's own selection checkbox.
 unsafe fn draw_check(
     gfx: *mut GpGraphics,
     s: f32,
@@ -1314,7 +1383,7 @@ unsafe fn draw_check(
     hot: bool,
     focused: bool,
 ) {
-    let box_side = 18.0 * s;
+    let box_side = 20.0 * s;
     let bx = wg.x * s;
     let by = wg.y * s + (wg.h * s - box_side) / 2.0;
     let r = (4.0 * s).min(box_side / 2.0);
@@ -1359,8 +1428,9 @@ unsafe fn draw_check(
     );
 }
 
-/// The folder field: a dark input surface. Click focuses it for typing;
-/// the caret marks the insertion point at the end of the path.
+/// The folder field: a dark input surface. Click focuses it for typing; the
+/// caret follows the measured text and shows the path's end when it overflows,
+/// like a real edit control.
 unsafe fn draw_path_field(
     gfx: *mut GpGraphics,
     s: f32,
@@ -1382,22 +1452,34 @@ unsafe fn draw_path_field(
         stroke_path(gfx, path, if focused { ACCENT } else { HAIR_2 }, if s >= 2.0 { 2.0 } else { 1.0 });
         GdipDeletePath(path);
     }
+    if focused {
+        // The app's input focus: an accent border with a soft accent halo.
+        let out = 2.0 * s;
+        let halo = rounded_path(x - out, y - out, w + 2.0 * out, h + 2.0 * out, r + out);
+        if !halo.is_null() {
+            stroke_path_argb(gfx, halo, HALO_ARGB, 2.0 * s);
+            GdipDeletePath(halo);
+        }
+    }
     let pad = 12.0 * s;
-    draw_text(gfx, text, fonts.path, INK, x + pad, y, w - 2.0 * pad, h, Align::Left, false, false);
+    let avail = w - 2.0 * pad;
+    let text_w = measure_text_width(gfx, text, fonts.path);
+    if focused && text_w > avail {
+        // Keep the end of the path visible: that is where typing happens.
+        let tail = tail_to_fit(gfx, fonts.path, text, avail);
+        draw_text(gfx, &tail, fonts.path, INK, x + pad, y, avail, h, Align::Left, false, false);
+    } else {
+        draw_text(gfx, text, fonts.path, INK, x + pad, y, avail, h, Align::Left, false, false);
+    }
     if focused && caret_on {
-        // Caret just past the text: measure nothing, clamp to the field.
-        let char_w = 7.2 * s; // approx advance for Segoe UI 14pt
-        let visible = ((w - 2.0 * pad) / char_w).floor().max(1.0) as usize;
-        let shown_chars = text.chars().count().min(visible.saturating_sub(1).max(1));
-        let cx = x + pad + shown_chars as f32 * char_w;
-        let cx = cx.min(x + w - 8.0 * s);
+        let cx = if text_w > avail { x + w - pad } else { x + pad + text_w };
         fill_rect(
             gfx,
             ACCENT,
             cx.round() as i32,
-            (y + 7.0 * s).round() as i32,
+            (y + 8.0 * s).round() as i32,
             (1.6 * s).round().max(1.0) as i32,
-            (h - 14.0 * s).round().max(4.0) as i32,
+            (h - 16.0 * s).round().max(4.0) as i32,
         );
     }
 }
@@ -1408,7 +1490,7 @@ unsafe fn draw_progress(gfx: *mut GpGraphics, s: f32, wg: &Wg, frac: f32, sweep:
     let y = wg.y * s;
     let w = wg.w * s;
     let h = wg.h * s;
-    let r = (h / 2.0).min(4.0 * s);
+    let r = (h / 2.0).min(3.0 * s);
     let track = rounded_path(x, y, w, h, r);
     if track.is_null() {
         return;
@@ -1533,6 +1615,7 @@ unsafe fn render(a: &App) {
             WgKind::Text { text, ink, align, font, wrap, top } => {
                 let fobj = match font {
                     FontRole::Head => a.fonts.head,
+                    FontRole::Label => a.fonts.label,
                     FontRole::Body => a.fonts.body,
                     FontRole::Path => a.fonts.path,
                     FontRole::Small => a.fonts.small,
@@ -1612,7 +1695,7 @@ fn add_rule(a: &mut App, y: f32) {
 fn add_footer(a: &mut App, hint: &str, secondary: Option<(&str, i32)>, primary_label: &str, primary_id: i32) {
     add_rule(a, 288.0);
     if let Some((label, id)) = secondary {
-        add_button(a, id, label, 224.0, 304.0, 128.0, 32.0, true);
+        add_button(a, id, label, 232.0, 304.0, 128.0, 32.0, true);
     }
     add_button(a, primary_id, primary_label, 368.0, 304.0, 116.0, 32.0, true);
     if !hint.is_empty() {
@@ -1649,18 +1732,18 @@ fn build_stage(a: &mut App) {
         }
 
         Stage::Fresh => {
-            add_text(a, IDC_LABEL, "Install folder".into(), INK_2, FontRole::Small, Align::Left, false, false, 36.0, 114.0, 448.0, 18.0);
+            add_text(a, IDC_LABEL, "Install folder".into(), INK, FontRole::Label, Align::Left, false, false, 36.0, 114.0, 448.0, 18.0);
             a.widgets.push(Wg {
                 id: IDC_PATHEDIT,
                 kind: WgKind::PathField,
                 x: 36.0,
                 y: 138.0,
                 w: 316.0,
-                h: 30.0,
+                h: 32.0,
             });
-            add_button(a, IDC_BROWSE, "Browse…", 364.0, 138.0, 120.0, 30.0, true);
-            add_text(a, IDC_ERROR, String::new(), DANGER, FontRole::Small, Align::Left, false, false, 36.0, 176.0, 448.0, 18.0);
-            add_check(a, IDC_CHECK_DESKTOP, "Add a desktop shortcut", a.desktop_shortcut, 36.0, 212.0, 320.0, 24.0);
+            add_button(a, IDC_BROWSE, "Browse…", 364.0, 138.0, 120.0, 32.0, true);
+            add_text(a, IDC_ERROR, String::new(), DANGER, FontRole::Small, Align::Left, false, false, 36.0, 178.0, 448.0, 18.0);
+            add_check(a, IDC_CHECK_DESKTOP, "Add a desktop shortcut", a.desktop_shortcut, 36.0, 214.0, 320.0, 24.0);
 
             // While the release feed is still resolving, Install waits so
             // nobody installs a stale payload seconds before the check hands
@@ -1727,7 +1810,7 @@ fn build_stage(a: &mut App) {
             add_text(
                 a,
                 IDC_HINT,
-                "Setup checks for the latest release, so an older download still installs the newest version.".into(),
+                "Setup always installs the newest release.".into(),
                 INK_3,
                 FontRole::Small,
                 Align::Left,
