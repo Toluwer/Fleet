@@ -1257,7 +1257,7 @@ unsafe fn measure_text_width(gfx: *mut GpGraphics, text: &str, font: *mut GpFont
     }
     GdipSetStringFormatFlags(fmt, StringFormatFlagsNoWrap.0);
     let layout = RectF { X: 0.0, Y: 0.0, Width: 100_000.0, Height: 1_000.0 };
-    let mut bbox = RectF::default();
+    let mut bbox = RectF { X: 0.0, Y: 0.0, Width: 0.0, Height: 0.0 };
     let mut fitted: i32 = 0;
     let mut lines: i32 = 0;
     let wide = to_wide(text);
