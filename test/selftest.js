@@ -76,6 +76,16 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   const closeEmpty = native.closeRobloxSingletonHandles([]);
   check('close with no PIDs is a safe no-op', closeEmpty.ok && closeEmpty.closed === 0);
   check('blockerExists returns a boolean', typeof native.blockerExists(loc.playerPath) === 'boolean');
+  check('singleton-name squat functions exported',
+    typeof native.acquireSingletonNames === 'function' && typeof native.squatHeld === 'function');
+  const squat1 = native.acquireSingletonNames();
+  check('squat reports per-name claim state',
+    squat1 && typeof squat1.ok === 'boolean' && typeof squat1.held === 'number' && squat1.total === 2,
+    JSON.stringify(squat1));
+  const squat2 = native.acquireSingletonNames();
+  check('repeat squat keeps earlier claims and stays idempotent',
+    squat2.held >= squat1.held && squat2.held <= 2, JSON.stringify(squat2));
+  check('squatHeld agrees with the claim count', native.squatHeld() === (squat2.held === 2));
   const focusBogus = native.focusByPid(99999999);
   check('focusByPid(bogus) returns gracefully', focusBogus && focusBogus.ok === false, focusBogus.reason);
 
@@ -512,6 +522,16 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && !peopleSource.includes('readServerPlayersFromPid')
     && !fs.existsSync(path.join(__dirname, '..', 'src', 'main', 'people-server-worker.js')));
 
+  const guardSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'guard.js'), 'utf8');
+  check('guard claims the singleton names itself instead of only sweeping',
+    guardSource.includes('native.acquireSingletonNames')
+    && guardSource.includes('native.squatHeld')
+    && /closeRobloxSingletonHandles\(pids, 'global'\)/.test(guardSource));
+  const stylesSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'styles.css'), 'utf8');
+  check('search inputs pad typed text clear of the overlay icon (specificity beats the form padding)',
+    /\.search input\[type=text\]\s*\{\s*padding-left:\s*34px;?\s*\}/.test(stylesSource)
+    && !/\.search input\s*\{[^}]*padding-left/.test(stylesSource));
+
   const rendererSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8');
   const gamesSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'games.js'), 'utf8');
   check('People Join opens an account picker', rendererSource.includes("case 'join-person': openPersonJoinDialog") && rendererSource.includes('data-action="select-join-account"'));
@@ -632,7 +652,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && rendererModel.parseRobloxTarget('not a Roblox target').invalid === true
     && rendererModel.parseRobloxTarget('').invalid === false);
   check('Account-less installs can search public profiles without exposing account cookies',
-    peopleSource.includes("'User-Agent': 'Fleet/1.8.9'")
+    peopleSource.includes("'User-Agent': 'Fleet/1.8.10'")
     && peopleSource.includes('search-api/omni-search')
     && peopleSource.includes("verticalType: 'user'")
     && peopleSource.includes("presence: 'Unknown'")

@@ -134,7 +134,7 @@ function makeBackend(ctx) {
       version: loc.version,
       source: loc.source,
       candidates: loc.candidates,
-      multiInstance: native.isAvailable(),
+      multiInstance: native.isAvailable() && native.squatHeld(),
       ffiAvailable: native.isAvailable(),
       ffiError: native.getLoadError(),
       guard: guard.stats(),
@@ -210,7 +210,7 @@ function makeBackend(ctx) {
     const failed = results.length - launched;
     logger.info(`Launch: ${launched} started, ${failed} failed`);
     monitor.poll();
-    return { ok: launched > 0, launched, failed, multiInstance: native.isAvailable(), results };
+    return { ok: launched > 0, launched, failed, multiInstance: native.isAvailable() && native.squatHeld(), results };
   }
 
   /** Turn account ids into watchdog records the keeper can arm. */
@@ -746,7 +746,9 @@ function makeBackend(ctx) {
           logFile: logger.getLogFile(),
           ffiAvailable: native.isAvailable(),
           ffiError: native.getLoadError(),
-          multiInstance: native.isAvailable() ? 'enabled (path-isolation + guard)' : 'unavailable',
+          multiInstance: native.isAvailable()
+            ? ('enabled (singleton hold ' + (native.squatHeld() ? 'active' : 'pending') + ' + path isolation)')
+            : 'unavailable',
           guard: JSON.stringify(guard.stats()),
           singletonNames: native.EVENT_NAME + ', ' + native.MUTEX_NAME + ', <path>.mtx',
           typeIndices: JSON.stringify(native.getTypeIndices()),

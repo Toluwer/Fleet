@@ -382,7 +382,10 @@ body.window-maximized .window-controls .restore-glyph { display: block; }
 .search { position: relative; flex: 1; min-width: 220px; max-width: 460px; }
 .search > svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); width: 15px; height: 15px;
   color: var(--ink-3); fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
-.search input { padding-left: 34px; }
+/* [type=text] keeps this above the form rule's `padding: 5px 11px` shorthand
+   later in the file (equal specificity would lose to source order, and the
+   typed text would slide under the icon). */
+.search input[type=text] { padding-left: 34px; }
 .games-tools, .people-tools { display: flex; align-items: center; justify-content: space-between; gap: 10px;
   flex-wrap: wrap; margin: 0 0 12px; }
 

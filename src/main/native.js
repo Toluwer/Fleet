@@ -3,17 +3,22 @@
 /**
  * native.js — the Win32 layer that makes multi-instance work.
  *
- * Current Roblox enforces a single client with several named kernel objects,
- * all held inside the running RobloxPlayerBeta process:
- *   - Event  ROBLOX_singletonEvent
- *   - Mutex  ROBLOX_singletonMutex
- *   - Mutex  <full exe path with \ -> _>.mtx     (the per-build guard)
+ * Roblox enforces a single client with named kernel objects under two names:
+ *   - ROBLOX_singletonEvent
+ *   - ROBLOX_singletonMutex
+ * The current client re-creates these while it runs, so merely closing the
+ * handles after a launch loses the race. The robust method (used by every
+ * maintained multi-instance tool) is for FLEET to hold both names itself,
+ * created as mutexes before any client starts: a client then finds the name
+ * already present (CreateMutex -> ERROR_ALREADY_EXISTS) and runs as a
+ * non-primary instance. Per-instance isolation still comes from clones.js
+ * (distinct exe paths -> distinct <path>.mtx guards).
  *
- * While any of those exist, a newly launched client detects it and exits.
- * Holding them does NOT help. The reliable method is to **close those handles
- * inside the running process(es)** so the kernel destroys the named objects;
- * the next launch then starts normally. A short guard loop keeps closing them
- * as they reappear, so every launch opens a new instance.
+ * The handle sweep below remains for one case: Roblox was started before
+ * Fleet, so the running client already owns the names. Closing its guard
+ * handles lets the kernel destroy the objects; the next tick claims them.
+ * Only the GLOBAL guards are ever closed — closing a running instance's
+ * per-path mutex would make it exit a few seconds later.
  *
  * Win32 calls: NtQuerySystemInformation(SystemExtendedHandleInformation),
  * NtQueryObject(ObjectNameInformation), OpenProcess(PROCESS_DUP_HANDLE),
@@ -124,6 +129,34 @@ function init() {
 
 function isAvailable() { return available; }
 function getLoadError() { return loadError; }
+
+/* --- Singleton-name squat ------------------------------------------------ */
+
+// name -> mutex handle. Created once, held for Fleet's whole lifetime and never
+// closed: while we hold them, no client can (re)create the objects, so every
+// launch runs as a non-primary instance. If Fleet dies, the kernel releases
+// the names and Roblox falls back to its normal single-instance behaviour.
+const squatHandles = new Map();
+
+/**
+ * Try to claim whichever of the two global singleton names we do not hold
+ * yet. Cheap (two CreateMutex calls), safe to call repeatedly — names already
+ * claimed are kept. A claim fails only while a running client owns the name.
+ * @returns {{ok:boolean, held:number, total:number, reason?:string}}
+ */
+function acquireSingletonNames() {
+  if (!init()) return { ok: false, held: squatHandles.size, total: 2, reason: loadError || 'FFI unavailable' };
+  for (const name of [EVENT_NAME, MUTEX_NAME]) {
+    if (squatHandles.has(name)) continue;
+    let h = 0;
+    try { h = CreateMutexW(null, 0, name); } catch (_) { h = 0; }
+    if (h) squatHandles.set(name, h);
+  }
+  return { ok: squatHandles.size === 2, held: squatHandles.size, total: 2 };
+}
+
+/** True once Fleet holds both global singleton names. */
+function squatHeld() { return squatHandles.size === 2; }
 
 /** The per-build mutex name Roblox uses (full exe path, backslashes -> _). */
 function exeMutexName(playerPath) {
@@ -496,6 +529,7 @@ module.exports = {
   EVENT_NAME, MUTEX_NAME,
   init, isAvailable, getLoadError,
   exeMutexName, blockerExists,
+  acquireSingletonNames, squatHeld,
   closeRobloxSingletonHandles,
   getTypeIndices,
   listProcesses,

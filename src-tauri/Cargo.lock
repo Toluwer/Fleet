@@ -890,7 +890,7 @@ dependencies = [
 
 [[package]]
 name = "fleet"
-version = "1.8.9"
+version = "1.8.10"
 dependencies = [
  "log",
  "serde",
