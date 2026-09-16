@@ -24,9 +24,9 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
-    PROCESS_ACCESS_RIGHTS, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_TERMINATE,
+    CreateProcessW, OpenProcess, QueryFullProcessImageNameW, TerminateProcess,
+    WaitForSingleObject, PROCESS_ACCESS_RIGHTS, PROCESS_INFORMATION, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, STARTUPINFOW,
 };
 use windows::Win32::UI::Shell::{
     SHBrowseForFolderW, SHCreateItemFromParsingName, SHGetPathFromIDListW,
@@ -734,18 +734,55 @@ pub fn launch_app(exe: &Path, workdir: &Path) -> bool {
         ));
         return false;
     }
-    let ok = unsafe {
+    let exe_w = to_wide(&exe.to_string_lossy());
+    let dir_w = to_wide(&workdir.to_string_lossy());
+    let mut ok = false;
+    unsafe {
+        // ShellExecuteW first: it goes through the shell, so file associations
+        // and the user's environment all apply.
+        let verb = to_wide("open");
         let r = ShellExecuteW(
             None,
-            PCWSTR(to_wide("open").as_ptr()),
-            PCWSTR(to_wide(&exe.to_string_lossy()).as_ptr()),
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(exe_w.as_ptr()),
             None,
-            PCWSTR(to_wide(&workdir.to_string_lossy()).as_ptr()),
+            PCWSTR(dir_w.as_ptr()),
             SW_SHOWNORMAL,
         );
         // ShellExecuteW returns a HINSTANCE > 32 on success.
-        (r.0 as usize) > 32
-    };
+        ok = (r.0 as usize) > 32;
+        if !ok {
+            log_str(&format!(
+                "launch_app: ShellExecuteW returned {} for {} - trying CreateProcessW",
+                r.0 as isize,
+                exe.display()
+            ));
+            // Fallback: create the process directly so a shell quirk can
+            // never silently swallow the launch.
+            let mut si = STARTUPINFOW {
+                cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+                ..Default::default()
+            };
+            let mut pi = PROCESS_INFORMATION::default();
+            ok = CreateProcessW(
+                PCWSTR(exe_w.as_ptr()),
+                None,
+                None,
+                None,
+                false,
+                Default::default(),
+                None,
+                PCWSTR(dir_w.as_ptr()),
+                &mut si,
+                &mut pi,
+            )
+            .is_ok();
+            if ok {
+                let _ = CloseHandle(pi.hProcess);
+                let _ = CloseHandle(pi.hThread);
+            }
+        }
+    }
     log_str(&format!(
         "launch_app: {} -> {}",
         exe.display(),

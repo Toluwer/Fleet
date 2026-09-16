@@ -429,6 +429,11 @@ fn open_roblox_webview(
 /// `<install>/Fleet.exe` is the NEW version — spawn it with
 /// `--takeover=<our pid>` so it waits for us to die, then close the main
 /// window, which runs the normal shutdown path (backend included).
+///
+/// The relaunch is retried a few times (a just-swapped executable can be
+/// transiently blocked by antivirus) and the window is only closed once the
+/// new version is actually running — a failed restart must leave the app
+/// open with the error, not disappear silently.
 #[tauri::command]
 async fn updater_restart(app: AppHandle) -> Value {
     let new_exe = std::env::current_exe()
@@ -436,20 +441,36 @@ async fn updater_restart(app: AppHandle) -> Value {
         .and_then(|p| p.parent().map(|dir| dir.join("Fleet.exe")))
         .filter(|p| p.exists());
     let mut relaunched = false;
+    let mut reason = String::new();
     if let Some(exe) = new_exe {
-        let mut command = Command::new(&exe);
-        command.arg(format!("--takeover={}", std::process::id()));
-        #[cfg(target_os = "windows")]
-        command.creation_flags(CREATE_NO_WINDOW);
-        relaunched = command.spawn().is_ok();
-        if !relaunched {
-            eprintln!("updater_restart: could not relaunch {}", exe.display());
+        for attempt in 1..=3 {
+            let mut command = Command::new(&exe);
+            command.arg(format!("--takeover={}", std::process::id()));
+            #[cfg(target_os = "windows")]
+            command.creation_flags(CREATE_NO_WINDOW);
+            match command.spawn() {
+                Ok(_) => {
+                    relaunched = true;
+                    break;
+                }
+                Err(err) => {
+                    reason = err.to_string();
+                    eprintln!("updater_restart: relaunch attempt {attempt} failed: {reason}");
+                    if attempt < 3 {
+                        std::thread::sleep(Duration::from_millis(700));
+                    }
+                }
+            }
+        }
+    } else {
+        reason = "The updated Fleet.exe was not found.".to_string();
+    }
+    if relaunched {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.close();
         }
     }
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.close();
-    }
-    json!({ "ok": true, "relaunched": relaunched })
+    json!({ "ok": relaunched, "relaunched": relaunched, "reason": reason })
 }
 backend_command!(launch_quick, "launch_quick", (count: Option<i64>), json!({ "count": count }));
 backend_command!(launch_accounts, "launch_accounts", (account_ids: Vec<String>, place_id: Option<String>), json!({ "accountIds": account_ids, "placeId": place_id }));

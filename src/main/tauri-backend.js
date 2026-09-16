@@ -149,8 +149,9 @@ function makeBackend(ctx) {
     let slot = null;
     if (native.isAvailable()) {
       try {
-        const livePids = (monitor.snapshot() || []).map(i => i.pid);
-        const acq = clones.acquire(path.dirname(loc.playerPath), livePids);
+        // Live client paths decide which launch slots are safe to reuse.
+        const liveRows = monitor.snapshot() || [];
+        const acq = clones.acquire(path.dirname(loc.playerPath), liveRows);
         exe = acq.exe;
         slot = acq.slot;
       } catch (err) {
@@ -165,6 +166,37 @@ function makeBackend(ctx) {
     }
     store.addHistory({ profileName, mode: opts.mode, result: r.ok ? 'launched' : 'failed', pid: r.pid, message: r.ok ? '' : (r.reason || 'failed') });
     return r;
+  }
+
+  /** Conditions under which launching cannot produce coexisting clients.
+   * Surfaced as warnings so the cause is visible where it matters, instead
+   * of looking like a silent multi-instance failure. */
+  function launchWarnings({ accountIds, count }) {
+    const warnings = [];
+    const rows = monitor.snapshot() || [];
+    if (!native.isAvailable()) {
+      // Only meaningful the moment coexistence is on the table: another
+      // client is already running, or this one action starts several.
+      const several = (Array.isArray(accountIds) && accountIds.length > 1) || (asInt(count) || 1) > 1;
+      if (rows.length > 0 || several) {
+        warnings.push('Multi-instance is unavailable (' +
+          (native.getLoadError() || 'the native layer did not load') +
+          ') — a new client replaces the running one.');
+      }
+    }
+    if (Array.isArray(accountIds) && accountIds.length) {
+      const live = new Map();
+      for (const row of rows) {
+        if (row && row.source === 'fleet' && row.accountId) live.set(row.accountId, row.profileName || row.accountId);
+      }
+      for (const id of accountIds) {
+        const name = live.get(id);
+        if (name) {
+          warnings.push(name + ' is already running — Roblox closes the older client when the same account launches again.');
+        }
+      }
+    }
+    return warnings;
   }
 
   async function doLaunch({ mode, deeplink, count, profileName, accountIds, placeId, gameInstanceId, targetUserId }) {
@@ -210,7 +242,9 @@ function makeBackend(ctx) {
     const failed = results.length - launched;
     logger.info(`Launch: ${launched} started, ${failed} failed`);
     monitor.poll();
-    return { ok: launched > 0, launched, failed, multiInstance: native.isAvailable() && native.squatHeld(), results };
+    const warnings = launchWarnings({ accountIds, count });
+    for (const w of warnings) emit('launch:warning', { message: w });
+    return { ok: launched > 0, launched, failed, multiInstance: native.isAvailable() && native.squatHeld(), warnings, results };
   }
 
   /** Turn account ids into watchdog records the keeper can arm. */

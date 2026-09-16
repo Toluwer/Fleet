@@ -3753,6 +3753,11 @@ if (api) {
   api.onKeeperGaveup((r) => {
     toast(`Watchdog gave up on ${(r && r.username) || 'an account'} after ${((r && r.attempts) || 0)} tries - arm it again by relaunching`, 'bad');
   });
+  // Why coexisting clients were not possible for a launch (native layer
+  // missing, same account launched twice) — shown instead of failing silently.
+  api.onLaunchWarning((w) => {
+    if (w && w.message) toast(w.message, 'bad');
+  });
   api.onUpdaterStatus((status) => {
     const prev = state.updater && state.updater.state;
     state.updater = status;
@@ -3770,13 +3775,17 @@ if (api) {
     if (status && status.state === 'restarting') {
       // The new files are already on disk (the swap happens while Fleet runs);
       // restart into them. updater_restart spawns the new Fleet.exe with
-      // --takeover=<pid> and closes this window; the fallback covers older
-      // builds where the command is missing.
+      // --takeover=<pid> and closes this window itself once it is running —
+      // a failed restart keeps the app open and says so instead of
+      // vanishing with the update half-delivered.
       toast('Update installed — restarting Fleet', 'good');
       setTimeout(() => {
-        call(() => api.updater.restart(), { ok: false })
-          .then((r) => { if (!r || !r.ok) { try { api.ui.window.close(); } catch (_) {} } })
-          .catch(() => { try { api.ui.window.close(); } catch (_) {} });
+        call(() => api.updater.restart())
+          .then((r) => {
+            if (r && r.relaunched) return; // the Rust side closes this window
+            toast('Fleet was updated, but could not restart itself — open it from the Start menu', 'bad');
+          })
+          .catch(() => { toast('Fleet was updated, but could not restart itself — open it from the Start menu', 'bad'); });
       }, 900);
     }
     if (status && status.state === 'ready') toast(`Fleet ${status.availableVersion || 'update'} is ready`, 'good');

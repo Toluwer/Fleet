@@ -89,6 +89,56 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   const focusBogus = native.focusByPid(99999999);
   check('focusByPid(bogus) returns gracefully', focusBogus && focusBogus.ok === false, focusBogus.reason);
 
+  /* 2b. Launch-path isolation (clones) */
+  await section('Launch-path isolation (clones)');
+  const clones = require('../src/main/clones');
+  const isoRoot = path.join(os.tmpdir(), 'fleet-selftest-clones-' + Date.now());
+  clones.configure(isoRoot, console);
+  const versionDir = path.join(isoRoot, 'real-version');
+  fs.mkdirSync(path.join(versionDir, 'content', 'fonts'), { recursive: true });
+  fs.writeFileSync(path.join(versionDir, 'RobloxPlayerBeta.exe'), 'MZ-fake-exe-bytes');
+  fs.writeFileSync(path.join(versionDir, 'fmod.dll'), 'fake-dll');
+  fs.writeFileSync(path.join(versionDir, 'content', 'fonts', 'MotivaSans.ttf'), 'fake-font');
+  const a1 = clones.acquire(versionDir, []);
+  check('acquire returns a slot with the player exe inside it',
+    a1 && a1.slot && a1.exe.endsWith(path.join(a1.slot, 'RobloxPlayerBeta.exe')), JSON.stringify(a1));
+  check('slot exe is a real file with the original bytes',
+    fs.statSync(a1.exe).isFile() && fs.readFileSync(a1.exe, 'utf8') === 'MZ-fake-exe-bytes');
+  check('slot exe path differs from the source version folder',
+    path.dirname(a1.exe) !== versionDir);
+  check('hard-linked files share storage with the source (same inode)',
+    fs.statSync(a1.exe).ino === fs.statSync(path.join(versionDir, 'RobloxPlayerBeta.exe')).ino,
+    'cross-volume copy fallback would also be acceptable');
+  check('shared content folders resolve through the slot',
+    fs.readFileSync(path.join(path.dirname(a1.exe), 'content', 'fonts', 'MotivaSans.ttf'), 'utf8') === 'fake-font');
+  const a2 = clones.acquire(versionDir, []);
+  check('a second acquire gets its own distinct slot',
+    a2.slot !== a1.slot && path.dirname(a2.exe) !== path.dirname(a1.exe));
+  check('both slots coexist with separate exe paths',
+    fs.existsSync(a1.exe) && fs.existsSync(a2.exe) && a1.exe !== a2.exe);
+  clones.assign(a1.slot, 4242);
+  check('slot assignment is tracked', clones.activeCount() === 2);
+  clones.cleanup();
+  check('cleanup removes every slot it created',
+    !fs.existsSync(path.dirname(a1.exe)) && !fs.existsSync(path.dirname(a2.exe)));
+  check('cleanup leaves the real version folder untouched',
+    fs.existsSync(path.join(versionDir, 'RobloxPlayerBeta.exe'))
+      && fs.existsSync(path.join(versionDir, 'content', 'fonts', 'MotivaSans.ttf')));
+  // A leftover slot (previous session) with a live client running from it is
+  // never reused or deleted; the next acquire must pick a different slot.
+  const leftover = path.join(isoRoot, 'instance-1');
+  fs.mkdirSync(leftover, { recursive: true });
+  fs.writeFileSync(path.join(leftover, 'RobloxPlayerBeta.exe'), 'MZ-leftover');
+  const guarded = clones.acquire(versionDir, [{ pid: 77, executablePath: path.join(leftover, 'RobloxPlayerBeta.exe') }]);
+  check('a slot with a live client is skipped, not rebuilt',
+    path.dirname(guarded.exe) !== leftover && fs.existsSync(path.join(leftover, 'RobloxPlayerBeta.exe'))
+      && fs.readFileSync(path.join(leftover, 'RobloxPlayerBeta.exe'), 'utf8') === 'MZ-leftover');
+  // Once no client runs from it, the leftover is reclaimed and reused.
+  const reused = clones.acquire(versionDir, []);
+  check('a dead leftover slot is reclaimed on the next launch',
+    reused.slot === 'instance-1' && fs.readFileSync(reused.exe, 'utf8') === 'MZ-fake-exe-bytes');
+  clones.cleanup();
+
   /* 3. Store: settings */
   await section('Store — settings');
   const tmp = path.join(os.tmpdir(), 'fleet-selftest-' + Date.now());
@@ -537,6 +587,12 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && /const STRIP_AGAIN_MS = 8000;/.test(guardSource)
     && /stripClients\(due\)/.test(guardSource)
     && /closeRobloxSingletonHandles\(pids, 'global'\)/.test(guardSource));
+  const clonesSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'clones.js'), 'utf8');
+  check('path isolation is hard-link based (junctions resolve to one install)',
+    clonesSource.includes('fs.linkSync(src, dst)')
+      && clonesSource.includes('fs.copyFileSync(src, dst)')
+      && clonesSource.includes('slotInUse')
+      && clonesSource.includes("fs.openSync(exe, 'r+')"));
   const stylesSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'styles.css'), 'utf8');
   check('search inputs pad typed text clear of the overlay icon (specificity beats the form padding)',
     /\.search input\[type=text\]\s*\{\s*padding-left:\s*34px;?\s*\}/.test(stylesSource)
@@ -662,7 +718,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && rendererModel.parseRobloxTarget('not a Roblox target').invalid === true
     && rendererModel.parseRobloxTarget('').invalid === false);
   check('Account-less installs can search public profiles without exposing account cookies',
-    peopleSource.includes("'User-Agent': 'Fleet/1.8.11'")
+    peopleSource.includes("'User-Agent': 'Fleet/1.8.12'")
     && peopleSource.includes('search-api/omni-search')
     && peopleSource.includes("verticalType: 'user'")
     && peopleSource.includes("presence: 'Unknown'")
@@ -717,6 +773,18 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && backendSource.includes('freeSlots(b) - freeSlots(a)')
     && backendSource.includes('spread: payload.spread !== false')
     && libSource.includes('launch_auto_fill'));
+  check('Launches explain why coexistence was impossible instead of failing silently',
+    backendSource.includes('function launchWarnings(')
+      && backendSource.includes("emit('launch:warning', { message: w })")
+      && backendSource.includes('is already running')
+      && tauriBridgeSource.includes("wrapEvent('launch:warning', cb)")
+      && rendererSource.includes('api.onLaunchWarning((w) =>'));
+  check('A failed update-restart keeps the app open and says so',
+    libSource.includes('for attempt in 1..=3')
+      && libSource.includes('if relaunched {')
+      && libSource.includes('"ok": relaunched, "relaunched": relaunched, "reason": reason')
+      && rendererSource.includes('if (r && r.relaunched) return; // the Rust side closes this window')
+      && rendererSource.includes('could not restart itself'));
   check('Watchdog settings are surfaced, clamped and bridged',
     rendererSource.includes('set-rejoin-delay')
     && rendererSource.includes('set-rejoin-tries')
@@ -1416,6 +1484,10 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && installerMain.includes('"Fleet could not start - open it from the Start menu"')
     && /if a\.install_dest\.as_os_str\(\)\.is_empty\(\)/.test(installerMain)
     && shellSource.includes('launch_app:'));
+  check('Starting Fleet falls back to CreateProcessW when the shell refuses',
+    shellSource.includes('CreateProcessW(')
+      && shellSource.includes('ShellExecuteW returned {}')
+      && shellSource.includes('CloseHandle(pi.hProcess)'));
   check('Joining a person passes numeric ids to Tauri (strict i64 deserialization)',
     tauriBridgeSource.includes('function coerceNumber(value)')
     && tauriBridgeSource.includes("invokeWithNumbers('launch_join_person_multi', ['targetUserId']")
