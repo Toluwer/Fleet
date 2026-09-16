@@ -155,6 +155,7 @@ class InstanceKeeper extends EventEmitter {
       const row = byAccount.get(record.accountId);
 
       if (row) {
+        record.misses = 0;
         // A live client for this account: it is up right now.
         record.pid = row.pid;
         record.hungMs = row.status === 'not_responding' ? record.hungMs + pollMs : 0;
@@ -195,7 +196,14 @@ class InstanceKeeper extends EventEmitter {
         && record.launchedAt && now - record.launchedAt < BOOT_GRACE_MS;
       if (booting) continue;
 
+      // One missed poll is noise (snapshot hiccup, transient enumeration
+      // failure, a client mid-boot that did not make the list). Require two
+      // consecutive misses before treating the client as gone - a false
+      // "death" relaunches into a live session and closes the healthy client.
       if (record.pid != null && (record.state === 'running' || record.state === 'waiting')) {
+        record.misses = (record.misses || 0) + 1;
+        if (record.misses < 2) continue;
+        record.misses = 0;
         record.pid = null;
         if (record.paused) { this.disarm(record.accountId, 'client closed'); continue; }
         this.deathDetected(record, 'closed');

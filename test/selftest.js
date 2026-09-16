@@ -209,6 +209,9 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     k.onInstances([{ pid: 111, source: 'fleet', accountId: 'a1', status: 'running' }]);
     check('a live pid flips the watch to running', k.status().records[0].state === 'running' && k.status().records[0].pid === 111);
 
+    // One missed poll is enumeration noise, not a death.
+    k.onInstances([]);
+    check('one missed poll alone does not kill a healthy client', k.status().records[0].state === 'running' && k.status().records[0].pid === 111);
     k.onInstances([]);
     const afterDeath = k.status().records[0];
     check('a dead pid schedules a rejoin', afterDeath.state === 'rejoining' && afterDeath.attempts === 1 && afterDeath.nextAt >= clock, JSON.stringify(afterDeath));
@@ -223,10 +226,12 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     k.onInstances([{ pid: 4001, source: 'fleet', accountId: 'a1', status: 'running' }]);
     clock += 1000;
     k.onInstances([]);
+    k.onInstances([]);
     await tick(50);
     check('a second death rejoins again', launches.length === 2);
     k.onInstances([{ pid: 4002, source: 'fleet', accountId: 'a1', status: 'running' }]);
     clock += 1000;
+    k.onInstances([]);
     k.onInstances([]);
     const givenUp = k.status().records[0];
     check('the watchdog gives up after the configured straight tries', givenUp.state === 'gaveup' && givenUp.attempts === 2);
@@ -236,6 +241,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     const k2 = makeKeeper();
     k2.arm({ accountId: 'a1', userId: 7, placeId: '123' });
     k2.onInstances([{ pid: 500, source: 'fleet', accountId: 'a1', status: 'running' }]);
+    k2.onInstances([]);
     k2.onInstances([]);
     await tick(50);
     k2.onInstances([{ pid: 4001 + 50, source: 'fleet', accountId: 'a1', status: 'running' }]);
@@ -271,6 +277,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     k6.onInstances([{ pid: 950, source: 'fleet', accountId: 'a4', status: 'running' }]);
     failAll = true;
     const beforeFails = launches.length;
+    k6.onInstances([]);
     k6.onInstances([]);
     await tick(80);
     check('repeatedly failed rejoins stop after the try limit',
@@ -333,6 +340,23 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   await monitor.poll();
   await monitor.poll();
   check('permission-limited real windows use conservative stable fallback', monitor.snapshot().length === 1 && monitor.snapshot()[0].source === 'external');
+  // The guard's pid source is unfiltered: a client the view cannot vet yet is
+  // still reachable for singleton-handle work.
+  mockRows = [{ pid: 4106, memBytes: 10, status: 'running', windowTitle: '', executablePath: 'C:\\Somewhere\\RobloxPlayerBeta.exe', verifiedPath: false, trustedInstall: false }];
+  await monitor.poll();
+  check('raw pids include clients the filtered view hides', monitor.rawPids().includes(4106) && !monitor.snapshot().some(r => r.pid === 4106));
+  {
+    const repoRoot = path.join(__dirname, '..');
+    const backendSrc = fs.readFileSync(path.join(repoRoot, 'src/main/tauri-backend.js'), 'utf8');
+    const nativeSrc = fs.readFileSync(path.join(repoRoot, 'src/main/native.js'), 'utf8');
+    check('guard is wired to raw pids, not the filtered snapshot', backendSrc.includes('monitor.rawPids()'));
+    check('object names decode from behind the UNICODE_STRING header (x64/x86 offsets, Length in bytes)',
+      nativeSrc.includes("process.arch === 'x64' ? 16 : 8")
+        && nativeSrc.includes('nameBuf.readUInt16LE(0)')
+        && !nativeSrc.includes('nameBuf.subarray(0, rl[0]'));
+    check('global guard matching is exact, not substring',
+      nativeSrc.includes('lower.endsWith(EVENT_NAME_LOWER)') && nativeSrc.includes('lower.endsWith(MUTEX_NAME_LOWER)'));
+  }
 
   /* 7. Launcher guards */
   await section('Launcher');
@@ -718,7 +742,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && rendererModel.parseRobloxTarget('not a Roblox target').invalid === true
     && rendererModel.parseRobloxTarget('').invalid === false);
   check('Account-less installs can search public profiles without exposing account cookies',
-    peopleSource.includes("'User-Agent': 'Fleet/1.8.12'")
+    peopleSource.includes("'User-Agent': 'Fleet/1.8.13'")
     && peopleSource.includes('search-api/omni-search')
     && peopleSource.includes("verticalType: 'user'")
     && peopleSource.includes("presence: 'Unknown'")
@@ -776,7 +800,8 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
   check('Launches explain why coexistence was impossible instead of failing silently',
     backendSource.includes('function launchWarnings(')
       && backendSource.includes("emit('launch:warning', { message: w })")
-      && backendSource.includes('is already running')
+      && backendSource.includes('already has a client')
+      && backendSource.includes('process.kill(row.pid, 0)')
       && tauriBridgeSource.includes("wrapEvent('launch:warning', cb)")
       && rendererSource.includes('api.onLaunchWarning((w) =>'));
   check('A failed update-restart keeps the app open and says so',

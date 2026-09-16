@@ -56,8 +56,18 @@ const SW_RESTORE = 9;
 // destabilises it).
 const RE_GLOBAL = /ROBLOX_singleton(Event|Mutex)/i;
 const RE_PERPATH = /RobloxPlayerBeta\.exe\.mtx/i;
+const EVENT_NAME_LOWER = EVENT_NAME.toLowerCase();
+const MUTEX_NAME_LOWER = MUTEX_NAME.toLowerCase();
 function nameIsGuard(name, scope) {
-  if (scope === 'global') return RE_GLOBAL.test(name);
+  if (!name) return false;
+  if (scope === 'global') {
+    // Exact object identity: the kernel may prefix the name with its
+    // namespace path (e.g. "\\Sessions\\1\\BaseNamedObjects\\"), so compare
+    // the tail - but NOTHING looser. A substring test on a mis-decoded
+    // name must never make us close an unrelated handle inside a client.
+    const lower = name.toLowerCase();
+    return lower.endsWith(EVENT_NAME_LOWER) || lower.endsWith(MUTEX_NAME_LOWER);
+  }
   if (scope === 'perpath') return RE_PERPATH.test(name);
   return RE_GLOBAL.test(name) || RE_PERPATH.test(name);
 }
@@ -314,8 +324,22 @@ function closeRobloxSingletonHandles(pids, scope) {
         const rl = [0];
         const st = NtQueryObject(dup, ObjectNameInformation, nameBuf, nameBuf.length, rl) >>> 0;
         if (st === STATUS_SUCCESS) {
-          const name = nameBuf.subarray(0, rl[0] || nameBuf.length).toString('utf16le');
-          if (nameIsGuard(name, scope)) isGuard = true;
+          // OBJECT_NAME_INFORMATION begins with UNICODE_STRING:
+          //   USHORT Length; USHORT MaximumLength; (pad) PWCH Buffer
+          // The characters follow the struct itself - 16 bytes in on x64, 8 on
+          // x86 - and Length counts BYTES. The old decode read from offset 0
+          // with ReturnLength as the size: that turns the header bytes into
+          // text and, whenever ReturnLength is left unwritten on success,
+          // decodes stale bytes from the PREVIOUS handle's name as well - so
+          // an unnamed object enumerated right after a real guard could match
+          // and get a random handle closed inside the client. Decoding exactly
+          // Length bytes from behind the header makes that impossible.
+          const hdr = process.arch === 'x64' ? 16 : 8;
+          const nameLen = Math.min(nameBuf.readUInt16LE(0), nameBuf.length - hdr);
+          if (nameLen > 0) {
+            const name = nameBuf.subarray(hdr, hdr + nameLen).toString('utf16le');
+            if (nameIsGuard(name, scope)) isGuard = true;
+          }
         }
       } catch (_) {}
       try { CloseHandle(dup); } catch (_) {}

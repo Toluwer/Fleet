@@ -2390,6 +2390,18 @@ fn poll_worker(a: &mut App) {
                     goto_stage(a, Stage::Done);
                 }
             } else {
+                // Fresh install (or demo): land on the done page. For a real
+                // fresh install, bring Fleet up right away too - the user
+                // just chose to install it, so the app should appear. Demo
+                // runs stay quiet so automated audits never leave an app
+                // running.
+                if !a.demo {
+                    let exe = a.install_dest.join("Fleet.exe");
+                    let dir = a.install_dest.clone();
+                    if !shell::launch_app(&exe, &dir) {
+                        debug_log("fresh install: auto-launch failed (the Launch button remains)");
+                    }
+                }
                 goto_stage(a, Stage::Done);
             }
         }

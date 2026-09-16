@@ -63,7 +63,10 @@ function makeBackend(ctx) {
   guard.configure({
     logger,
     playerPath: loc.playerPath,
-    getPids: () => (monitor ? monitor.snapshot().map(i => i.pid) : []),
+    // Raw pids (pre-filter): the guard must reach every running client, or a
+    // client the Instances view cannot vet yet keeps a singleton name owned
+    // and gets replaced by the next launch.
+    getPids: () => (monitor ? monitor.rawPids() : []),
   });
   if (native.isAvailable()) guard.start();
 
@@ -170,7 +173,9 @@ function makeBackend(ctx) {
 
   /** Conditions under which launching cannot produce coexisting clients.
    * Surfaced as warnings so the cause is visible where it matters, instead
-   * of looking like a silent multi-instance failure. */
+   * of looking like a silent multi-instance failure. A warning is only ever
+   * built from a client that is verifiably alive RIGHT NOW - a stale row
+   * must not claim an account is running when it is not. */
   function launchWarnings({ accountIds, count }) {
     const warnings = [];
     const rows = monitor.snapshot() || [];
@@ -187,12 +192,17 @@ function makeBackend(ctx) {
     if (Array.isArray(accountIds) && accountIds.length) {
       const live = new Map();
       for (const row of rows) {
-        if (row && row.source === 'fleet' && row.accountId) live.set(row.accountId, row.profileName || row.accountId);
+        if (!row || row.source !== 'fleet' || !row.accountId || !row.pid) continue;
+        // The snapshot can be a poll behind reality: probe the pid before
+        // telling the user it is running.
+        let alive = true;
+        try { process.kill(row.pid, 0); } catch (_) { alive = false; }
+        if (alive) live.set(row.accountId, row.profileName || row.accountId);
       }
       for (const id of accountIds) {
         const name = live.get(id);
         if (name) {
-          warnings.push(name + ' is already running — Roblox closes the older client when the same account launches again.');
+          warnings.push(name + ' already has a client — Roblox moves an account to the newest client, so the older one disconnects.');
         }
       }
     }

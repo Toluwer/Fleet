@@ -44,6 +44,7 @@ class ProcessMonitor extends EventEmitter {
     this.externalCandidates = new Map(); // pid -> { identity, count, firstSeen }
     this.timer = null;
     this.lastSnapshot = [];
+    this.lastRawPids = [];   // every Roblox pid the provider saw, before filtering
     this._busy = false;
   }
 
@@ -77,6 +78,11 @@ class ProcessMonitor extends EventEmitter {
     this._busy = true;
     try {
       const rows = await this.processProvider.list();
+      // Unfiltered pid list: the multi-instance guard must reach EVERY
+      // running client (even one this view is still vetting, or one it will
+      // never show), or a client the view hides keeps owning Roblox's
+      // singleton names and gets replaced by the next launch.
+      this.lastRawPids = rows.map(r => r.pid);
       const now = new Date().toISOString();
       const livePids = new Set();
       const candidatePids = new Set();
@@ -152,6 +158,7 @@ class ProcessMonitor extends EventEmitter {
   }
 
   snapshot() { return this.lastSnapshot; }
+  rawPids() { return this.lastRawPids; }
 }
 
 module.exports = { ProcessMonitor };
