@@ -54,7 +54,7 @@ dependencies = [
 
 [[package]]
 name = "fleet-setup"
-version = "1.8.10"
+version = "1.8.11"
 dependencies = [
  "miniz_oxide",
  "sha2",

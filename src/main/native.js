@@ -6,23 +6,31 @@
  * Roblox enforces a single client with named kernel objects under two names:
  *   - ROBLOX_singletonEvent
  *   - ROBLOX_singletonMutex
- * The current client re-creates these while it runs, so merely closing the
- * handles after a launch loses the race. The robust method (used by every
- * maintained multi-instance tool) is for FLEET to hold both names itself,
- * created as mutexes before any client starts: a client then finds the name
- * already present (CreateMutex -> ERROR_ALREADY_EXISTS) and runs as a
- * non-primary instance. Per-instance isolation still comes from clones.js
- * (distinct exe paths -> distinct <path>.mtx guards).
+ * Both are mutexes in the current client (despite the "Event" suffix). The
+ * client creates each with CreateMutex(bInitialOwner=TRUE) and then takes
+ * ownership with WaitForSingleObject(handle, 0): a client that acquires a
+ * name becomes the PRIMARY instance — and the primary is the one every
+ * later launch replaces (the "newest wins" handoff that closes the window
+ * you were playing on).
  *
- * The handle sweep below remains for one case: Roblox was started before
- * Fleet, so the running client already owns the names. Closing its guard
- * handles lets the kernel destroy the objects; the next tick claims them.
- * Only the GLOBAL guards are ever closed — closing a running instance's
- * per-path mutex would make it exit a few seconds later.
+ * The robust method (used by maintained multi-instance tools) is for FLEET
+ * to hold both names itself as OWNED mutexes before any client starts:
+ * CreateMutex(null, TRUE, name) acquires ownership of a name the moment we
+ * create it. A client then finds the name present AND owned by someone
+ * else, so WaitForSingleObject(handle, 0) times out and it runs as a
+ * non-primary instance that nobody hands off to. An unowned hold is not
+ * enough — a client would acquire it and become primary again.
+ *
+ * A name may already be owned by a client that was started BEFORE Fleet;
+ * guard.js then sweeps that client's global guard handles away (it can no
+ * longer receive handoff signals) and ownership falls to Fleet the moment
+ * that client exits. Per-instance isolation still comes from clones.js
+ * (distinct exe paths -> distinct <path>.mtx guards).
  *
  * Win32 calls: NtQuerySystemInformation(SystemExtendedHandleInformation),
  * NtQueryObject(ObjectNameInformation), OpenProcess(PROCESS_DUP_HANDLE),
- * DuplicateHandle(DUPLICATE_SAME_ACCESS / DUPLICATE_CLOSE_SOURCE), CloseHandle.
+ * DuplicateHandle(DUPLICATE_SAME_ACCESS / DUPLICATE_CLOSE_SOURCE),
+ * CreateMutexW, WaitForSingleObject, CloseHandle.
  *
  * All wrapped so a koffi failure degrades gracefully rather than crashing.
  */
@@ -60,7 +68,7 @@ let loadError = null;
 let typeIndices = null; // { event, mutant }
 
 let NtQuerySystemInformation, NtQueryObject;
-let OpenProcess, DuplicateHandle, CloseHandle, GetCurrentProcess, CreateEventW, CreateMutexW, OpenEventW, OpenMutexW, QueryFullProcessImageNameW, GetProcessTimes;
+let OpenProcess, DuplicateHandle, CloseHandle, GetCurrentProcess, CreateEventW, CreateMutexW, OpenEventW, OpenMutexW, QueryFullProcessImageNameW, GetProcessTimes, WaitForSingleObject;
 let CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, K32GetProcessMemoryInfo;
 let PE32 = null, PE32_SIZE = 0;
 let EnumWindows, GetWindowThreadProcessId, IsWindowVisible, ShowWindow, SetForegroundWindow, BringWindowToTop, AllowSetForegroundWindow, EnumWindowsProto;
@@ -87,6 +95,7 @@ function init() {
     OpenMutexW = kernel32.func('uintptr __stdcall OpenMutexW(uint32 a, int b, str16 c)');
     QueryFullProcessImageNameW = kernel32.func('bool __stdcall QueryFullProcessImageNameW(uintptr hProcess, uint32 dwFlags, void* lpExeName, _Inout_ uint32* lpdwSize)');
     GetProcessTimes = kernel32.func('bool __stdcall GetProcessTimes(uintptr hProcess, void* lpCreationTime, void* lpExitTime, void* lpKernelTime, void* lpUserTime)');
+    WaitForSingleObject = kernel32.func('uint32 __stdcall WaitForSingleObject(uintptr hHandle, uint32 dwMilliseconds)');
 
     // Toolhelp for spawn-free process enumeration (immune to system load,
     // unlike `tasklist`, which stalls while several clients boot at once).
@@ -130,33 +139,59 @@ function init() {
 function isAvailable() { return available; }
 function getLoadError() { return loadError; }
 
-/* --- Singleton-name squat ------------------------------------------------ */
+/* --- Singleton-name hold ------------------------------------------------- */
 
-// name -> mutex handle. Created once, held for Fleet's whole lifetime and never
-// closed: while we hold them, no client can (re)create the objects, so every
-// launch runs as a non-primary instance. If Fleet dies, the kernel releases
-// the names and Roblox falls back to its normal single-instance behaviour.
+// name -> { h, owned }. Held for Fleet's whole lifetime and never released:
+// while we OWN both names, no client can acquire one, so every launch runs
+// as a non-primary instance. If Fleet dies, the kernel abandons the mutexes
+// and the next client acquires one — normal Roblox single-instance behaviour
+// returns, exactly as if Fleet had never run.
 const squatHandles = new Map();
 
+const WAIT_OBJECT_0 = 0x00000000;
+const WAIT_ABANDONED = 0x00000080;
+const WAIT_TIMEOUT = 0x00000102;
+
 /**
- * Try to claim whichever of the two global singleton names we do not hold
- * yet. Cheap (two CreateMutex calls), safe to call repeatedly — names already
- * claimed are kept. A claim fails only while a running client owns the name.
- * @returns {{ok:boolean, held:number, total:number, reason?:string}}
+ * Claim whichever of the two global singleton names we do not OWN yet.
+ * Cheap (two CreateMutex + WaitForSingleObject calls), safe to call
+ * repeatedly — names already owned are kept. A name stays unclaimed only
+ * while a client started before Fleet still owns it; the guard sweeps that
+ * client's handles and ownership falls to us when it exits.
+ * @returns {{ok:boolean, held:number, total:number, contested?:string[]}}
  */
 function acquireSingletonNames() {
-  if (!init()) return { ok: false, held: squatHandles.size, total: 2, reason: loadError || 'FFI unavailable' };
+  if (!init()) return { ok: false, held: ownedCount(), total: 2, reason: loadError || 'FFI unavailable' };
+  const contested = [];
   for (const name of [EVENT_NAME, MUTEX_NAME]) {
-    if (squatHandles.has(name)) continue;
-    let h = 0;
-    try { h = CreateMutexW(null, 0, name); } catch (_) { h = 0; }
-    if (h) squatHandles.set(name, h);
+    const cur = squatHandles.get(name);
+    if (cur && cur.owned) continue;
+    let h = (cur && cur.h) || 0;
+    if (!h) {
+      try { h = CreateMutexW(null, 1, name); } catch (_) { h = 0; }
+      if (!h) continue;
+    }
+    // Ownership is the whole point: a mutex we merely hold a handle to can
+    // still be acquired (and then "won") by a client. WaitForSingleObject(0)
+    // either grants us ownership (fresh, free or abandoned mutex) or times
+    // out while another process owns it.
+    let wait = WAIT_TIMEOUT;
+    try { wait = WaitForSingleObject(h, 0); } catch (_) { wait = WAIT_TIMEOUT; }
+    const owned = wait === WAIT_OBJECT_0 || wait === WAIT_ABANDONED;
+    squatHandles.set(name, { h, owned });
+    if (!owned) contested.push(name);
   }
-  return { ok: squatHandles.size === 2, held: squatHandles.size, total: 2 };
+  return { ok: ownedCount() === 2, held: ownedCount(), total: 2, contested };
 }
 
-/** True once Fleet holds both global singleton names. */
-function squatHeld() { return squatHandles.size === 2; }
+function ownedCount() {
+  let n = 0;
+  for (const v of squatHandles.values()) if (v.owned) n++;
+  return n;
+}
+
+/** True once Fleet OWNS both global singleton names. */
+function squatHeld() { return ownedCount() === 2; }
 
 /** The per-build mutex name Roblox uses (full exe path, backslashes -> _). */
 function exeMutexName(playerPath) {

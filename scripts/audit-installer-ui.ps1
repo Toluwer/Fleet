@@ -221,6 +221,12 @@ $entry = Get-ItemProperty $uninstallKey -ErrorAction SilentlyContinue
 if (-not $entry -or $entry.DisplayVersion -ne $version) {
     $problems += "DisplayVersion not refreshed by the update: '$($entry.DisplayVersion)'."
 }
+# Demo runs must never leave the app running: the real (non-demo) update flow
+# relaunches Fleet when it finishes, --demo suppresses that for audits.
+if (Get-Process Fleet -ErrorAction SilentlyContinue) {
+    $problems += 'Fleet was started by the demo update run (auto-launch must be suppressed with --demo).'
+    Stop-Process -Name Fleet -Force -ErrorAction SilentlyContinue
+}
 
 # ---- uninstall and verify removal ------------------------------------------
 if (Test-Path (Join-Path $installDir 'uninstall.exe')) {

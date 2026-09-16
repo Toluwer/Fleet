@@ -593,15 +593,16 @@ unsafe extern "system" fn enum_post_close(hwnd: HWND, lparam: LPARAM) -> BOOL {
 /// Closes every Fleet.exe / node.exe process running from `dir` so an update
 /// can replace the previous version's files. Graceful WM_CLOSE first, a five
 /// second grace period, then force-termination for anything still alive.
-/// Processes from other folders are never touched.
-pub fn close_fleet_processes(dir: &Path) {
+/// Processes from other folders are never touched. Returns how many processes
+/// were closed (0 when Fleet was not running).
+pub fn close_fleet_processes(dir: &Path) -> usize {
     let me = std::process::id();
     let mut pids: Vec<u32> = Vec::new();
     let mut handles: Vec<HANDLE> = Vec::new();
 
     unsafe {
         let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
-            return;
+            return 0;
         };
         let mut entry = PROCESSENTRY32W {
             dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
@@ -648,7 +649,7 @@ pub fn close_fleet_processes(dir: &Path) {
     }
 
     if pids.is_empty() {
-        return;
+        return 0;
     }
     log_str(&format!(
         "close_fleet_processes: closing {} process(es) running from {}",
@@ -673,7 +674,7 @@ pub fn close_fleet_processes(dir: &Path) {
             .filter(|h| unsafe { WaitForSingleObject(**h, 0) } != WAIT_OBJECT_0)
             .count();
         if alive == 0 {
-            return;
+            return pids.len();
         }
         if unsafe { GetTickCount64() } >= deadline {
             break;
@@ -688,6 +689,7 @@ pub fn close_fleet_processes(dir: &Path) {
     // Give the OS a beat to release the file locks before the caller
     // starts deleting and rewriting the folder.
     std::thread::sleep(std::time::Duration::from_millis(400));
+    pids.len()
 }
 
 // ------------------------------------------------------------------ misc
@@ -725,7 +727,14 @@ pub fn wipe_dir(dir: &Path) -> Result<(), String> {
 }
 
 pub fn launch_app(exe: &Path, workdir: &Path) -> bool {
-    unsafe {
+    if !exe.is_file() {
+        log_str(&format!(
+            "launch_app: {} does not exist - cannot start Fleet",
+            exe.display()
+        ));
+        return false;
+    }
+    let ok = unsafe {
         let r = ShellExecuteW(
             None,
             PCWSTR(to_wide("open").as_ptr()),
@@ -736,7 +745,13 @@ pub fn launch_app(exe: &Path, workdir: &Path) -> bool {
         );
         // ShellExecuteW returns a HINSTANCE > 32 on success.
         (r.0 as usize) > 32
-    }
+    };
+    log_str(&format!(
+        "launch_app: {} -> {}",
+        exe.display(),
+        if ok { "started" } else { "FAILED" }
+    ));
+    ok
 }
 
 /// Opens a URL in the user's default browser. Used for the "get a newer

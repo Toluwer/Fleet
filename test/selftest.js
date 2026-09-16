@@ -527,6 +527,16 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     guardSource.includes('native.acquireSingletonNames')
     && guardSource.includes('native.squatHeld')
     && /closeRobloxSingletonHandles\(pids, 'global'\)/.test(guardSource));
+  check('singleton hold is OWNED, not a bare handle (a client must time out acquiring it)',
+    /CreateMutexW\(null, 1, name\)/.test(nativeSource)
+    && nativeSource.includes('WaitForSingleObject(h, 0)')
+    && /wait === WAIT_OBJECT_0 \|\| wait === WAIT_ABANDONED/.test(nativeSource)
+    && /const owned = /.test(nativeSource));
+  check('guard strips a new client\'s global guard handles after its startup handshake',
+    /const STRIP_AT_MS = 3000;/.test(guardSource)
+    && /const STRIP_AGAIN_MS = 8000;/.test(guardSource)
+    && /stripClients\(due\)/.test(guardSource)
+    && /closeRobloxSingletonHandles\(pids, 'global'\)/.test(guardSource));
   const stylesSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'styles.css'), 'utf8');
   check('search inputs pad typed text clear of the overlay icon (specificity beats the form padding)',
     /\.search input\[type=text\]\s*\{\s*padding-left:\s*34px;?\s*\}/.test(stylesSource)
@@ -652,7 +662,7 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     && rendererModel.parseRobloxTarget('not a Roblox target').invalid === true
     && rendererModel.parseRobloxTarget('').invalid === false);
   check('Account-less installs can search public profiles without exposing account cookies',
-    peopleSource.includes("'User-Agent': 'Fleet/1.8.10'")
+    peopleSource.includes("'User-Agent': 'Fleet/1.8.11'")
     && peopleSource.includes('search-api/omni-search')
     && peopleSource.includes("verticalType: 'user'")
     && peopleSource.includes("presence: 'Unknown'")
@@ -1339,6 +1349,10 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     path.join(__dirname, '..', 'installer', 'Cargo.toml'),
     'utf8',
   );
+  const shellSource = fs.readFileSync(
+    path.join(__dirname, '..', 'installer', 'src', 'shell.rs'),
+    'utf8',
+  );
   const buildInstallerScript = fs.readFileSync(
     path.join(__dirname, '..', 'scripts', 'build-installer.ps1'),
     'utf8',
@@ -1392,6 +1406,16 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     installerMain.includes('--uninstall')
     && installerMain.includes('"Remove Fleet?"')
     && installerMain.includes('"Fleet was removed"'));
+  check('An update relaunches the new Fleet instead of parking on a done page',
+    /a\.updating && !a\.demo/.test(installerMain)
+    && installerMain.includes('"Restarting Fleet…"')
+    && /shell::launch_app\(&exe, &dir\)/.test(installerMain)
+    && installerMain.includes('update: relaunched Fleet, closing'));
+  check('The Launch Fleet button never closes silently on failure',
+    /if shell::launch_app\(&exe, &dir\) \{/.test(installerMain)
+    && installerMain.includes('"Fleet could not start - open it from the Start menu"')
+    && /if a\.install_dest\.as_os_str\(\)\.is_empty\(\)/.test(installerMain)
+    && shellSource.includes('launch_app:'));
   check('Joining a person passes numeric ids to Tauri (strict i64 deserialization)',
     tauriBridgeSource.includes('function coerceNumber(value)')
     && tauriBridgeSource.includes("invokeWithNumbers('launch_join_person_multi', ['targetUserId']")

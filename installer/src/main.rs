@@ -563,7 +563,8 @@ fn run_install(
         // Replace the previous version in place: close the running app, clear
         // the old files, then extract the new payload over the same folder.
         let _ = tx.send(Msg::Note("Closing Fleet…".into()));
-        shell::close_fleet_processes(dest);
+        let closed = shell::close_fleet_processes(dest);
+        debug_log(&format!("update: closed {closed} running Fleet process(es)"));
         let _ = tx.send(Msg::Note("Removing the previous version…".into()));
         shell::wipe_dir(dest)?;
     }
@@ -613,6 +614,13 @@ fn run_install(
         if !desktop_dir.as_os_str().is_empty() {
             shell::create_shortcut(&desktop_dir.join("Fleet.lnk"), &exe, dest, "Fleet - Roblox multi-instance launcher")?;
         }
+    }
+
+    if is_update {
+        // The update is about to hand over to the new Fleet (see poll_worker):
+        // say so on the progress page right before it happens, so the window
+        // closing on its own reads as "done", not "gone".
+        let _ = tx.send(Msg::Note("Restarting Fleet…".into()));
     }
     debug_log("run_install ok");
     Ok(())
@@ -2211,8 +2219,13 @@ fn activate(a: &mut App, id: i32) {
         IDC_LAUNCH => {
             let exe = a.install_dest.join("Fleet.exe");
             let dir = a.install_dest.clone();
-            shell::launch_app(&exe, &dir);
-            fade_quit(a);
+            if shell::launch_app(&exe, &dir) {
+                fade_quit(a);
+            } else {
+                // Never close silently on a failed start: say it inline so
+                // the user can retry or open Fleet from the Start menu.
+                set_text(a, IDC_HINT, "Fleet could not start - open it from the Start menu");
+            }
         }
         IDC_CLOSE | IDC_CANCEL => unsafe {
             let _ = PostMessageW(Some(a.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
@@ -2280,6 +2293,11 @@ fn demo_advance(a: &mut App) {
 // ------------------------------------------------------------------ worker plumbing
 
 fn start_install(a: &mut App) {
+    // Every path that reaches the worker must carry the destination, so the
+    // Done page and the launch button can never point at an empty path.
+    if a.install_dest.as_os_str().is_empty() {
+        a.install_dest = PathBuf::from(a.path.clone());
+    }
     let dest = a.install_dest.clone();
     let desktop = a.desktop_shortcut;
     let version = a.version_to_install();
@@ -2351,9 +2369,28 @@ fn poll_worker(a: &mut App) {
                     a.last_error = e;
                 }
                 goto_stage(a, Stage::Error);
+            } else if a.uninstall_mode {
+                goto_stage(a, Stage::Uninstalled);
+            } else if a.updating && !a.demo {
+                // An update replaces the Fleet the user had (it was closed a
+                // moment ago) - bring the new one straight up instead of
+                // parking on a done page. Demo runs stay on the page so
+                // audits never leave an app running.
+                set_text(a, IDC_SUB, "Restarting Fleet…");
+                set_progress(a, 1, 1);
+                let exe = a.install_dest.join("Fleet.exe");
+                let dir = a.install_dest.clone();
+                if shell::launch_app(&exe, &dir) {
+                    debug_log("update: relaunched Fleet, closing");
+                    // A slightly longer fade than the usual exit so the hand
+                    // over to the new window reads as deliberate.
+                    start_fade(a, 0, 600, After::Quit);
+                } else {
+                    debug_log("update: relaunch failed, showing the done page");
+                    goto_stage(a, Stage::Done);
+                }
             } else {
-                let next = if a.uninstall_mode { Stage::Uninstalled } else { Stage::Done };
-                goto_stage(a, next);
+                goto_stage(a, Stage::Done);
             }
         }
         _ => {
