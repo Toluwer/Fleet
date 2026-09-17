@@ -734,6 +734,35 @@ pub fn launch_app(exe: &Path, workdir: &Path) -> bool {
         ));
         return false;
     }
+    // A just-written executable can be transiently blocked by antivirus
+    // scanning it - the same race the in-app updater retries around - so
+    // try a few times before reporting failure. Callers that must not
+    // stall (the installer window) run this on a worker thread.
+    const ATTEMPTS: u32 = 5;
+    for attempt in 1..=ATTEMPTS {
+        if launch_app_once(exe, workdir) {
+            log_str(&format!(
+                "launch_app: {} -> started (attempt {attempt})",
+                exe.display()
+            ));
+            return true;
+        }
+        log_str(&format!(
+            "launch_app: attempt {attempt} of {ATTEMPTS} failed for {}",
+            exe.display()
+        ));
+        if attempt < ATTEMPTS {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+        }
+    }
+    log_str(&format!(
+        "launch_app: {} -> FAILED after {ATTEMPTS} attempts",
+        exe.display()
+    ));
+    false
+}
+
+fn launch_app_once(exe: &Path, workdir: &Path) -> bool {
     let exe_w = to_wide(&exe.to_string_lossy());
     let dir_w = to_wide(&workdir.to_string_lossy());
     let mut ok = false;

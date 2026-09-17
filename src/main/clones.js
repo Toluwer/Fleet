@@ -55,6 +55,46 @@ function slotInUse(dir, liveRows) {
   return false;
 }
 
+/** Unlink a reparse point (junction/symlink) without ever touching its
+ * target: unlinkSync handles links on Windows and POSIX; rmdirSync covers
+ * old Node builds that expose junctions as directories. */
+function unlinkLink(link) {
+  try { fs.unlinkSync(link); return; } catch (_) {}
+  try { fs.rmdirSync(link); } catch (_) {}
+}
+
+/** Remove a slot nobody runs from, entry by entry, so a reparse point can
+ * never be followed into the real Roblox install it shares with: a junction
+ * is unlinked as a link (its target is untouched), a hard link is unlinked
+ * (the shared file data lives on in the version folder), and a locked file
+ * aborts the sweep with the slot kept. Returns true when the slot is gone
+ * (or never existed). */
+function removeSlotTree(dir) {
+  let st = null;
+  try { st = fs.lstatSync(dir); } catch (_) { return true; }
+  if (st.isSymbolicLink()) { // the whole slot is a link (pre-1.8.12 layout)
+    unlinkLink(dir);
+    return !present(dir);
+  }
+  if (!st.isDirectory()) {
+    try { fs.unlinkSync(dir); return true; } catch (_) { return false; }
+  }
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      const p = path.join(dir, name);
+      let s = null;
+      try { s = fs.lstatSync(p); } catch (_) { continue; }
+      if (s.isSymbolicLink()) unlinkLink(p);
+      else if (s.isDirectory()) removeSlotTree(p);
+      else fs.unlinkSync(p); // throws while a client still runs from it
+    }
+    fs.rmdirSync(dir);
+  } catch (err) {
+    return false;
+  }
+  return !present(dir);
+}
+
 /** Remove a slot folder nobody runs from. Hard links are simply unlinked (the
  * shared file data lives on); junctions are removed as reparse points, never
  * followed. Returns true when the slot is gone (or never existed). */
@@ -75,13 +115,11 @@ function reclaimSlot(dir, liveRows) {
     }
     try { fs.closeSync(fh); } catch (_) {}
   }
-  try {
-    fs.rmSync(dir, { recursive: true, force: true });
-  } catch (err) {
-    logger.warn('Could not reclaim ' + dir + ': ' + (err && err.message));
+  if (!removeSlotTree(dir)) {
+    logger.warn('Could not reclaim ' + dir + ' (a file is still in use)');
     return false;
   }
-  return !present(dir);
+  return true;
 }
 
 /** Fill a fresh slot folder from the Roblox version folder. */
@@ -93,8 +131,27 @@ function buildSlot(slotDir, versionDir) {
   for (const entry of fs.readdirSync(versionDir, { withFileTypes: true })) {
     const src = path.join(versionDir, entry.name);
     const dst = path.join(slotDir, entry.name);
-    if (entry.isDirectory()) {
-      fs.symlinkSync(src, dst, 'junction');
+    // Roblox's own install uses reparse points — the version folder's
+    // `content` is a junction to a shared folder — and readdirSync reports
+    // those as symlinks, NOT directories. Skipping them (the old
+    // isDirectory/isFile pair matched neither) left slots without `content`,
+    // and the client refused to start: "'…\clones\instance-1\content' is
+    // not a directory". Resolve each reparse point to its real target and
+    // share that; a link to a file is shared like any other file.
+    if (entry.isDirectory() || entry.isSymbolicLink()) {
+      let target = src;
+      if (entry.isSymbolicLink()) {
+        try {
+          const real = fs.realpathSync(src);
+          if (fs.statSync(real).isFile()) {
+            try { fs.linkSync(real, dst); linked++; }
+            catch (_) { fs.copyFileSync(real, dst); copied++; }
+            continue;
+          }
+          target = real;
+        } catch (_) { /* broken or unreadable: share the link path itself */ }
+      }
+      fs.symlinkSync(target, dst, 'junction');
       junctioned++;
     } else if (entry.isFile()) {
       try {

@@ -169,6 +169,5 @@ window.fleet = {
   onKeeperStatus: (cb) => wrapEvent('keeper:status', cb),
   onKeeperRejoin: (cb) => wrapEvent('keeper:rejoin', cb),
   onKeeperGaveup: (cb) => wrapEvent('keeper:gaveup', cb),
-  onLaunchWarning: (cb) => wrapEvent('launch:warning', cb),
   onUpdaterStatus: (cb) => wrapEvent('updater:status', cb),
 };

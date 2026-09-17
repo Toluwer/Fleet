@@ -34,8 +34,9 @@ Mutex        \Sessions\N\BaseNamedObjects\<path-derived>.mtx
 
 Fleet's approach:
 
-1. Each client launches through its own junction under `%APPDATA%/fleet/clones/instance-N`, so each gets a unique path and a unique path-derived mutex.
-2. `guard.js` closes only the shared `ROBLOX_singleton*` objects as they reappear and leaves the per-path mutexes alone.
+1. Each client launches from its own slot folder under `%APPDATA%/com.toluwa.fleet/clones/instance-N`: every top-level file of the Roblox version folder appears there as a hard link (a unique exe path — nothing copied), and every folder — including `content`, itself a junction in Roblox's install — is re-shared with a junction to its resolved target. Unique exe path, unique path-derived mutex.
+2. `native.js` has Fleet own the two global `ROBLOX_singleton*` names as held mutexes for its whole lifetime, so no client can become the primary instance that later launches replace.
+3. `guard.js` sweeps the global-name handles out of running clients (timed to their startup handshake) so a client started before Fleet can no longer be handed off to; per-path mutexes are never touched.
 
 `native.js` does the Win32 work (enumeration, handle duplication, close) via koffi.
 
@@ -66,7 +67,7 @@ The installer checks `latest.yml` through WinHTTP (native, no extra process) and
 | `%APPDATA%/com.toluwa.fleet` | App data root |
 | `settings.json`, `accounts.json`, `history.json`, `keeper.json` | State |
 | `logs/fleet-YYYY-MM-DD.log` | Daily logs |
-| `clones/instance-N` | Per-instance junctions |
+| `clones/instance-N` | Per-instance launch slots (hard links + shared-folder junctions) |
 | `roblox-web-profile/` | Persistent WebView2 profile for Roblox sign-in/sign-up windows |
 
 ## Known limits

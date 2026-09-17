@@ -2942,7 +2942,7 @@ views.help = function () {
       <p>On <b>Instances</b>, <b>Save current setup</b> stores the selected accounts, game/server target, window arrangement and watchdog arming for one-click reuse. In <b>Settings · Appearance</b>, choose System, Light, or Dark.</p>
 
       <h2>How multi-instance works</h2>
-      <p>Roblox enforces a single client with named Windows objects, including a mutex tied to the client's exact program path. Fleet launches each client through its own folder junction (a unique path — no files copied), and a small guard clears the shared lock as it reappears, so every launch opens a new client that stays running.</p>
+      <p>Roblox enforces a single client with named Windows objects, including a mutex tied to the client's exact program path. Fleet launches each client from its own launch folder (a unique path, sharing the installed files — nothing is copied), and holds the shared single-instance names itself, so every launch opens a new client that stays running.</p>
 
       <h2>Tools</h2>
       <ul>
@@ -3752,11 +3752,6 @@ if (api) {
   });
   api.onKeeperGaveup((r) => {
     toast(`Watchdog gave up on ${(r && r.username) || 'an account'} after ${((r && r.attempts) || 0)} tries - arm it again by relaunching`, 'bad');
-  });
-  // Why coexisting clients were not possible for a launch (native layer
-  // missing, same account launched twice) — shown instead of failing silently.
-  api.onLaunchWarning((w) => {
-    if (w && w.message) toast(w.message, 'bad');
   });
   api.onUpdaterStatus((status) => {
     const prev = state.updater && state.updater.state;

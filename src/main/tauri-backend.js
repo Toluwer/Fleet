@@ -171,44 +171,6 @@ function makeBackend(ctx) {
     return r;
   }
 
-  /** Conditions under which launching cannot produce coexisting clients.
-   * Surfaced as warnings so the cause is visible where it matters, instead
-   * of looking like a silent multi-instance failure. A warning is only ever
-   * built from a client that is verifiably alive RIGHT NOW - a stale row
-   * must not claim an account is running when it is not. */
-  function launchWarnings({ accountIds, count }) {
-    const warnings = [];
-    const rows = monitor.snapshot() || [];
-    if (!native.isAvailable()) {
-      // Only meaningful the moment coexistence is on the table: another
-      // client is already running, or this one action starts several.
-      const several = (Array.isArray(accountIds) && accountIds.length > 1) || (asInt(count) || 1) > 1;
-      if (rows.length > 0 || several) {
-        warnings.push('Multi-instance is unavailable (' +
-          (native.getLoadError() || 'the native layer did not load') +
-          ') — a new client replaces the running one.');
-      }
-    }
-    if (Array.isArray(accountIds) && accountIds.length) {
-      const live = new Map();
-      for (const row of rows) {
-        if (!row || row.source !== 'fleet' || !row.accountId || !row.pid) continue;
-        // The snapshot can be a poll behind reality: probe the pid before
-        // telling the user it is running.
-        let alive = true;
-        try { process.kill(row.pid, 0); } catch (_) { alive = false; }
-        if (alive) live.set(row.accountId, row.profileName || row.accountId);
-      }
-      for (const id of accountIds) {
-        const name = live.get(id);
-        if (name) {
-          warnings.push(name + ' already has a client — Roblox moves an account to the newest client, so the older one disconnects.');
-        }
-      }
-    }
-    return warnings;
-  }
-
   async function doLaunch({ mode, deeplink, count, profileName, accountIds, placeId, gameInstanceId, targetUserId }) {
     const settings = store.getSettings();
     const loc = roblox.locate(settings);
@@ -252,9 +214,7 @@ function makeBackend(ctx) {
     const failed = results.length - launched;
     logger.info(`Launch: ${launched} started, ${failed} failed`);
     monitor.poll();
-    const warnings = launchWarnings({ accountIds, count });
-    for (const w of warnings) emit('launch:warning', { message: w });
-    return { ok: launched > 0, launched, failed, multiInstance: native.isAvailable() && native.squatHeld(), warnings, results };
+    return { ok: launched > 0, launched, failed, multiInstance: native.isAvailable() && native.squatHeld(), results };
   }
 
   /** Turn account ids into watchdog records the keeper can arm. */

@@ -181,6 +181,8 @@ enum Msg {
     File(String),
     Bytes(u64, u64),
     Note(String),
+    /// Outcome of the worker thread's post-install launch of Fleet.
+    Relaunched(bool),
     Done,
     Err(String),
 }
@@ -309,6 +311,8 @@ struct App {
     feed: Arc<Mutex<Option<Option<net::Latest>>>>,
     resolve_deadline: u64,
     resolving: bool,
+    /// Outcome of the worker's post-install launch (None: not attempted).
+    relaunch_ok: Option<bool>,
 }
 
 // ------------------------------------------------------------------ helpers
@@ -798,6 +802,7 @@ unsafe extern "system" fn wnd_proc(
                 updating,
                 latest: None,
                 feed,
+                relaunch_ok: None,
                 resolve_deadline: 0,
                 resolving,
             });
@@ -2222,9 +2227,10 @@ fn activate(a: &mut App, id: i32) {
             if shell::launch_app(&exe, &dir) {
                 fade_quit(a);
             } else {
-                // Never close silently on a failed start: say it inline so
-                // the user can retry or open Fleet from the Start menu.
-                set_text(a, IDC_HINT, "Fleet could not start - open it from the Start menu");
+                // Never close silently on a failed start: say it in the status
+                // line and keep the install folder visible below it, so the
+                // user can retry or find Fleet without hunting for it.
+                set_text(a, IDC_SUB, "Fleet could not start - use the Start menu or the folder below.");
             }
         }
         IDC_CLOSE | IDC_CANCEL => unsafe {
@@ -2302,7 +2308,9 @@ fn start_install(a: &mut App) {
     let desktop = a.desktop_shortcut;
     let version = a.version_to_install();
     let is_update = a.updating;
+    let demo = a.demo;
     let latest = a.latest.clone();
+    a.relaunch_ok = None;
     let (tx, rx) = channel::<Msg>();
     a.rx = Some(rx);
     a.busy = true;
@@ -2312,6 +2320,15 @@ fn start_install(a: &mut App) {
     std::thread::spawn(move || {
         match run_install(&dest, desktop, &version, is_update, latest, &tx) {
             Ok(()) => {
+                // Bring Fleet up from this worker thread, not the window
+                // thread: launch_app retries around transient antivirus
+                // blocks, and those sleeps must never stall the message loop.
+                // Demo runs never leave an app behind.
+                if !demo {
+                    let exe = dest.join("Fleet.exe");
+                    let ok = shell::launch_app(&exe, &dest);
+                    let _ = tx.send(Msg::Relaunched(ok));
+                }
                 let _ = tx.send(Msg::Done);
             }
             Err(e) => {
@@ -2353,6 +2370,7 @@ fn poll_worker(a: &mut App) {
                 set_text(a, IDC_BYTES, &format!("{} of {}", mb(done), mb(total)));
             }
             Msg::Note(n) => set_text(a, IDC_SUB, &n),
+            Msg::Relaunched(ok) => a.relaunch_ok = Some(ok),
             Msg::Done => finished = Some(Msg::Done),
             Msg::Err(e) => finished = Some(Msg::Err(e)),
         }
@@ -2378,9 +2396,7 @@ fn poll_worker(a: &mut App) {
                 // audits never leave an app running.
                 set_text(a, IDC_SUB, "Restarting Fleet…");
                 set_progress(a, 1, 1);
-                let exe = a.install_dest.join("Fleet.exe");
-                let dir = a.install_dest.clone();
-                if shell::launch_app(&exe, &dir) {
+                if a.relaunch_ok == Some(true) {
                     debug_log("update: relaunched Fleet, closing");
                     // A slightly longer fade than the usual exit so the hand
                     // over to the new window reads as deliberate.
@@ -2388,21 +2404,21 @@ fn poll_worker(a: &mut App) {
                 } else {
                     debug_log("update: relaunch failed, showing the done page");
                     goto_stage(a, Stage::Done);
+                    // The done page's status line explains the miss; the hint
+                    // below it keeps showing WHERE Fleet was installed, so the
+                    // user never has to go hunting for the folder.
+                    set_text(a, IDC_SUB, "Fleet could not start - use the Start menu or the folder below.");
                 }
             } else {
-                // Fresh install (or demo): land on the done page. For a real
-                // fresh install, bring Fleet up right away too - the user
-                // just chose to install it, so the app should appear. Demo
+                // Fresh install (or demo): land on the done page. A real fresh
+                // install has already brought Fleet up from the worker; demo
                 // runs stay quiet so automated audits never leave an app
                 // running.
-                if !a.demo {
-                    let exe = a.install_dest.join("Fleet.exe");
-                    let dir = a.install_dest.clone();
-                    if !shell::launch_app(&exe, &dir) {
-                        debug_log("fresh install: auto-launch failed (the Launch button remains)");
-                    }
-                }
                 goto_stage(a, Stage::Done);
+                if !a.demo && a.relaunch_ok == Some(false) {
+                    debug_log("fresh install: auto-launch failed (the Launch button remains)");
+                    set_text(a, IDC_SUB, "Fleet could not start - use the Start menu or the folder below.");
+                }
             }
         }
         _ => {
