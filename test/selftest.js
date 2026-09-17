@@ -131,7 +131,15 @@ async function section(title) { console.log('\n=== ' + title + ' ==='); }
     a2.slot !== a1.slot && path.dirname(a2.exe) !== path.dirname(a1.exe));
   check('both slots coexist with separate exe paths',
     fs.existsSync(a1.exe) && fs.existsSync(a2.exe) && a1.exe !== a2.exe);
-  clones.assign(a1.slot, 4242);
+  // A fixed pid number can collide with a real process on CI (a runner had
+  // one alive at 4242, cleanup then rightly kept the slot and the check
+  // fell over). Probe for a pid that verifiably does not exist here —
+  // ESRCH means gone; EPERM would mean alive but protected.
+  let deadPid = 0;
+  for (let p = 400000; p < 400100 && !deadPid; p++) {
+    try { process.kill(p, 0); } catch (e) { if (!e || e.code === 'ESRCH') deadPid = p; }
+  }
+  clones.assign(a1.slot, deadPid);
   check('slot assignment is tracked', clones.activeCount() === 2);
   clones.cleanup();
   check('cleanup removes every slot it created',
